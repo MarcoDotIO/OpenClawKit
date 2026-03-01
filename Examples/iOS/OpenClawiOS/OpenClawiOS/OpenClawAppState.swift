@@ -406,6 +406,7 @@ final class OpenClawAppState: ObservableObject {
     @Published var webchatAgentID: String = ""
     @Published var personality: String = ""
     @Published var pendingMessage: String = ""
+    @Published var selectedSkillName: String = ""
 
     @Published private(set) var deploymentState: DeploymentState = .stopped
     @Published private(set) var statusText: String = "Not deployed"
@@ -425,6 +426,15 @@ final class OpenClawAppState: ObservableObject {
     /// All available provider selections rendered by deploy UI.
     var availableProviders: [DeployProvider] {
         DeployProvider.allCases
+    }
+
+    /// User-invocable skills rendered in the chat skill picker.
+    var selectableSkillItems: [SkillItem] {
+        self.skillItems
+            .filter(\.userInvocable)
+            .sorted { lhs, rhs in
+                lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+            }
     }
 
     /// Route mapping preview used by Channels tab.
@@ -845,7 +855,7 @@ final class OpenClawAppState: ObservableObject {
         let text = self.pendingMessage.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         self.pendingMessage = ""
-        await self.sendMessage(text)
+        await self.sendMessage(self.composePrompt(text))
     }
 
     /// Sends a chat message through the active auto-reply engine.
@@ -866,6 +876,15 @@ final class OpenClawAppState: ObservableObject {
             self.appendMessage(.init(role: .system, text: "Error: \(error.localizedDescription)"))
         }
         await self.refreshObservabilityState()
+    }
+
+    private func composePrompt(_ text: String) -> String {
+        guard let selected = normalized(self.selectedSkillName),
+              self.selectableSkillItems.contains(where: { $0.name == selected })
+        else {
+            return text
+        }
+        return "/\(selected) \(text)"
     }
 
     /// Starts background summary scheduler polling loop.
@@ -936,6 +955,11 @@ final class OpenClawAppState: ObservableObject {
                     userInvocable: skill.invocation.userInvocable,
                     entrypoint: Self.skillEntrypointHint(for: skill)
                 )
+            }
+            if let selected = normalized(self.selectedSkillName),
+               !self.selectableSkillItems.contains(where: { $0.name == selected })
+            {
+                self.selectedSkillName = ""
             }
         }
     }

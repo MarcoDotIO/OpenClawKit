@@ -83,6 +83,15 @@ final class OpenClawiOSUITests: XCTestCase {
         self.waitForDisappearance(of: doneButton)
     }
 
+    func testSkillPickerIsVisibleOnChatTab() throws {
+        let app = XCUIApplication()
+        app.launch()
+
+        app.tabBars.buttons["Chat"].tap()
+        let picker = app.buttons["Skill: Automatic"]
+        XCTAssertTrue(picker.waitForExistence(timeout: 10))
+    }
+
     private func waitForDisappearance(of element: XCUIElement, timeout: TimeInterval = 5) {
         let deadline = Date().addingTimeInterval(timeout)
         while element.exists, Date() < deadline {

@@ -219,10 +219,20 @@ struct SkillRegistryTests {
 
         let registry = SkillRegistry(workspaceRoot: workspaceRoot, extraSkillDirs: [exampleSkillsRoot])
         let skills = try await registry.loadSkills()
-        let weather = try #require(skills.first(where: { $0.name == "weather" }))
-        let entrypoint = try await registry.resolveEntrypoint(for: weather)
+        let names = Set(skills.map(\.name))
+        #expect(names.contains("weather"))
+        #expect(names.contains("calculator"))
+        #expect(names.contains("slugify"))
+        #expect(names.contains("json-pretty"))
 
-        #expect(entrypoint?.lastPathComponent == "weather.js")
-        #expect(entrypoint?.path.contains("/OpenClawiOS/skills/weather/scripts/") == true)
+        let weather = try #require(skills.first(where: { $0.name == "weather" }))
+        let calculator = try #require(skills.first(where: { $0.name == "calculator" }))
+        let weatherEntrypoint = try await registry.resolveEntrypoint(for: weather)
+        let calculatorEntrypoint = try await registry.resolveEntrypoint(for: calculator)
+
+        #expect(weatherEntrypoint?.lastPathComponent == "weather.js")
+        #expect(weatherEntrypoint?.path.contains("/OpenClawiOS/skills/weather/scripts/") == true)
+        #expect(calculatorEntrypoint?.lastPathComponent == "calculator.js")
+        #expect(calculatorEntrypoint?.path.contains("/OpenClawiOS/skills/calculator/scripts/") == true)
     }
 }

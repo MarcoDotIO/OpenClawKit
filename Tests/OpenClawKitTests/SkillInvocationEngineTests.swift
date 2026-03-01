@@ -109,6 +109,27 @@ struct SkillInvocationEngineTests {
         #expect(explicit?.executorID == "extension-executor")
     }
 
+    @Test
+    func supportsExplicitInvocationForHyphenatedSkillNames() async throws {
+        let root = try self.makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        _ = try self.writeSkill(
+            root: root,
+            name: "json-pretty",
+            entrypoint: "scripts/run.exec"
+        )
+
+        let engine = SkillInvocationEngine(
+            workspaceRoot: root,
+            invocationTimeoutMs: 500,
+            executors: [ExtensionExecutor(outputPrefix: "hyphen")]
+        )
+        let result = try await engine.invokeIfRequested(message: "/json-pretty {\"z\":1,\"a\":2}")
+
+        #expect(result?.output == "hyphen:{\"z\":1,\"a\":2}")
+        #expect(result?.skillName == "json-pretty")
+    }
+
     private func makeWorkspace() throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("openclawkit-skill-invocation-tests", isDirectory: true)

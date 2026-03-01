@@ -47,6 +47,32 @@ struct ChatView: View {
                         .padding(.horizontal)
                 }
 
+                HStack {
+                    Menu {
+                        Button("Automatic") {
+                            appState.selectedSkillName = ""
+                        }
+                        if !appState.selectableSkillItems.isEmpty {
+                            Divider()
+                        }
+                        ForEach(appState.selectableSkillItems) { skill in
+                            Button(skill.name) {
+                                appState.selectedSkillName = skill.name
+                            }
+                        }
+                    } label: {
+                        Label(
+                            appState.selectedSkillName.isEmpty ? "Skill: Automatic" : "Skill: \(appState.selectedSkillName)",
+                            systemImage: "wand.and.stars"
+                        )
+                        .font(.subheadline)
+                    }
+                    .accessibilityIdentifier("skill-picker-menu")
+
+                    Spacer()
+                }
+                .padding(.horizontal)
+
                 HStack(spacing: 8) {
                     TextField("Send a message...", text: $appState.pendingMessage, axis: .vertical)
                         .textFieldStyle(.roundedBorder)
