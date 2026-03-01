@@ -442,25 +442,55 @@ public struct ChannelsConfig: Codable, Sendable, Equatable {
     public var discord: DiscordChannelConfig
     public var telegram: TelegramChannelConfig
     public var whatsappCloud: WhatsAppCloudChannelConfig
+    public var slack: SlackChannelConfig
+    public var googleChat: GoogleChatChannelConfig
+    public var signal: SignalChannelConfig
+    public var imessage: IMessageChannelConfig
+    public var msteams: MicrosoftTeamsChannelConfig
+    public var webchat: WebChatChannelConfig
 
     /// Creates channel config.
     /// - Parameter discord: Discord channel settings.
     /// - Parameter telegram: Telegram channel settings.
     /// - Parameter whatsappCloud: WhatsApp Cloud API channel settings.
+    /// - Parameter slack: Slack channel settings.
+    /// - Parameter googleChat: Google Chat channel settings.
+    /// - Parameter signal: Signal channel settings.
+    /// - Parameter imessage: iMessage channel settings.
+    /// - Parameter msteams: Microsoft Teams channel settings.
+    /// - Parameter webchat: WebChat channel settings.
     public init(
         discord: DiscordChannelConfig = DiscordChannelConfig(),
         telegram: TelegramChannelConfig = TelegramChannelConfig(),
-        whatsappCloud: WhatsAppCloudChannelConfig = WhatsAppCloudChannelConfig()
+        whatsappCloud: WhatsAppCloudChannelConfig = WhatsAppCloudChannelConfig(),
+        slack: SlackChannelConfig = SlackChannelConfig(),
+        googleChat: GoogleChatChannelConfig = GoogleChatChannelConfig(),
+        signal: SignalChannelConfig = SignalChannelConfig(),
+        imessage: IMessageChannelConfig = IMessageChannelConfig(),
+        msteams: MicrosoftTeamsChannelConfig = MicrosoftTeamsChannelConfig(),
+        webchat: WebChatChannelConfig = WebChatChannelConfig()
     ) {
         self.discord = discord
         self.telegram = telegram
         self.whatsappCloud = whatsappCloud
+        self.slack = slack
+        self.googleChat = googleChat
+        self.signal = signal
+        self.imessage = imessage
+        self.msteams = msteams
+        self.webchat = webchat
     }
 
     private enum CodingKeys: String, CodingKey {
         case discord
         case telegram
         case whatsappCloud
+        case slack
+        case googlechat
+        case signal
+        case imessage
+        case msteams
+        case webchat
     }
 
     public init(from decoder: Decoder) throws {
@@ -468,6 +498,12 @@ public struct ChannelsConfig: Codable, Sendable, Equatable {
         self.discord = try container.decodeIfPresent(DiscordChannelConfig.self, forKey: .discord) ?? DiscordChannelConfig()
         self.telegram = try container.decodeIfPresent(TelegramChannelConfig.self, forKey: .telegram) ?? TelegramChannelConfig()
         self.whatsappCloud = try container.decodeIfPresent(WhatsAppCloudChannelConfig.self, forKey: .whatsappCloud) ?? WhatsAppCloudChannelConfig()
+        self.slack = try container.decodeIfPresent(SlackChannelConfig.self, forKey: .slack) ?? SlackChannelConfig()
+        self.googleChat = try container.decodeIfPresent(GoogleChatChannelConfig.self, forKey: .googlechat) ?? GoogleChatChannelConfig()
+        self.signal = try container.decodeIfPresent(SignalChannelConfig.self, forKey: .signal) ?? SignalChannelConfig()
+        self.imessage = try container.decodeIfPresent(IMessageChannelConfig.self, forKey: .imessage) ?? IMessageChannelConfig()
+        self.msteams = try container.decodeIfPresent(MicrosoftTeamsChannelConfig.self, forKey: .msteams) ?? MicrosoftTeamsChannelConfig()
+        self.webchat = try container.decodeIfPresent(WebChatChannelConfig.self, forKey: .webchat) ?? WebChatChannelConfig()
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -475,6 +511,12 @@ public struct ChannelsConfig: Codable, Sendable, Equatable {
         try container.encode(self.discord, forKey: .discord)
         try container.encode(self.telegram, forKey: .telegram)
         try container.encode(self.whatsappCloud, forKey: .whatsappCloud)
+        try container.encode(self.slack, forKey: .slack)
+        try container.encode(self.googleChat, forKey: .googlechat)
+        try container.encode(self.signal, forKey: .signal)
+        try container.encode(self.imessage, forKey: .imessage)
+        try container.encode(self.msteams, forKey: .msteams)
+        try container.encode(self.webchat, forKey: .webchat)
     }
 }
 
@@ -645,6 +687,277 @@ public struct WhatsAppCloudChannelConfig: Codable, Sendable, Equatable {
         self.webhookPath = webhookPath
         self.baseURL = baseURL
         self.apiVersion = apiVersion
+    }
+}
+
+/// Slack adapter configuration.
+public struct SlackChannelConfig: Codable, Sendable, Equatable {
+    public var enabled: Bool
+    public var botToken: String?
+    public var appToken: String?
+    public var signingSecret: String?
+    public var defaultChannelID: String?
+    public var mentionOnly: Bool
+    public var baseURL: String
+
+    /// Creates Slack channel settings.
+    /// - Parameters:
+    ///   - enabled: Enables Slack adapter startup.
+    ///   - botToken: Slack Bot OAuth token.
+    ///   - appToken: Slack App-Level token for socket mode.
+    ///   - signingSecret: Slack signing secret for request validation.
+    ///   - defaultChannelID: Default channel ID for outbound sends.
+    ///   - mentionOnly: Limits processing to explicit bot mentions.
+    ///   - baseURL: Slack Web API base URL.
+    public init(
+        enabled: Bool = false,
+        botToken: String? = nil,
+        appToken: String? = nil,
+        signingSecret: String? = nil,
+        defaultChannelID: String? = nil,
+        mentionOnly: Bool = true,
+        baseURL: String = "https://slack.com/api"
+    ) {
+        self.enabled = enabled
+        self.botToken = botToken
+        self.appToken = appToken
+        self.signingSecret = signingSecret
+        self.defaultChannelID = defaultChannelID
+        self.mentionOnly = mentionOnly
+        self.baseURL = baseURL
+    }
+}
+
+/// Google Chat adapter configuration.
+public struct GoogleChatChannelConfig: Codable, Sendable, Equatable {
+    public var enabled: Bool
+    public var bearerToken: String?
+    public var verificationToken: String?
+    public var defaultSpaceID: String?
+    public var baseURL: String
+    public var webhookPath: String
+    public var pollIntervalMs: Int
+
+    /// Creates Google Chat channel settings.
+    /// - Parameters:
+    ///   - enabled: Enables Google Chat adapter startup.
+    ///   - bearerToken: Bot/service auth bearer token.
+    ///   - verificationToken: Optional token used to verify inbound calls.
+    ///   - defaultSpaceID: Default Google Chat space identifier.
+    ///   - baseURL: Google Chat API base URL.
+    ///   - webhookPath: Host webhook path for inbound events.
+    ///   - pollIntervalMs: Polling interval used for fallback polling paths.
+    public init(
+        enabled: Bool = false,
+        bearerToken: String? = nil,
+        verificationToken: String? = nil,
+        defaultSpaceID: String? = nil,
+        baseURL: String = "https://chat.googleapis.com/v1",
+        webhookPath: String = "/webhooks/googlechat",
+        pollIntervalMs: Int = 2_000
+    ) {
+        self.enabled = enabled
+        self.bearerToken = bearerToken
+        self.verificationToken = verificationToken
+        self.defaultSpaceID = defaultSpaceID
+        self.baseURL = baseURL
+        self.webhookPath = webhookPath
+        self.pollIntervalMs = max(250, pollIntervalMs)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled
+        case bearerToken
+        case verificationToken
+        case defaultSpaceID
+        case baseURL
+        case webhookPath
+        case pollIntervalMs
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+        self.bearerToken = try container.decodeIfPresent(String.self, forKey: .bearerToken)
+        self.verificationToken = try container.decodeIfPresent(String.self, forKey: .verificationToken)
+        self.defaultSpaceID = try container.decodeIfPresent(String.self, forKey: .defaultSpaceID)
+        self.baseURL = try container.decodeIfPresent(String.self, forKey: .baseURL) ?? "https://chat.googleapis.com/v1"
+        self.webhookPath = try container.decodeIfPresent(String.self, forKey: .webhookPath) ?? "/webhooks/googlechat"
+        let pollInterval = try container.decodeIfPresent(Int.self, forKey: .pollIntervalMs) ?? 2_000
+        self.pollIntervalMs = max(250, pollInterval)
+    }
+}
+
+/// Signal adapter configuration.
+public struct SignalChannelConfig: Codable, Sendable, Equatable {
+    public var enabled: Bool
+    public var serviceURL: String
+    public var accountID: String?
+    public var authToken: String?
+    public var defaultRecipient: String?
+    public var pollIntervalMs: Int
+
+    /// Creates Signal channel settings.
+    /// - Parameters:
+    ///   - enabled: Enables Signal adapter startup.
+    ///   - serviceURL: Signal bridge/service base URL.
+    ///   - accountID: Optional account identifier used by the bridge.
+    ///   - authToken: Optional auth token for bridge requests.
+    ///   - defaultRecipient: Default recipient when outbound peer is omitted.
+    ///   - pollIntervalMs: Poll interval used for inbound fetch loops.
+    public init(
+        enabled: Bool = false,
+        serviceURL: String = "http://127.0.0.1:8080",
+        accountID: String? = nil,
+        authToken: String? = nil,
+        defaultRecipient: String? = nil,
+        pollIntervalMs: Int = 2_000
+    ) {
+        self.enabled = enabled
+        self.serviceURL = serviceURL
+        self.accountID = accountID
+        self.authToken = authToken
+        self.defaultRecipient = defaultRecipient
+        self.pollIntervalMs = max(250, pollIntervalMs)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled
+        case serviceURL
+        case accountID
+        case authToken
+        case defaultRecipient
+        case pollIntervalMs
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+        self.serviceURL = try container.decodeIfPresent(String.self, forKey: .serviceURL) ?? "http://127.0.0.1:8080"
+        self.accountID = try container.decodeIfPresent(String.self, forKey: .accountID)
+        self.authToken = try container.decodeIfPresent(String.self, forKey: .authToken)
+        self.defaultRecipient = try container.decodeIfPresent(String.self, forKey: .defaultRecipient)
+        let pollInterval = try container.decodeIfPresent(Int.self, forKey: .pollIntervalMs) ?? 2_000
+        self.pollIntervalMs = max(250, pollInterval)
+    }
+}
+
+/// iMessage adapter configuration.
+public struct IMessageChannelConfig: Codable, Sendable, Equatable {
+    public var enabled: Bool
+    public var bundleIdentifier: String?
+    public var defaultHandle: String?
+    public var allowUnsupportedPlatformSimulation: Bool
+
+    /// Creates iMessage channel settings.
+    /// - Parameters:
+    ///   - enabled: Enables iMessage adapter startup.
+    ///   - bundleIdentifier: Optional bundle identifier for host integration.
+    ///   - defaultHandle: Optional default iMessage handle.
+    ///   - allowUnsupportedPlatformSimulation: Enables simulated mode on unsupported platforms.
+    public init(
+        enabled: Bool = false,
+        bundleIdentifier: String? = nil,
+        defaultHandle: String? = nil,
+        allowUnsupportedPlatformSimulation: Bool = false
+    ) {
+        self.enabled = enabled
+        self.bundleIdentifier = bundleIdentifier
+        self.defaultHandle = defaultHandle
+        self.allowUnsupportedPlatformSimulation = allowUnsupportedPlatformSimulation
+    }
+}
+
+/// Microsoft Teams adapter configuration.
+public struct MicrosoftTeamsChannelConfig: Codable, Sendable, Equatable {
+    public var enabled: Bool
+    public var botAppID: String?
+    public var botAppPassword: String?
+    public var tenantID: String?
+    public var defaultConversationID: String?
+    public var serviceURL: String
+    public var mentionOnly: Bool
+
+    /// Creates Microsoft Teams channel settings.
+    /// - Parameters:
+    ///   - enabled: Enables Microsoft Teams adapter startup.
+    ///   - botAppID: Bot App ID for Teams/Bot Framework auth.
+    ///   - botAppPassword: Bot App password/secret.
+    ///   - tenantID: Optional Microsoft Entra tenant ID.
+    ///   - defaultConversationID: Default conversation target.
+    ///   - serviceURL: Bot Framework service endpoint.
+    ///   - mentionOnly: Limits processing to explicit bot mentions.
+    public init(
+        enabled: Bool = false,
+        botAppID: String? = nil,
+        botAppPassword: String? = nil,
+        tenantID: String? = nil,
+        defaultConversationID: String? = nil,
+        serviceURL: String = "https://smba.trafficmanager.net/teams/",
+        mentionOnly: Bool = true
+    ) {
+        self.enabled = enabled
+        self.botAppID = botAppID
+        self.botAppPassword = botAppPassword
+        self.tenantID = tenantID
+        self.defaultConversationID = defaultConversationID
+        self.serviceURL = serviceURL
+        self.mentionOnly = mentionOnly
+    }
+}
+
+/// Production WebChat adapter configuration.
+public struct WebChatChannelConfig: Codable, Sendable, Equatable {
+    public var enabled: Bool
+    public var host: String
+    public var port: Int
+    public var webhookPath: String
+    public var sharedSecret: String?
+    public var transcriptLimit: Int
+
+    /// Creates WebChat channel settings.
+    /// - Parameters:
+    ///   - enabled: Enables WebChat adapter startup.
+    ///   - host: Hostname/interface WebChat server binds to.
+    ///   - port: Port WebChat server listens on.
+    ///   - webhookPath: Inbound webhook path.
+    ///   - sharedSecret: Optional shared secret for request validation.
+    ///   - transcriptLimit: Max in-memory transcript messages per session.
+    public init(
+        enabled: Bool = false,
+        host: String = "127.0.0.1",
+        port: Int = 3_001,
+        webhookPath: String = "/webhooks/webchat",
+        sharedSecret: String? = nil,
+        transcriptLimit: Int = 200
+    ) {
+        self.enabled = enabled
+        self.host = host
+        self.port = min(max(1, port), 65_535)
+        self.webhookPath = webhookPath
+        self.sharedSecret = sharedSecret
+        self.transcriptLimit = max(10, transcriptLimit)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled
+        case host
+        case port
+        case webhookPath
+        case sharedSecret
+        case transcriptLimit
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+        self.host = try container.decodeIfPresent(String.self, forKey: .host) ?? "127.0.0.1"
+        let port = try container.decodeIfPresent(Int.self, forKey: .port) ?? 3_001
+        self.port = min(max(1, port), 65_535)
+        self.webhookPath = try container.decodeIfPresent(String.self, forKey: .webhookPath) ?? "/webhooks/webchat"
+        self.sharedSecret = try container.decodeIfPresent(String.self, forKey: .sharedSecret)
+        let transcriptLimit = try container.decodeIfPresent(Int.self, forKey: .transcriptLimit) ?? 200
+        self.transcriptLimit = max(10, transcriptLimit)
     }
 }
 

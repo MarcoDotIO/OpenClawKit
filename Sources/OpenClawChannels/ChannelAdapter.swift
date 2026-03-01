@@ -10,9 +10,11 @@ public enum ChannelID: String, CaseIterable, Sendable {
     case whatsapp
     case telegram
     case slack
+    case googlechat
     case discord
     case signal
     case imessage
+    case msteams
     case line
     case webchat
 }

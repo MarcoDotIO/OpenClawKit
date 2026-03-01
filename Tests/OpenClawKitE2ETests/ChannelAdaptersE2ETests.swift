@@ -71,10 +71,13 @@ struct ChannelAdaptersE2ETests {
         #expect(ids.contains("whatsapp"))
         #expect(ids.contains("telegram"))
         #expect(ids.contains("slack"))
+        #expect(ids.contains("googlechat"))
         #expect(ids.contains("discord"))
         #expect(ids.contains("signal"))
         #expect(ids.contains("imessage"))
+        #expect(ids.contains("msteams"))
         #expect(ids.contains("line"))
+        #expect(ids.contains("webchat"))
     }
 
     @Test

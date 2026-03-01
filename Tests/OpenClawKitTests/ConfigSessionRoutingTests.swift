@@ -43,6 +43,12 @@ struct ConfigSessionRoutingTests {
         #expect(decoded.channels.telegram.baseURL == "https://api.telegram.org")
         #expect(decoded.channels.whatsappCloud.enabled == false)
         #expect(decoded.channels.whatsappCloud.apiVersion == "v20.0")
+        #expect(decoded.channels.slack.enabled == false)
+        #expect(decoded.channels.googleChat.webhookPath == "/webhooks/googlechat")
+        #expect(decoded.channels.signal.serviceURL == "http://127.0.0.1:8080")
+        #expect(decoded.channels.imessage.allowUnsupportedPlatformSimulation == false)
+        #expect(decoded.channels.msteams.serviceURL == "https://smba.trafficmanager.net/teams/")
+        #expect(decoded.channels.webchat.port == 3_001)
     }
 
     @Test
@@ -62,6 +68,49 @@ struct ConfigSessionRoutingTests {
                     accessToken: "wa-token",
                     phoneNumberID: "pnid",
                     webhookVerifyToken: "verify-token"
+                ),
+                slack: SlackChannelConfig(
+                    enabled: true,
+                    botToken: "xoxb-token",
+                    appToken: "xapp-token",
+                    signingSecret: "slack-signing-secret",
+                    defaultChannelID: "C123",
+                    mentionOnly: false
+                ),
+                googleChat: GoogleChatChannelConfig(
+                    enabled: true,
+                    bearerToken: "googlechat-token",
+                    verificationToken: "verify-googlechat",
+                    defaultSpaceID: "spaces/AAA",
+                    pollIntervalMs: 3_000
+                ),
+                signal: SignalChannelConfig(
+                    enabled: true,
+                    accountID: "+15551234",
+                    authToken: "signal-token",
+                    defaultRecipient: "+15557654",
+                    pollIntervalMs: 1_500
+                ),
+                imessage: IMessageChannelConfig(
+                    enabled: true,
+                    bundleIdentifier: "io.marcodotio.OpenClawKit",
+                    defaultHandle: "user@icloud.com",
+                    allowUnsupportedPlatformSimulation: true
+                ),
+                msteams: MicrosoftTeamsChannelConfig(
+                    enabled: true,
+                    botAppID: "ms-app-id",
+                    botAppPassword: "ms-app-password",
+                    tenantID: "tenant-id",
+                    defaultConversationID: "conversation-id",
+                    mentionOnly: false
+                ),
+                webchat: WebChatChannelConfig(
+                    enabled: true,
+                    host: "0.0.0.0",
+                    port: 4_040,
+                    sharedSecret: "webchat-shared-secret",
+                    transcriptLimit: 500
                 )
             )
         )
@@ -71,6 +120,12 @@ struct ConfigSessionRoutingTests {
         #expect(decoded.channels.telegram.defaultChatID == "456")
         #expect(decoded.channels.whatsappCloud.enabled == true)
         #expect(decoded.channels.whatsappCloud.phoneNumberID == "pnid")
+        #expect(decoded.channels.slack.defaultChannelID == "C123")
+        #expect(decoded.channels.googleChat.defaultSpaceID == "spaces/AAA")
+        #expect(decoded.channels.signal.defaultRecipient == "+15557654")
+        #expect(decoded.channels.imessage.defaultHandle == "user@icloud.com")
+        #expect(decoded.channels.msteams.defaultConversationID == "conversation-id")
+        #expect(decoded.channels.webchat.transcriptLimit == 500)
     }
 
     @Test
