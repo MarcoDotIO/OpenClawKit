@@ -7,6 +7,7 @@ public struct OpenClawConfig: Codable, Sendable, Equatable {
     public var channels: ChannelsConfig
     public var routing: RoutingConfig
     public var models: ModelsConfig
+    public var runtime: RuntimeConfig
 
     /// Creates an OpenClaw runtime configuration.
     /// - Parameters:
@@ -20,13 +21,15 @@ public struct OpenClawConfig: Codable, Sendable, Equatable {
         agents: AgentsConfig = AgentsConfig(),
         channels: ChannelsConfig = ChannelsConfig(),
         routing: RoutingConfig = RoutingConfig(),
-        models: ModelsConfig = ModelsConfig()
+        models: ModelsConfig = ModelsConfig(),
+        runtime: RuntimeConfig = RuntimeConfig()
     ) {
         self.gateway = gateway
         self.agents = agents
         self.channels = channels
         self.routing = routing
         self.models = models
+        self.runtime = runtime
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -35,6 +38,7 @@ public struct OpenClawConfig: Codable, Sendable, Equatable {
         case channels
         case routing
         case models
+        case runtime
     }
 
     public init(from decoder: Decoder) throws {
@@ -44,6 +48,7 @@ public struct OpenClawConfig: Codable, Sendable, Equatable {
         self.channels = try container.decodeIfPresent(ChannelsConfig.self, forKey: .channels) ?? ChannelsConfig()
         self.routing = try container.decodeIfPresent(RoutingConfig.self, forKey: .routing) ?? RoutingConfig()
         self.models = try container.decodeIfPresent(ModelsConfig.self, forKey: .models) ?? ModelsConfig()
+        self.runtime = try container.decodeIfPresent(RuntimeConfig.self, forKey: .runtime) ?? RuntimeConfig()
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -53,6 +58,156 @@ public struct OpenClawConfig: Codable, Sendable, Equatable {
         try container.encode(self.channels, forKey: .channels)
         try container.encode(self.routing, forKey: .routing)
         try container.encode(self.models, forKey: .models)
+        try container.encode(self.runtime, forKey: .runtime)
+    }
+}
+
+/// Runtime behavior controls for replay and adaptive routing.
+public struct RuntimeConfig: Codable, Sendable, Equatable {
+    public var schemaVersion: Int
+    public var replay: ReplayConfig
+    public var adaptiveRouting: AdaptiveRoutingConfig
+
+    /// Creates runtime behavior settings.
+    /// - Parameters:
+    ///   - schemaVersion: Runtime config schema version.
+    ///   - replay: Replay event/capture settings.
+    ///   - adaptiveRouting: Adaptive model routing settings.
+    public init(
+        schemaVersion: Int = ReplayEvent.currentSchemaVersion,
+        replay: ReplayConfig = ReplayConfig(),
+        adaptiveRouting: AdaptiveRoutingConfig = AdaptiveRoutingConfig()
+    ) {
+        self.schemaVersion = max(1, schemaVersion)
+        self.replay = replay
+        self.adaptiveRouting = adaptiveRouting
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case replay
+        case adaptiveRouting
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.schemaVersion = max(
+            1,
+            try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? ReplayEvent.currentSchemaVersion
+        )
+        self.replay = try container.decodeIfPresent(ReplayConfig.self, forKey: .replay) ?? ReplayConfig()
+        self.adaptiveRouting = try container.decodeIfPresent(
+            AdaptiveRoutingConfig.self,
+            forKey: .adaptiveRouting
+        ) ?? AdaptiveRoutingConfig()
+    }
+}
+
+/// Replay capture controls.
+public struct ReplayConfig: Codable, Sendable, Equatable {
+    public var enabled: Bool
+    public var persistToDisk: Bool
+    public var maxInMemoryEvents: Int
+    public var storePath: String?
+    public var signEvents: Bool
+
+    /// Creates replay settings.
+    /// - Parameters:
+    ///   - enabled: Enables replay event capture.
+    ///   - persistToDisk: Persists replay events to file-backed storage.
+    ///   - maxInMemoryEvents: Maximum replay events retained in memory.
+    ///   - storePath: Optional custom replay store path.
+    ///   - signEvents: Enables event signing.
+    public init(
+        enabled: Bool = false,
+        persistToDisk: Bool = true,
+        maxInMemoryEvents: Int = 10_000,
+        storePath: String? = nil,
+        signEvents: Bool = false
+    ) {
+        self.enabled = enabled
+        self.persistToDisk = persistToDisk
+        self.maxInMemoryEvents = max(1, maxInMemoryEvents)
+        self.storePath = storePath
+        self.signEvents = signEvents
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled
+        case persistToDisk
+        case maxInMemoryEvents
+        case storePath
+        case signEvents
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+        self.persistToDisk = try container.decodeIfPresent(Bool.self, forKey: .persistToDisk) ?? true
+        self.maxInMemoryEvents = max(1, try container.decodeIfPresent(Int.self, forKey: .maxInMemoryEvents) ?? 10_000)
+        self.storePath = try container.decodeIfPresent(String.self, forKey: .storePath)
+        self.signEvents = try container.decodeIfPresent(Bool.self, forKey: .signEvents) ?? false
+    }
+}
+
+/// Optimization objective for adaptive routing policy.
+public enum AdaptiveRoutingObjective: String, Codable, Sendable, Equatable, CaseIterable {
+    case balanced
+    case latency
+    case cost
+    case quality
+}
+
+/// Runtime adaptive model routing controls.
+public struct AdaptiveRoutingConfig: Codable, Sendable, Equatable {
+    public var enabled: Bool
+    public var minSamplesPerProvider: Int
+    public var explorationRate: Double
+    public var decisionWindow: Int
+    public var objective: AdaptiveRoutingObjective
+
+    /// Creates adaptive routing settings.
+    /// - Parameters:
+    ///   - enabled: Enables adaptive provider ordering.
+    ///   - minSamplesPerProvider: Minimum samples before hard ranking.
+    ///   - explorationRate: Probability of non-greedy exploration (`0...1`).
+    ///   - decisionWindow: Number of recent calls considered for scoring.
+    ///   - objective: Optimization objective.
+    public init(
+        enabled: Bool = false,
+        minSamplesPerProvider: Int = 20,
+        explorationRate: Double = 0.05,
+        decisionWindow: Int = 500,
+        objective: AdaptiveRoutingObjective = .balanced
+    ) {
+        self.enabled = enabled
+        self.minSamplesPerProvider = max(1, minSamplesPerProvider)
+        self.explorationRate = min(max(0, explorationRate), 1)
+        self.decisionWindow = max(1, decisionWindow)
+        self.objective = objective
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled
+        case minSamplesPerProvider
+        case explorationRate
+        case decisionWindow
+        case objective
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+        self.minSamplesPerProvider = max(
+            1,
+            try container.decodeIfPresent(Int.self, forKey: .minSamplesPerProvider) ?? 20
+        )
+        self.explorationRate = min(
+            max(0, try container.decodeIfPresent(Double.self, forKey: .explorationRate) ?? 0.05),
+            1
+        )
+        self.decisionWindow = max(1, try container.decodeIfPresent(Int.self, forKey: .decisionWindow) ?? 500)
+        self.objective = try container.decodeIfPresent(AdaptiveRoutingObjective.self, forKey: .objective) ?? .balanced
     }
 }
 

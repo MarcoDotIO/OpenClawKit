@@ -105,6 +105,51 @@ struct ConfigSessionRoutingTests {
     }
 
     @Test
+    func runtimeConfigDefaultsLoadWhenFieldsMissing() throws {
+        let legacyJSON = """
+        {
+          "gateway": {
+            "host": "127.0.0.1",
+            "port": 18789,
+            "authMode": "token"
+          }
+        }
+        """
+        let decoded = try JSONDecoder().decode(OpenClawConfig.self, from: Data(legacyJSON.utf8))
+        #expect(decoded.runtime.schemaVersion == ReplayEvent.currentSchemaVersion)
+        #expect(decoded.runtime.replay.enabled == false)
+        #expect(decoded.runtime.replay.persistToDisk == true)
+        #expect(decoded.runtime.adaptiveRouting.enabled == false)
+        #expect(decoded.runtime.adaptiveRouting.objective == .balanced)
+    }
+
+    @Test
+    func runtimeConfigRoundTripsReplayAndAdaptiveRouting() throws {
+        let config = OpenClawConfig(
+            runtime: RuntimeConfig(
+                schemaVersion: 3,
+                replay: ReplayConfig(
+                    enabled: true,
+                    persistToDisk: true,
+                    maxInMemoryEvents: 5_000,
+                    storePath: "/tmp/openclaw/replay.jsonl",
+                    signEvents: true
+                ),
+                adaptiveRouting: AdaptiveRoutingConfig(
+                    enabled: true,
+                    minSamplesPerProvider: 15,
+                    explorationRate: 0.12,
+                    decisionWindow: 750,
+                    objective: .quality
+                )
+            )
+        )
+        let encoded = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(OpenClawConfig.self, from: encoded)
+        #expect(decoded.runtime == config.runtime)
+    }
+
+    @Test
     func configStoreCacheCanBeCleared() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("openclawkit-config-cache-tests", isDirectory: true)

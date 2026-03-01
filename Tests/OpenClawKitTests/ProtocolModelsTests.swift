@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+@testable import OpenClawCore
 @testable import OpenClawProtocol
 
 @Suite("Protocol models")
@@ -49,6 +50,42 @@ struct ProtocolModelsTests {
         default:
             Issue.record("Expected .res frame")
         }
+    }
+
+    @Test
+    func replayEventEnvelopeRoundTripMaintainsSchemaContract() throws {
+        let event = ReplayEvent(
+            schemaVersion: 1,
+            eventID: UUID(uuidString: "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF")!,
+            sequenceNumber: 42,
+            subsystem: "runtime",
+            name: "run.completed",
+            runID: "run-123",
+            sessionKey: "session-main",
+            occurredAt: Date(timeIntervalSince1970: 1_234_567),
+            metadata: [
+                "providerID": "openai",
+                "latencyMs": "122",
+            ],
+            payload: AnyCodable([
+                "usage": AnyCodable(["totalTokens": AnyCodable(98)]),
+            ])
+        )
+        let envelope = ReplayEventEnvelope(
+            event: event,
+            previousEventHash: "aa",
+            eventHash: "bb",
+            signature: ReplayEventSignature(
+                algorithm: "secp256r1-sha256",
+                keyID: "device-key-1",
+                value: "ZmFrZS1zaWduYXR1cmU="
+            ),
+            recordedAt: Date(timeIntervalSince1970: 1_234_568)
+        )
+
+        let encoded = try JSONEncoder().encode(envelope)
+        let decoded = try JSONDecoder().decode(ReplayEventEnvelope.self, from: encoded)
+        #expect(decoded == envelope)
     }
 }
 
