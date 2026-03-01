@@ -7,9 +7,9 @@ struct DeployOpenClawIntent: AppIntent {
     static let openAppWhenRun: Bool = true
 
     @MainActor
-    func perform() async throws -> some IntentResult {
-        _ = await OpenClawIntentBridge.shared.deployFromIntent()
-        return .result()
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        let status = await OpenClawIntentBridge.shared.deployFromIntent()
+        return .result(dialog: IntentDialog(stringLiteral: status))
     }
 }
 
@@ -20,9 +20,9 @@ struct StopOpenClawIntent: AppIntent {
     static let openAppWhenRun: Bool = true
 
     @MainActor
-    func perform() async throws -> some IntentResult {
-        _ = await OpenClawIntentBridge.shared.stopFromIntent()
-        return .result()
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        let status = await OpenClawIntentBridge.shared.stopFromIntent()
+        return .result(dialog: IntentDialog(stringLiteral: status))
     }
 }
 
@@ -35,14 +35,46 @@ struct QuickAskOpenClawIntent: AppIntent {
     @Parameter(title: "Prompt")
     var prompt: String
 
+    @Parameter(title: "Focus Node Kind")
+    var focusNode: IntentGraphNodeKindEntity?
+
     static var parameterSummary: some ParameterSummary {
         Summary("Ask OpenClaw: \(\.$prompt)")
     }
 
     @MainActor
-    func perform() async throws -> some IntentResult {
-        _ = await OpenClawIntentBridge.shared.quickAskFromIntent(self.prompt)
-        return .result()
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        let status = await OpenClawIntentBridge.shared.quickAskFromIntent(
+            self.prompt,
+            focusNodeKind: self.focusNode?.kind.protocolKind
+        )
+        return .result(dialog: IntentDialog(stringLiteral: status))
+    }
+}
+
+/// Builds a graph preview for a prompt without executing model generation.
+struct PreviewOpenClawIntentGraphIntent: AppIntent {
+    static let title: LocalizedStringResource = "Preview OpenClaw Intent Graph"
+    static let description = IntentDescription("Preview the SDK intent graph that would be used for a prompt.")
+    static let openAppWhenRun: Bool = true
+
+    @Parameter(title: "Prompt")
+    var prompt: String
+
+    @Parameter(title: "Focus Node Kind")
+    var focusNode: IntentGraphNodeKindEntity?
+
+    static var parameterSummary: some ParameterSummary {
+        Summary("Preview OpenClaw graph for \(\.$prompt)")
+    }
+
+    @MainActor
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        let summary = await OpenClawIntentBridge.shared.previewIntentGraphFromIntent(
+            self.prompt,
+            focusNodeKind: self.focusNode?.kind.protocolKind
+        )
+        return .result(dialog: IntentDialog(stringLiteral: summary))
     }
 }
 
@@ -74,6 +106,15 @@ struct OpenClawAppShortcuts: AppShortcutsProvider {
             ],
             shortTitle: "Quick Ask",
             systemImageName: "message"
+        )
+        AppShortcut(
+            intent: PreviewOpenClawIntentGraphIntent(),
+            phrases: [
+                "Preview \(.applicationName) intent graph",
+                "Show \(.applicationName) graph plan",
+            ],
+            shortTitle: "Preview Graph",
+            systemImageName: "point.bottomleft.forward.to.point.topright.scurvepath"
         )
     }
 }
