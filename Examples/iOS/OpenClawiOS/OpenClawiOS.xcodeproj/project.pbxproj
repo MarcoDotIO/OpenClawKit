@@ -12,6 +12,8 @@
 
 /* Begin PBXFileReference section */
 		7D9B58E52F42716400D0476B /* OpenClawiOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OpenClawiOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		7D9B59312F5F000000D0476B /* OpenClawiOSTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = OpenClawiOSTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		7D9B59322F5F000000D0476B /* OpenClawiOSUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = OpenClawiOSUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		7D9B590E2F4272F600D0476B /* OpenClawKit */ = {isa = PBXFileReference; lastKnownFileType = wrapper; name = OpenClawKit; path = ../../..; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -21,12 +23,39 @@
 			path = OpenClawiOS;
 			sourceTree = "<group>";
 		};
+		7D9B59332F5F000000D0476B /* OpenClawiOSTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = OpenClawiOSTests;
+			sourceTree = "<group>";
+		};
+		7D9B59342F5F000000D0476B /* OpenClawiOSUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = OpenClawiOSUITests;
+			sourceTree = "<group>";
+		};
 		7D9B59212F5A8A8800D0476B /* skills */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = skills;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXContainerItemProxy section */
+		7D9B593D2F5F000000D0476B /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 7D9B58DD2F42716400D0476B /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 7D9B58E42F42716400D0476B;
+			remoteInfo = OpenClawiOS;
+		};
+		7D9B593E2F5F000000D0476B /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 7D9B58DD2F42716400D0476B /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 7D9B58E42F42716400D0476B;
+			remoteInfo = OpenClawiOS;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		7D9B58E22F42716400D0476B /* Frameworks */ = {
@@ -37,6 +66,20 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		7D9B59362F5F000000D0476B /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		7D9B59392F5F000000D0476B /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -44,6 +87,8 @@
 			isa = PBXGroup;
 			children = (
 				7D9B58E72F42716400D0476B /* OpenClawiOS */,
+				7D9B59332F5F000000D0476B /* OpenClawiOSTests */,
+				7D9B59342F5F000000D0476B /* OpenClawiOSUITests */,
 				7D9B59212F5A8A8800D0476B /* skills */,
 				7D9B590D2F4272F600D0476B /* Frameworks */,
 				7D9B58E62F42716400D0476B /* Products */,
@@ -54,6 +99,8 @@
 			isa = PBXGroup;
 			children = (
 				7D9B58E52F42716400D0476B /* OpenClawiOS.app */,
+				7D9B59312F5F000000D0476B /* OpenClawiOSTests.xctest */,
+				7D9B59322F5F000000D0476B /* OpenClawiOSUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -93,6 +140,52 @@
 			productReference = 7D9B58E52F42716400D0476B /* OpenClawiOS.app */;
 			productType = "com.apple.product-type.application";
 		};
+		7D9B593B2F5F000000D0476B /* OpenClawiOSTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 7D9B59452F5F000000D0476B /* Build configuration list for PBXNativeTarget "OpenClawiOSTests" */;
+			buildPhases = (
+				7D9B59352F5F000000D0476B /* Sources */,
+				7D9B59362F5F000000D0476B /* Frameworks */,
+				7D9B59372F5F000000D0476B /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				7D9B593F2F5F000000D0476B /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				7D9B59332F5F000000D0476B /* OpenClawiOSTests */,
+			);
+			name = OpenClawiOSTests;
+			packageProductDependencies = (
+			);
+			productName = OpenClawiOSTests;
+			productReference = 7D9B59312F5F000000D0476B /* OpenClawiOSTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		7D9B593C2F5F000000D0476B /* OpenClawiOSUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 7D9B59462F5F000000D0476B /* Build configuration list for PBXNativeTarget "OpenClawiOSUITests" */;
+			buildPhases = (
+				7D9B59382F5F000000D0476B /* Sources */,
+				7D9B59392F5F000000D0476B /* Frameworks */,
+				7D9B593A2F5F000000D0476B /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				7D9B59402F5F000000D0476B /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				7D9B59342F5F000000D0476B /* OpenClawiOSUITests */,
+			);
+			name = OpenClawiOSUITests;
+			packageProductDependencies = (
+			);
+			productName = OpenClawiOSUITests;
+			productReference = 7D9B59322F5F000000D0476B /* OpenClawiOSUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -105,6 +198,14 @@
 				TargetAttributes = {
 					7D9B58E42F42716400D0476B = {
 						CreatedOnToolsVersion = 26.2;
+					};
+					7D9B593B2F5F000000D0476B = {
+						CreatedOnToolsVersion = 26.2;
+						TestTargetID = 7D9B58E42F42716400D0476B;
+					};
+					7D9B593C2F5F000000D0476B = {
+						CreatedOnToolsVersion = 26.2;
+						TestTargetID = 7D9B58E42F42716400D0476B;
 					};
 				};
 			};
@@ -126,6 +227,8 @@
 			projectRoot = "";
 			targets = (
 				7D9B58E42F42716400D0476B /* OpenClawiOS */,
+				7D9B593B2F5F000000D0476B /* OpenClawiOSTests */,
+				7D9B593C2F5F000000D0476B /* OpenClawiOSUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -138,10 +241,51 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		7D9B59372F5F000000D0476B /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		7D9B593A2F5F000000D0476B /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		7D9B593F2F5F000000D0476B /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 7D9B58E42F42716400D0476B /* OpenClawiOS */;
+			targetProxy = 7D9B593D2F5F000000D0476B /* PBXContainerItemProxy */;
+		};
+		7D9B59402F5F000000D0476B /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 7D9B58E42F42716400D0476B /* OpenClawiOS */;
+			targetProxy = 7D9B593E2F5F000000D0476B /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin PBXSourcesBuildPhase section */
 		7D9B58E12F42716400D0476B /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		7D9B59352F5F000000D0476B /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		7D9B59382F5F000000D0476B /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -359,6 +503,112 @@
 			};
 			name = Release;
 		};
+		7D9B59412F5F000000D0476B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 8GNE6ML5WX;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				CLANG_TREAT_WARNINGS_AS_ERRORS = YES;
+				GCC_TREAT_WARNINGS_AS_ERRORS = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = io.marcodotio.OpenClawiOSTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_TREAT_WARNINGS_AS_ERRORS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/OpenClawiOS.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/OpenClawiOS";
+			};
+			name = Debug;
+		};
+		7D9B59422F5F000000D0476B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 8GNE6ML5WX;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				CLANG_TREAT_WARNINGS_AS_ERRORS = YES;
+				GCC_TREAT_WARNINGS_AS_ERRORS = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = io.marcodotio.OpenClawiOSTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_TREAT_WARNINGS_AS_ERRORS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/OpenClawiOS.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/OpenClawiOS";
+			};
+			name = Release;
+		};
+		7D9B59432F5F000000D0476B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 8GNE6ML5WX;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				CLANG_TREAT_WARNINGS_AS_ERRORS = YES;
+				GCC_TREAT_WARNINGS_AS_ERRORS = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = io.marcodotio.OpenClawiOSUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_TREAT_WARNINGS_AS_ERRORS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = OpenClawiOS;
+			};
+			name = Debug;
+		};
+		7D9B59442F5F000000D0476B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 8GNE6ML5WX;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				CLANG_TREAT_WARNINGS_AS_ERRORS = YES;
+				GCC_TREAT_WARNINGS_AS_ERRORS = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = io.marcodotio.OpenClawiOSUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_TREAT_WARNINGS_AS_ERRORS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = OpenClawiOS;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -376,6 +626,24 @@
 			buildConfigurations = (
 				7D9B58F12F42716600D0476B /* Debug */,
 				7D9B58F22F42716600D0476B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		7D9B59452F5F000000D0476B /* Build configuration list for PBXNativeTarget "OpenClawiOSTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				7D9B59412F5F000000D0476B /* Debug */,
+				7D9B59422F5F000000D0476B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		7D9B59462F5F000000D0476B /* Build configuration list for PBXNativeTarget "OpenClawiOSUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				7D9B59432F5F000000D0476B /* Debug */,
+				7D9B59442F5F000000D0476B /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
