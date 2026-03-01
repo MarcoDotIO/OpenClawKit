@@ -235,6 +235,7 @@ public actor ModelRouter {
     private var throttlePolicy: ModelProviderThrottlePolicy
     private var requestTimestampsByProvider: [String: [Date]] = [:]
     private let diagnosticsSink: RuntimeDiagnosticSink?
+    private var adaptivePolicy: AdaptiveRoutingPolicy?
 
     /// Creates a model router.
     /// - Parameters:
@@ -244,7 +245,8 @@ public actor ModelRouter {
         defaultProviderID: String = EchoModelProvider.defaultID,
         providers: [any ModelProvider] = [EchoModelProvider()],
         throttlePolicy: ModelProviderThrottlePolicy = ModelProviderThrottlePolicy(),
-        diagnosticsSink: RuntimeDiagnosticSink? = nil
+        diagnosticsSink: RuntimeDiagnosticSink? = nil,
+        adaptiveRoutingConfig: AdaptiveRoutingConfig? = nil
     ) {
         var map: [String: any ModelProvider] = [:]
         for provider in providers {
@@ -259,6 +261,11 @@ public actor ModelRouter {
         self.providers = map
         self.throttlePolicy = throttlePolicy
         self.diagnosticsSink = diagnosticsSink
+        if let adaptiveRoutingConfig, adaptiveRoutingConfig.enabled {
+            self.adaptivePolicy = AdaptiveRoutingPolicy(config: adaptiveRoutingConfig)
+        } else {
+            self.adaptivePolicy = nil
+        }
     }
 
     /// Registers or replaces a provider.
@@ -282,6 +289,26 @@ public actor ModelRouter {
         self.throttlePolicy = policy
     }
 
+    /// Enables or disables adaptive routing policy.
+    /// - Parameter config: Adaptive routing configuration.
+    public func setAdaptiveRoutingConfig(_ config: AdaptiveRoutingConfig?) {
+        guard let config, config.enabled else {
+            self.adaptivePolicy = nil
+            return
+        }
+        self.adaptivePolicy = AdaptiveRoutingPolicy(config: config)
+    }
+
+    /// Returns a snapshot of adaptive routing scores.
+    /// - Parameter candidateProviderIDs: Optional subset of providers for ranking.
+    public func adaptiveRoutingSnapshot(candidateProviderIDs: [String]? = nil) -> AdaptiveRoutingSnapshot? {
+        guard let adaptivePolicy else {
+            return nil
+        }
+        let candidates = (candidateProviderIDs ?? self.providers.keys.sorted()).filter { !$0.isEmpty }
+        return adaptivePolicy.snapshot(for: candidates)
+    }
+
     /// Returns configured provider identifiers sorted alphabetically.
     public func configuredProviderIDs() -> [String] {
         self.providers.keys.sorted()
@@ -297,10 +324,26 @@ public actor ModelRouter {
             guard let provider = self.providers[providerID] else {
                 continue
             }
+            let startedAt = Date()
             do {
                 try await self.applyThrottleIfNeeded(providerID: providerID)
-                return try await provider.generate(request)
+                let response = try await provider.generate(request)
+                let latencyMs = max(0, Int(Date().timeIntervalSince(startedAt) * 1000))
+                self.recordAdaptiveObservation(
+                    providerID: providerID,
+                    succeeded: true,
+                    latencyMs: latencyMs,
+                    metadata: request.metadata
+                )
+                return response
             } catch {
+                let latencyMs = max(0, Int(Date().timeIntervalSince(startedAt) * 1000))
+                self.recordAdaptiveObservation(
+                    providerID: providerID,
+                    succeeded: false,
+                    latencyMs: latencyMs,
+                    metadata: request.metadata
+                )
                 lastError = error
                 if let nextProviderID = self.nextAvailableProviderID(after: index, in: orderedProviderIDs) {
                     await self.emitDiagnostic(
@@ -332,10 +375,26 @@ public actor ModelRouter {
             guard let provider = self.providers[providerID] else {
                 continue
             }
+            let startedAt = Date()
             do {
                 try await self.applyThrottleIfNeeded(providerID: providerID)
-                return await provider.generateStream(request)
+                let stream = await provider.generateStream(request)
+                let latencyMs = max(0, Int(Date().timeIntervalSince(startedAt) * 1000))
+                self.recordAdaptiveObservation(
+                    providerID: providerID,
+                    succeeded: true,
+                    latencyMs: latencyMs,
+                    metadata: request.metadata
+                )
+                return stream
             } catch {
+                let latencyMs = max(0, Int(Date().timeIntervalSince(startedAt) * 1000))
+                self.recordAdaptiveObservation(
+                    providerID: providerID,
+                    succeeded: false,
+                    latencyMs: latencyMs,
+                    metadata: request.metadata
+                )
                 lastError = error
                 if let nextProviderID = self.nextAvailableProviderID(after: index, in: orderedProviderIDs) {
                     await self.emitDiagnostic(
@@ -462,6 +521,57 @@ public actor ModelRouter {
         appendProviderList(request.metadata["fallbackProviderID"])
         appendProviderList(request.metadata["fallbackProviderIDs"])
         appendProviderID(self.defaultProviderID)
-        return orderedIDs
+
+        guard let adaptivePolicy else {
+            return orderedIDs
+        }
+
+        let explicitProvider = request.providerID?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let explicitProvider, !explicitProvider.isEmpty {
+            let tail = orderedIDs.filter { $0 != explicitProvider }
+            let rankedTail = adaptivePolicy.rankedProviderIDs(from: tail)
+            return [explicitProvider] + rankedTail
+        }
+        return adaptivePolicy.rankedProviderIDs(from: orderedIDs)
+    }
+
+    private func recordAdaptiveObservation(
+        providerID: String,
+        succeeded: Bool,
+        latencyMs: Int,
+        metadata: [String: String]
+    ) {
+        guard self.adaptivePolicy != nil else {
+            return
+        }
+        let normalizedProvider = providerID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cost = Self.metadataDouble(
+            metadata,
+            keys: ["costUSD:\(normalizedProvider)", "estimatedCostUSD:\(normalizedProvider)", "costUSD", "estimatedCostUSD"]
+        )
+        let quality = Self.metadataDouble(
+            metadata,
+            keys: ["qualityScore:\(normalizedProvider)", "qualityScore"]
+        )
+        self.adaptivePolicy?.record(
+            providerID: normalizedProvider,
+            succeeded: succeeded,
+            latencyMs: latencyMs,
+            costUSD: cost,
+            qualityScore: quality
+        )
+    }
+
+    private static func metadataDouble(_ metadata: [String: String], keys: [String]) -> Double? {
+        for key in keys {
+            guard let raw = metadata[key]?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !raw.isEmpty,
+                  let value = Double(raw)
+            else {
+                continue
+            }
+            return value
+        }
+        return nil
     }
 }

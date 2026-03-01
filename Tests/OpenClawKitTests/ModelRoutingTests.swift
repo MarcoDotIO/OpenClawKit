@@ -45,6 +45,18 @@ struct ModelRoutingTests {
         }
     }
 
+    struct DelayedProvider: ModelProvider {
+        let id: String
+        let text: String
+        let delayMs: UInt64
+
+        func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
+            _ = request
+            try await Task.sleep(nanoseconds: delayMs * 1_000_000)
+            return ModelGenerationResponse(text: self.text, providerID: self.id, modelID: "delayed")
+        }
+    }
+
     actor MockOpenAICompatibleTransport: OpenAICompatibleHTTPTransport {
         let statusCode: Int
         let body: Data
@@ -278,6 +290,92 @@ struct ModelRoutingTests {
         #expect(chunks.count == 2)
         #expect(chunks.map(\.text).joined() == "stream-final")
         #expect(chunks.last?.isFinal == true)
+    }
+
+    @Test
+    func adaptiveRoutingPrefersLowerLatencyProvider() async throws {
+        let router = ModelRouter(
+            defaultProviderID: "slow",
+            providers: [
+                DelayedProvider(id: "slow", text: "slow-output", delayMs: 40),
+                DelayedProvider(id: "fast", text: "fast-output", delayMs: 1),
+            ],
+            adaptiveRoutingConfig: AdaptiveRoutingConfig(
+                enabled: true,
+                minSamplesPerProvider: 1,
+                explorationRate: 0,
+                decisionWindow: 50,
+                objective: .latency
+            )
+        )
+
+        for _ in 0..<2 {
+            _ = try await router.generate(
+                ModelGenerationRequest(sessionKey: "main", prompt: "sample", providerID: "slow")
+            )
+            _ = try await router.generate(
+                ModelGenerationRequest(sessionKey: "main", prompt: "sample", providerID: "fast")
+            )
+        }
+
+        let response = try await router.generate(
+            ModelGenerationRequest(
+                sessionKey: "main",
+                prompt: "choose fastest",
+                metadata: ["fallbackProviderIDs": "slow,fast"]
+            )
+        )
+        #expect(response.providerID == "fast")
+
+        let snapshot = await router.adaptiveRoutingSnapshot(candidateProviderIDs: ["slow", "fast"])
+        let scores = snapshot?.providers.reduce(into: [String: Double]()) { partial, score in
+            partial[score.providerID] = score.score
+        }
+        #expect((scores?["fast"] ?? 0) > (scores?["slow"] ?? 0))
+    }
+
+    @Test
+    func adaptiveRoutingPenalizesFailureRate() async throws {
+        let router = ModelRouter(
+            defaultProviderID: "stable",
+            providers: [
+                ThrowingProvider(id: "flaky", message: "flaky-failure"),
+                StaticProvider(id: "stable", text: "stable-output"),
+            ],
+            adaptiveRoutingConfig: AdaptiveRoutingConfig(
+                enabled: true,
+                minSamplesPerProvider: 1,
+                explorationRate: 0,
+                decisionWindow: 50,
+                objective: .balanced
+            )
+        )
+
+        for _ in 0..<3 {
+            _ = try await router.generate(
+                ModelGenerationRequest(
+                    sessionKey: "main",
+                    prompt: "sample",
+                    providerID: "flaky",
+                    policy: ModelGenerationPolicy(fallbackProviderIDs: ["stable"])
+                )
+            )
+        }
+
+        let response = try await router.generate(
+            ModelGenerationRequest(
+                sessionKey: "main",
+                prompt: "choose reliable",
+                metadata: ["fallbackProviderIDs": "flaky,stable"]
+            )
+        )
+        #expect(response.providerID == "stable")
+
+        let snapshot = await router.adaptiveRoutingSnapshot(candidateProviderIDs: ["flaky", "stable"])
+        let scores = snapshot?.providers.reduce(into: [String: Double]()) { partial, score in
+            partial[score.providerID] = score.score
+        }
+        #expect((scores?["stable"] ?? 0) > (scores?["flaky"] ?? 0))
     }
 
     @Test
