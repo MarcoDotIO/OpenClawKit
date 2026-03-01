@@ -40,4 +40,15 @@ final class OpenClawiOSUITests: XCTestCase {
         XCTAssertTrue(deploymentSectionVisible)
         XCTAssertTrue(stoppedStatusVisible)
     }
+
+    func testTelegramFieldsAreVisibleOnDeployTab() throws {
+        let app = XCUIApplication()
+        app.launch()
+
+        let telegramTokenVisible = app.secureTextFields["Telegram Bot Token"].waitForExistence(timeout: 10)
+        let telegramChatIDVisible = app.textFields["Telegram Chat ID (optional)"].exists
+
+        XCTAssertTrue(telegramTokenVisible)
+        XCTAssertTrue(telegramChatIDVisible)
+    }
 }

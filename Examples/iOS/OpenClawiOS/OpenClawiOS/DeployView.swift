@@ -22,6 +22,12 @@ struct DeployView: View {
                     TextField("Discord Channel ID", text: $appState.discordChannelID)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                    SecureField("Telegram Bot Token", text: $appState.telegramBotToken)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    TextField("Telegram Chat ID (optional)", text: $appState.telegramChatID)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
                     switch appState.selectedProvider {
                     case .openAI:
                         SecureField("OpenAI API Key", text: $appState.openAIAPIKey)
