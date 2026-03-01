@@ -61,6 +61,7 @@ struct ModelRoutingTests {
         let statusCode: Int
         let body: Data
         private(set) var lastPath: String?
+        private(set) var lastAuthorization: String?
 
         init(statusCode: Int = 200, body: Data) {
             self.statusCode = statusCode
@@ -69,11 +70,16 @@ struct ModelRoutingTests {
 
         func data(for request: URLRequest) async throws -> HTTPResponseData {
             self.lastPath = request.url?.path
+            self.lastAuthorization = request.value(forHTTPHeaderField: "Authorization")
             return HTTPResponseData(statusCode: self.statusCode, headers: [:], body: self.body)
         }
 
         func path() -> String? {
             self.lastPath
+        }
+
+        func authorization() -> String? {
+            self.lastAuthorization
         }
     }
 
@@ -505,6 +511,125 @@ struct ModelRoutingTests {
         #expect(response.text == "grok-output")
         #expect(await transport.path()?.contains("/v1/chat/completions") == true)
         #expect(await transport.authorization() == "Bearer xai-key")
+    }
+
+    @Test
+    func openRouterProviderParsesChatCompletionsResponse() async throws {
+        let transport = MockOpenAICompatibleTransport(
+            body: Data("""
+            {"model":"anthropic/claude-sonnet-4-5","choices":[{"index":0,"message":{"role":"assistant","content":"openrouter-output"}}]}
+            """.utf8)
+        )
+        let provider = OpenRouterModelProvider(
+            configuration: ProviderServiceConfig(
+                enabled: true,
+                apiStyle: .openAICompletions,
+                authMode: .apiKey,
+                modelID: "anthropic/claude-sonnet-4-5",
+                apiKey: "openrouter-key",
+                baseURL: "https://openrouter.ai/api/v1",
+                chatCompletionsPath: "chat/completions"
+            ),
+            transport: transport
+        )
+        let response = try await provider.generate(
+            ModelGenerationRequest(sessionKey: "s1", prompt: "hello")
+        )
+
+        #expect(response.providerID == OpenRouterModelProvider.providerID)
+        #expect(response.text == "openrouter-output")
+        #expect(await transport.path()?.contains("/api/v1/chat/completions") == true)
+        #expect(await transport.authorization() == "Bearer openrouter-key")
+    }
+
+    @Test
+    func routerSupportsGroqProviderID() async throws {
+        let transport = MockOpenAICompatibleTransport(
+            body: Data("""
+            {"model":"llama-3.3-70b-versatile","choices":[{"index":0,"message":{"role":"assistant","content":"groq-output"}}]}
+            """.utf8)
+        )
+        let router = ModelRouter()
+        await router.register(
+            GroqModelProvider(
+                configuration: ProviderServiceConfig(
+                    enabled: true,
+                    apiStyle: .openAICompletions,
+                    authMode: .apiKey,
+                    modelID: "llama-3.3-70b-versatile",
+                    apiKey: "groq-key",
+                    baseURL: "https://api.groq.com/openai/v1",
+                    chatCompletionsPath: "chat/completions"
+                ),
+                transport: transport
+            )
+        )
+        let response = try await router.generate(
+            ModelGenerationRequest(
+                sessionKey: "s1",
+                prompt: "hello",
+                providerID: GroqModelProvider.providerID
+            )
+        )
+
+        #expect(response.providerID == GroqModelProvider.providerID)
+        #expect(response.text == "groq-output")
+    }
+
+    @Test
+    func mistralProviderSupportsBearerTokenAuthMode() async throws {
+        let transport = MockOpenAICompatibleTransport(
+            body: Data("""
+            {"model":"mistral-large-latest","choices":[{"index":0,"message":{"role":"assistant","content":"mistral-output"}}]}
+            """.utf8)
+        )
+        let provider = MistralModelProvider(
+            configuration: ProviderServiceConfig(
+                enabled: true,
+                apiStyle: .openAICompletions,
+                authMode: .bearerToken,
+                modelID: "mistral-large-latest",
+                accessToken: "mistral-token",
+                baseURL: "https://api.mistral.ai/v1",
+                chatCompletionsPath: "chat/completions"
+            ),
+            transport: transport
+        )
+        let response = try await provider.generate(
+            ModelGenerationRequest(sessionKey: "s1", prompt: "hello")
+        )
+
+        #expect(response.providerID == MistralModelProvider.providerID)
+        #expect(response.text == "mistral-output")
+        #expect(await transport.authorization() == "Bearer mistral-token")
+    }
+
+    @Test
+    func cerebrasProviderParsesChatCompletionsResponse() async throws {
+        let transport = MockOpenAICompatibleTransport(
+            body: Data("""
+            {"model":"zai-glm-4.7","choices":[{"index":0,"message":{"role":"assistant","content":"cerebras-output"}}]}
+            """.utf8)
+        )
+        let provider = CerebrasModelProvider(
+            configuration: ProviderServiceConfig(
+                enabled: true,
+                apiStyle: .openAICompletions,
+                authMode: .apiKey,
+                modelID: "zai-glm-4.7",
+                apiKey: "cerebras-key",
+                baseURL: "https://api.cerebras.ai/v1",
+                chatCompletionsPath: "chat/completions"
+            ),
+            transport: transport
+        )
+        let response = try await provider.generate(
+            ModelGenerationRequest(sessionKey: "s1", prompt: "hello")
+        )
+
+        #expect(response.providerID == CerebrasModelProvider.providerID)
+        #expect(response.text == "cerebras-output")
+        #expect(await transport.path()?.contains("/v1/chat/completions") == true)
     }
 
     @Test
