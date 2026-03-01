@@ -160,6 +160,76 @@ struct ConfigSessionRoutingTests {
     }
 
     @Test
+    func providerMatrixDefaultsLoadWhenMissing() throws {
+        let legacyJSON = """
+        {
+          "models": {
+            "defaultProviderID": "openai",
+            "openAI": {
+              "enabled": true,
+              "modelID": "gpt-4.1-mini",
+              "baseURL": "https://api.openai.com/v1"
+            }
+          }
+        }
+        """
+        let decoded = try JSONDecoder().decode(OpenClawConfig.self, from: Data(legacyJSON.utf8))
+        #expect(decoded.models.providers.isEmpty)
+    }
+
+    @Test
+    func providerMatrixRoundTripsExtendedServiceDefinitions() throws {
+        let config = OpenClawConfig(
+            models: ModelsConfig(
+                defaultProviderID: "openrouter",
+                providers: [
+                    "openrouter": ProviderServiceConfig(
+                        enabled: true,
+                        apiStyle: .openAICompletions,
+                        authMode: .apiKey,
+                        modelID: "anthropic/claude-sonnet-4-5",
+                        apiKey: "openrouter-key",
+                        baseURL: "https://openrouter.ai/api/v1",
+                        chatCompletionsPath: "chat/completions"
+                    ),
+                    "amazon-bedrock": ProviderServiceConfig(
+                        enabled: true,
+                        apiStyle: .bedrockConverse,
+                        authMode: .awsSDK,
+                        modelID: "anthropic.claude-3-5-sonnet",
+                        apiKey: "AWS_PROFILE",
+                        baseURL: "https://bedrock-runtime.us-east-1.amazonaws.com",
+                        region: "us-east-1",
+                        profile: "default",
+                        metadata: [
+                            "runtime": "aws-sdk",
+                        ]
+                    ),
+                    "qwen-portal": ProviderServiceConfig(
+                        enabled: true,
+                        apiStyle: .openAICompletions,
+                        authMode: .oauthToken,
+                        modelID: "coder-model",
+                        accessToken: "qwen-oauth-token",
+                        baseURL: "https://portal.qwen.ai/v1",
+                        scope: "models.read"
+                    ),
+                ]
+            )
+        )
+
+        let encoded = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(OpenClawConfig.self, from: encoded)
+        #expect(decoded.models.defaultProviderID == "openrouter")
+        #expect(decoded.models.providers["openrouter"]?.enabled == true)
+        #expect(decoded.models.providers["openrouter"]?.apiStyle == .openAICompletions)
+        #expect(decoded.models.providers["amazon-bedrock"]?.authMode == .awsSDK)
+        #expect(decoded.models.providers["amazon-bedrock"]?.region == "us-east-1")
+        #expect(decoded.models.providers["qwen-portal"]?.authMode == .oauthToken)
+        #expect(decoded.models.providers["qwen-portal"]?.accessToken == "qwen-oauth-token")
+    }
+
+    @Test
     func runtimeConfigDefaultsLoadWhenFieldsMissing() throws {
         let legacyJSON = """
         {
