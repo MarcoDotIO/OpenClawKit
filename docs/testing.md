@@ -37,15 +37,19 @@ Never commit `.env`.
 
 ## Recommended Local Validation Sequence
 
-1. `swift build`
+1. `swift build -Xswiftc -warnings-as-errors`
 2. `Scripts/check-networking-concurrency.sh`
 3. `swift test`
 4. `./Scripts/build-ios-example.sh`
+5. `./Scripts/test-ios-example.sh`
 
-## 2026.1.4 Reliability + Security Coverage Highlights
+## 2026.1.5 Reliability + Platform Coverage Highlights
 
-- Runtime streaming coverage for chunked generation and final-marker behavior.
-- Channel auto-reply coverage for stream-path execution and typing heartbeat stop conditions.
-- Credential-store coverage for keychain/file backends plus legacy plaintext secret migration.
-- Security-audit coverage for risky defaults, plaintext secret detection, permission checks, and diagnostics emission.
-- Throttling coverage across channel outbound delivery and provider routing (`delay` and `drop` strategies).
+- iOS unit/UI harness coverage for deploy/chat/models keyboard behavior, Telegram
+  deploy controls, and chat skill-picker visibility.
+- Telegram adapter replay safety coverage for persisted offsets and duplicate
+  update handling across restart scenarios (unit + E2E).
+- Skill coverage expansion for bundled iOS sample skills and hyphenated explicit
+  invocation paths.
+- Deterministic iOS skills bundling verification in build validation
+  (`Scripts/verify-ios-skills-bundle.sh`).

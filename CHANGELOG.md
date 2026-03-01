@@ -1,5 +1,44 @@
 # Changelog
 
+## 2026.1.5 - 2026-02-28
+
+### Added
+
+- Runnable iOS example unit/UI test harness (`OpenClawiOSTests`,
+  `OpenClawiOSUITests`) plus a dedicated `Scripts/test-ios-example.sh` gate.
+- iOS sample Telegram deployment controls (bot token + chat target) wired through
+  runtime startup/teardown and secure credential persistence.
+- Telegram replay hardening primitives with a persistent
+  `TelegramUpdateOffsetStore` and duplicate-update guard logic.
+- Additional deterministic sample skills in the iOS example:
+  `calculator`, `slugify`, and `json-pretty`.
+- Chat skill selection menu in the iOS sample that supports explicit
+  slash-command skill routing from user input.
+- iOS App Intents/App Shortcuts for deploy/stop/quick-ask actions and a
+  background continuation manager using `BGTaskScheduler` with iOS 26
+  `BGContinuedProcessingTaskRequest` availability guards.
+
+### Changed
+
+- iOS skills bundling is now deterministic via explicit resource copying and a
+  build-time verification script (`Scripts/verify-ios-skills-bundle.sh`) that
+  asserts bundled `skills/weather/SKILL.md` presence.
+- iOS keyboard ergonomics are improved across chat/deploy/models screens with
+  keyboard toolbar dismissal and interactive scroll dismissal behavior.
+- iOS app metadata now enables App Intents extraction and background-task
+  permitted identifiers for refresh/processing/continued-processing flows.
+
+### Tests
+
+- Added iOS app-state persistence coverage for Telegram settings and legacy
+  secret decoding paths.
+- Added iOS UI coverage for Telegram deploy fields, keyboard dismissal toolbar +
+  interactive scroll behavior, and chat skill-picker visibility.
+- Expanded Telegram adapter tests with restart-offset resume and
+  duplicate-update dedupe assertions in both unit and E2E suites.
+- Expanded skill tests to validate bundled sample-skill discovery and explicit
+  invocation behavior for hyphenated skill names.
+
 ## 2026.1.4 - 2026-02-23
 
 ### Added
