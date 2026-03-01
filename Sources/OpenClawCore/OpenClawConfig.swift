@@ -936,7 +936,7 @@ public struct WebChatChannelConfig: Codable, Sendable, Equatable {
         self.port = min(max(1, port), 65_535)
         self.webhookPath = webhookPath
         self.sharedSecret = sharedSecret
-        self.transcriptLimit = max(10, transcriptLimit)
+        self.transcriptLimit = max(1, transcriptLimit)
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -957,7 +957,7 @@ public struct WebChatChannelConfig: Codable, Sendable, Equatable {
         self.webhookPath = try container.decodeIfPresent(String.self, forKey: .webhookPath) ?? "/webhooks/webchat"
         self.sharedSecret = try container.decodeIfPresent(String.self, forKey: .sharedSecret)
         let transcriptLimit = try container.decodeIfPresent(Int.self, forKey: .transcriptLimit) ?? 200
-        self.transcriptLimit = max(10, transcriptLimit)
+        self.transcriptLimit = max(1, transcriptLimit)
     }
 }
 

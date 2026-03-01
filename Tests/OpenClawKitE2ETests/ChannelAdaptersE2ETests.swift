@@ -161,5 +161,49 @@ struct ChannelAdaptersE2ETests {
         #expect(firstRun.map(\.text) == ["first"])
         #expect(secondRun.map(\.text) == ["second"])
     }
+
+    @Test
+    func webchatAdapterRoundTripsInboundAndOutboundContract() async throws {
+        let collector = TelegramInboundCollector()
+        let adapter = WebChatChannelAdapter(
+            config: WebChatChannelConfig(
+                enabled: true,
+                sharedSecret: "webchat-secret",
+                transcriptLimit: 10
+            )
+        )
+        await adapter.setInboundHandler { inbound in
+            await collector.append(inbound)
+        }
+        try await adapter.start()
+
+        let inboundPayload = Data("""
+        {
+          "sessionID": "session-e2e",
+          "userID": "user-e2e",
+          "text": "ping from webchat"
+        }
+        """.utf8)
+        try await adapter.handleWebhookEvent(inboundPayload, sharedSecret: "webchat-secret")
+        try await adapter.send(
+            OutboundMessage(channel: .webchat, accountID: "assistant", peerID: "session-e2e", text: "pong from runtime")
+        )
+        await adapter.stop()
+
+        let inbound = await collector.snapshot()
+        #expect(inbound.count == 1)
+        #expect(inbound.first?.channel == .webchat)
+        #expect(inbound.first?.peerID == "session-e2e")
+        #expect(inbound.first?.text == "ping from webchat")
+
+        let outbound = await adapter.outboundBufferSnapshot()
+        #expect(outbound.count == 1)
+        #expect(outbound.first?.text == "pong from runtime")
+
+        let transcript = await adapter.transcript(for: "session-e2e")
+        #expect(transcript.count == 2)
+        #expect(transcript.first?.direction == .inbound)
+        #expect(transcript.last?.direction == .outbound)
+    }
 }
 
