@@ -162,14 +162,28 @@ public actor SwiftDataMemoryGraphStore: ConversationMemoryStoreProtocol {
 
     /// Returns all memory graph entries in chronological order.
     public func allEntries() -> [ConversationMemoryEntry] {
-        self.entriesBySession.values
-            .flatMap { $0 }
-            .sorted { lhs, rhs in
-                if lhs.createdAtMs == rhs.createdAtMs {
-                    return lhs.id < rhs.id
+        let flattened: [(entry: ConversationMemoryEntry, sessionKey: String, index: Int)] = self.entriesBySession
+            .flatMap { sessionKey, entries in
+                entries.enumerated().map { offset, entry in
+                    (entry, sessionKey, offset)
                 }
-                return lhs.createdAtMs < rhs.createdAtMs
             }
+        let ordered = flattened.sorted { lhs, rhs in
+            if lhs.entry.createdAtMs != rhs.entry.createdAtMs {
+                return lhs.entry.createdAtMs < rhs.entry.createdAtMs
+            }
+            if lhs.sessionKey == rhs.sessionKey {
+                return lhs.index < rhs.index
+            }
+            if lhs.sessionKey != rhs.sessionKey {
+                return lhs.sessionKey < rhs.sessionKey
+            }
+            if lhs.index != rhs.index {
+                return lhs.index < rhs.index
+            }
+            return lhs.entry.id < rhs.entry.id
+        }
+        return ordered.map(\.entry)
     }
 
     /// Imports pre-existing memory entries, preserving IDs/timestamps.
@@ -193,12 +207,13 @@ public actor SwiftDataMemoryGraphStore: ConversationMemoryStoreProtocol {
 
     private func appendEntries(_ entries: [ConversationMemoryEntry]) {
         guard !entries.isEmpty else { return }
-        let sorted = entries.sorted { lhs, rhs in
-            if lhs.createdAtMs == rhs.createdAtMs {
-                return lhs.id < rhs.id
+        let sorted = entries.enumerated().sorted { lhs, rhs in
+            if lhs.element.createdAtMs != rhs.element.createdAtMs {
+                return lhs.element.createdAtMs < rhs.element.createdAtMs
             }
-            return lhs.createdAtMs < rhs.createdAtMs
-        }
+            // Keep original caller order when timestamps collide.
+            return lhs.offset < rhs.offset
+        }.map(\.element)
         var existingIDs = Set(self.allEntries().map(\.id))
         for entry in sorted {
             guard !existingIDs.contains(entry.id) else {

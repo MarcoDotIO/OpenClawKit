@@ -11,7 +11,7 @@ fi
 
 required_platform_tokens=(".iOS(" ".macOS(" ".tvOS(" ".watchOS(")
 for token in "${required_platform_tokens[@]}"; do
-  if ! rg -q --fixed-strings "${token}" "Package.swift"; then
+  if ! grep -Fq "${token}" "Package.swift"; then
     echo "Missing platform declaration token '${token}' in Package.swift"
     exit 1
   fi
@@ -31,8 +31,8 @@ for path in "${required_share_extension_files[@]}"; do
 done
 
 # Ensure iOS 26-only APIs stay availability-gated.
-if rg -q "BGContinuedProcessingTask|BGContinuedProcessingTaskRequest" "Examples/iOS/OpenClawiOS/OpenClawiOS"; then
-  if ! rg -q "@available\\(iOS 26\\.0, \\*\\)" "Examples/iOS/OpenClawiOS/OpenClawiOS"; then
+if grep -ERq "BGContinuedProcessingTask|BGContinuedProcessingTaskRequest" "Examples/iOS/OpenClawiOS/OpenClawiOS"; then
+  if ! grep -ERq "@available\\(iOS 26\\.0, \\*\\)" "Examples/iOS/OpenClawiOS/OpenClawiOS"; then
     echo "Detected iOS 26 APIs without availability guard."
     exit 1
   fi

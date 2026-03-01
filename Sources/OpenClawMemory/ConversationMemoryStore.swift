@@ -181,14 +181,28 @@ public actor ConversationMemoryStore: ConversationMemoryStoreProtocol {
 
     /// Returns all entries across sessions sorted by timestamp.
     public func allEntries() -> [ConversationMemoryEntry] {
-        self.entriesBySession.values
-            .flatMap { $0 }
-            .sorted { lhs, rhs in
-                if lhs.createdAtMs == rhs.createdAtMs {
-                    return lhs.id < rhs.id
+        let flattened: [(entry: ConversationMemoryEntry, sessionKey: String, index: Int)] = self.entriesBySession
+            .flatMap { sessionKey, entries in
+                entries.enumerated().map { offset, entry in
+                    (entry, sessionKey, offset)
                 }
-                return lhs.createdAtMs < rhs.createdAtMs
             }
+        let ordered = flattened.sorted { lhs, rhs in
+            if lhs.entry.createdAtMs != rhs.entry.createdAtMs {
+                return lhs.entry.createdAtMs < rhs.entry.createdAtMs
+            }
+            if lhs.sessionKey == rhs.sessionKey {
+                return lhs.index < rhs.index
+            }
+            if lhs.sessionKey != rhs.sessionKey {
+                return lhs.sessionKey < rhs.sessionKey
+            }
+            if lhs.index != rhs.index {
+                return lhs.index < rhs.index
+            }
+            return lhs.entry.id < rhs.entry.id
+        }
+        return ordered.map(\.entry)
     }
 
     private func append(_ entry: ConversationMemoryEntry) {
