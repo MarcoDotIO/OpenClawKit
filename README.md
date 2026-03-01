@@ -9,50 +9,53 @@
 [![Release](https://github.com/MarcoDotIO/OpenClawKit/actions/workflows/release.yml/badge.svg)](https://github.com/MarcoDotIO/OpenClawKit/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-OpenClawKit is a Swift-native SDK for building local-first AI agents in Apple apps and Linux services.  
-It ships actor-safe runtime primitives, channel adapters, model routing, skill execution, and a ready-to-run iOS example app.
+OpenClawKit is a Swift-native agent SDK for Apple platforms and Linux services.
+It provides a complete runtime surface: protocol contracts, model routing, channels,
+skills, memory, observability, security, iOS app integrations, and release-grade tooling.
 
-## Highlights
+## 2026.2.0 Highlights
 
-- Swift 6.2 concurrency-first architecture (`actor`, `Sendable`, async APIs)
-- Modular SDK surface (`OpenClawProtocol` through `OpenClawKit`) with clear layering
-- Built-in model providers: OpenAI, OpenAI-compatible, Anthropic, Gemini, Foundation Models, local, and echo
-- Channel runtime with Discord, Telegram, WhatsApp Cloud, and local webchat adapter flow
-- Workspace skills system (`SKILL.md` + script entrypoints) with generic runtime invocation
-- Runtime streaming + typing heartbeat support for long-running channel replies
-- Secure credential and audit tooling (`CredentialStore`, `SecurityAuditRunner`) for safer app integrations
-- Centralized diagnostics/usage pipeline with runtime + channel telemetry snapshots
-- Strong test and CI posture: Swift Testing unit/E2E suites, Linux validation, iOS build gates, security scans
+### Core Breakthroughs
+
+- **Deterministic Replay Runtime (Flight Recorder)**  
+  Stable replay schemas (`ReplayEvent`, `ReplayEventEnvelope`), append-only replay stores,
+  deterministic replay engine queries, and SDK replay APIs.
+- **Self-Optimizing Router (Latency/Cost/Quality Autopilot)**  
+  Adaptive routing state and feedback loops powered by runtime diagnostics and provider telemetry.
+- **WASM Skill Runtime (Portable + Safer Skills)**  
+  Runtime WASM skill execution support integrated into skill invocation flow.
+
+### Apple-First Features
+
+- Secure Enclave-signed replay ledger hooks with integrity verification support.
+- Instruments-native timeline sink (`OSLog`/signpost-friendly diagnostics export).
+- Intent graph as a first-class protocol/runtime/SDK surface.
+- App Intents + App Shortcuts updated to intent-graph aware flows.
+- Live Activities support for long-running runs in the iOS sample.
+- Proactive automation layer with persisted rules + background tick hooks.
+- Personal-data skills kit with permissioned connector policy gates.
+- Multimodal on-device session mode (attachments in protocol/runtime/channel/iOS chat).
+- SwiftData + CloudKit-ready memory graph store with legacy migration bridge.
+- Ask OpenClaw Share Extension scaffold + app inbox bridge.
+- CI Apple matrix validation for platform declarations and iOS build coverage.
 
 ## Table of Contents
 
-- [Overview](#overview)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
-- [Skills and Tooling](#skills-and-tooling)
-- [Observability and Usage Metrics](#observability-and-usage-metrics)
-- [Security and Throttling](#security-and-throttling)
-- [iOS Example App](#ios-example-app)
-- [Package Modules](#package-modules)
-- [Testing and Quality Gates](#testing-and-quality-gates)
+- [Runtime Features](#runtime-features)
+- [Skills and Connectors](#skills-and-connectors)
+- [Replay, Routing, and Intent Graphs](#replay-routing-and-intent-graphs)
+- [Apple Platform Integrations](#apple-platform-integrations)
+- [Modules](#modules)
+- [Testing and CI](#testing-and-ci)
 - [Documentation](#documentation)
 - [Contributing](#contributing)
 - [License](#license)
 
-## Overview
-
-OpenClawKit is designed for teams that want to ship agent experiences without building a full runtime stack from scratch.  
-You can compose model routing, session persistence, memory context, channel ingress/egress, and skill execution in one Swift package.
-
-Who this is for:
-
-- Swift engineers building agent-enabled iOS/macOS/tvOS/watchOS apps
-- Backend teams running Linux-hosted Swift services with local or hosted model backends
-- OSS contributors who want clean module boundaries and predictable extension points
-
 ## Installation
 
-Add OpenClawKit in Swift Package Manager.
+Add OpenClawKit with Swift Package Manager:
 
 ```swift
 dependencies: [
@@ -60,7 +63,7 @@ dependencies: [
 ]
 ```
 
-Then add the product to your target:
+Then link the product:
 
 ```swift
 targets: [
@@ -73,11 +76,14 @@ targets: [
 ]
 ```
 
-### Minimum toolchain
+### Toolchain and Platform Baseline
 
 - Swift tools: `6.2`
-- Apple platforms: iOS 17+, macOS 14+, tvOS 17+, watchOS 10+
-- Linux: supported with compatibility shims (including `FoundationNetworking` where needed)
+- iOS `17+`
+- macOS `14+`
+- tvOS `17+`
+- watchOS `10+`
+- Linux supported for package/runtime flows with compatibility shims
 
 ## Quick Start
 
@@ -85,14 +91,16 @@ targets: [
 import OpenClawKit
 
 let sdk = OpenClawSDK.shared
-let config = OpenClawConfig()
-let sessionsURL = URL(fileURLWithPath: "./state/sessions.json")
-let diagnostics = sdk.makeDiagnosticsPipeline(eventLimit: 300)
+let diagnostics = sdk.makeDiagnosticsPipeline(eventLimit: 500)
 
 let outbound = try await sdk.getReplyFromConfig(
-    config: config,
-    sessionStoreURL: sessionsURL,
-    inbound: InboundMessage(channel: .webchat, peerID: "user-1", text: "Hello there"),
+    config: OpenClawConfig(),
+    sessionStoreURL: URL(fileURLWithPath: "./state/sessions.json"),
+    inbound: InboundMessage(
+        channel: .webchat,
+        peerID: "user-1",
+        text: "Plan a concise project update."
+    ),
     diagnosticsPipeline: diagnostics
 )
 
@@ -100,110 +108,122 @@ print(outbound.text)
 print(await diagnostics.usageSnapshot().runsCompleted)
 ```
 
-This flow gives you:
+## Runtime Features
 
-- session key resolution + persistence
-- auto-reply routing through the embedded runtime
-- model response generation with configured provider routing
+- Actor-isolated embedded runtime orchestration (`EmbeddedAgentRuntime`)
+- Multi-provider model routing with fallback and adaptive optimization
+- Channel adapters (Discord, Telegram, WhatsApp Cloud, webchat)
+- Skill discovery/invocation (`SKILL.md`, JS/WASM executors)
+- Prompt bootstrap context loading (`AGENTS.md`, identity/personality files)
+- Persistent session routing and conversation memory
+- Streaming output support and typing heartbeat semantics
+- Diagnostics pipeline with usage snapshots and recent-event timelines
 
-## Skills and Tooling
+## Skills and Connectors
 
-OpenClawKit supports workspace skills from `skills/<name>/SKILL.md` with script entrypoints.
-
-For the bundled iOS example app, starter skills are project-owned in:
-
-- `Examples/iOS/OpenClawiOS/skills/<name>/SKILL.md`
-- Deploy flow syncs these into the app workspace before runtime start.
-
+- Workspace skills: `skills/<name>/SKILL.md`
 - Explicit invocation:
   - `/skill weather {"location":"San Diego"}`
-  - `/weather {"location":"San Diego"}`
-- Natural-language references to skill names are also resolved in runtime auto-reply flow.
-- Skill execution is runtime-owned (SDK layer), not app-owned.
+  - `/<skill-name> {"arg":"value"}`
+- Natural-language skill reference matching in auto-reply flow
+- Connector permission metadata and enforcement:
+  - connector types (contacts, eventkit, reminders, photos, speech, camera, etc.)
+  - scope checks and consent requirements
+  - deny-by-default policy until grants are present
 
-Sample weather skill:
+## Replay, Routing, and Intent Graphs
 
-- Definition: `Examples/iOS/OpenClawiOS/skills/weather/SKILL.md`
-- Entrypoint: `Examples/iOS/OpenClawiOS/skills/weather/scripts/weather.js`
+### Replay APIs
 
-## Observability and Usage Metrics
+- `OpenClawSDK.makeReplayStore(...)`
+- `OpenClawSDK.makeReplayEngine(store:)`
+- `OpenClawSDK.replayEvents(forRunID:...)`
+- `OpenClawSDK.replayEvents(forSessionKey:...)`
+- `OpenClawSDK.replayEvents(in:...)`
 
-OpenClawKit includes a centralized telemetry actor:
+### Intent Graph APIs
 
-- `RuntimeDiagnosticsPipeline` for retaining recent diagnostics events
-- `usageSnapshot()` for aggregate run/model/skill/channel counters and latency totals
-- `recentEvents(limit:)` for timeline-driven app UX
+- `OpenClawSDK.makeIntentGraph(for:runtime:diagnosticsPipeline:)`
+- `OpenClawSDK.runIntentGraph(_:runtime:timeoutMs:diagnosticsPipeline:)`
+- Graph contracts in `OpenClawProtocol` (`IntentGraph`, nodes/edges/kinds)
 
-Runtime and auto-reply flows emit stable diagnostics names (`run.started`,
-`model.call.completed`, `skill.invoked`, `outbound.sent`, `outbound.failed`, etc.)
-that can be consumed directly by host apps.
+### Adaptive Router Feedback
 
-## Security and Throttling
+- Runtime diagnostics feed adaptive policy state
+- Objective-driven optimization (`balanced`, `latency`, `cost`, `quality`)
+- Provider scoring updates from observed latency/error behavior
 
-OpenClawKit includes lightweight hardening helpers:
+## Apple Platform Integrations
 
-- `CredentialStore` abstraction for secure secret persistence (Keychain on Apple platforms).
-- `OpenClawSDK.runSecurityAudit(...)` for risky-default, plaintext-secret, and permissions checks.
-- `ChannelSendThrottlePolicy` for per-channel outbound throttling.
-- `ModelProviderThrottlePolicy` for per-provider request throttling and fallback-aware control.
+### iOS Sample App (`Examples/iOS/OpenClawiOS`)
 
-## iOS Example App
+- Deploy/chat/models/skills/channels/diagnostics flows
+- Intent-graph aware App Intents + shortcuts
+- Live Activities status surfaces for run lifecycle
+- Proactive background automation hooks
+- Multimodal chat attachment staging/import flow
+- Share inbox bridge (`SharePromptInbox`) for extension handoff
 
-A complete iOS sample app is included:
+### Ask OpenClaw Share Extension
 
-- Project: `Examples/iOS/OpenClawiOS`
-- Deploy tab: credentials, routing, personality, deployment lifecycle
-- Chat tab: transcript UX with runtime-backed responses and memory summarization
-- Models tab: provider switching + local runtime tuning controls
-- Skills tab: discovered skills + invocation policy/status visibility
-- Channels tab: route map preview + live channel health snapshots
-- Diagnostics tab: usage counters + recent runtime/channel event timeline
+Scaffold files live in:
 
-Build locally:
+- `Examples/iOS/OpenClawiOS/OpenClawShareExtension/AskOpenClawShareViewController.swift`
+- `Examples/iOS/OpenClawiOS/OpenClawShareExtension/Info.plist`
+- `Examples/iOS/OpenClawiOS/OpenClawShareExtension/README.md`
+
+The extension writes shared prompts into the app-group inbox:
+
+- suite: `group.io.marcodotio.OpenClawKit`
+- key: `openclaw.share.prompt.inbox`
+
+## Modules
+
+- `OpenClawProtocol` - protocol contracts and schema models
+- `OpenClawCore` - config/session/security/replay/diagnostics foundations
+- `OpenClawGateway` - gateway transport/socket runtime
+- `OpenClawModels` - providers, routing, adaptive policy
+- `OpenClawSkills` - skill metadata/registry/execution/connectors
+- `OpenClawAgents` - runtime orchestration and automation runner
+- `OpenClawPlugins` - plugin hooks/services
+- `OpenClawChannels` - adapters + auto-reply engine
+- `OpenClawMemory` - conversation store + memory graph bridge
+- `OpenClawMedia` - attachment normalization/classification
+- `OpenClawKit` - top-level SDK facade
+
+## Testing and CI
+
+Recommended local gate:
 
 ```bash
-./Scripts/build-ios-example.sh
-```
-
-## Package Modules
-
-- `OpenClawProtocol` - generated protocol models and gateway frame types
-- `OpenClawCore` - config/session stores, cross-platform shims, hooks/cron/security helpers, diagnostics pipeline
-- `OpenClawGateway` - actor-isolated gateway transport and socket lifecycle
-- `OpenClawModels` - provider protocols, routing, and provider implementations
-- `OpenClawSkills` - skill discovery, prompt snapshots, and runtime invocation engine
-- `OpenClawAgents` - embedded runtime, tool orchestration, timeout-safe run lifecycle
-- `OpenClawPlugins` - plugin protocol surfaces, services, and custom method hooks
-- `OpenClawChannels` - channel adapters and auto-reply orchestration
-- `OpenClawMemory` - conversation memory store and memory indexing/search primitives
-- `OpenClawMedia` - media normalization and MIME classification helpers
-- `OpenClawKit` - top-level facade APIs with module re-exports
-
-## Testing and Quality Gates
-
-Run core validation locally:
-
-```bash
-swift build
+swift build -Xswiftc -warnings-as-errors
 Scripts/check-networking-concurrency.sh
 swift test
 ./Scripts/build-ios-example.sh
+./Scripts/test-ios-example.sh
+```
+
+Apple matrix static validation:
+
+```bash
+Scripts/validate-apple-matrix.sh --platform macos
+Scripts/validate-apple-matrix.sh --platform ios
 ```
 
 CI workflows:
 
-- `ci.yml` - Swift validation + iOS example build
-- `security.yml` - secret scanning
-- `release.yml` - changelog-gated tag releases
+- `ci.yml` - Swift validation, iOS build, and Apple platform matrix checks
+- `security.yml` - secret/security scanning
+- `release.yml` - changelog-gated tagged releases
 
 ## Documentation
 
 - [Architecture](docs/architecture.md)
-- [Testing Guide](docs/testing.md)
 - [API Surface](docs/api-surface.md)
+- [Testing Guide](docs/testing.md)
 - [Changelog](CHANGELOG.md)
 
-Protocol models are generated from schema:
+Protocol generation:
 
 ```bash
 node Scripts/protocol-gen-swift.mjs
@@ -213,20 +233,17 @@ node Scripts/protocol-gen-swift.mjs
 
 Issues and PRs are welcome.
 
-- Bugs and feature requests: [GitHub Issues](https://github.com/MarcoDotIO/OpenClawKit/issues)
-- Changes and review: [Pull Requests](https://github.com/MarcoDotIO/OpenClawKit/pulls)
+- Bugs / requests: <https://github.com/MarcoDotIO/OpenClawKit/issues>
+- PRs: <https://github.com/MarcoDotIO/OpenClawKit/pulls>
 
-If you are contributing runtime or networking changes, please include tests and run the validation sequence above before opening a PR.
+Please include tests for runtime/networking changes and run the full local gate before opening a PR.
 
 ## Acknowledgements
 
-OpenClawKit is a Swift-native SDK aligned with the broader OpenClaw ecosystem design and practices.
+OpenClawKit is aligned with the broader OpenClaw ecosystem and design principles:
 
-Upstream project inspiration:
-
-- https://github.com/openclaw/openclaw
+- <https://github.com/openclaw/openclaw>
 
 ## License
 
-OpenClawKit is released under the MIT License. See [LICENSE](LICENSE).
-
+OpenClawKit is released under MIT. See [LICENSE](LICENSE).

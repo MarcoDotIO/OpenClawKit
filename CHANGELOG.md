@@ -1,5 +1,70 @@
 # Changelog
 
+## 2026.2.0 - 2026-03-01
+
+### Added
+
+- Deterministic replay runtime foundations:
+  - `ReplayEvent` / `ReplayEventEnvelope` schema contracts
+  - append-only `ReplayStore` with compaction/recovery
+  - deterministic `ReplayEngine` query/replay APIs
+  - SDK replay facade methods for run/session/time-window filtering
+- Secure replay-ledger signing surfaces with integrity-oriented metadata and
+  signing hooks for Apple Secure Enclave-backed strategies.
+- Instruments-native runtime timeline sink + diagnostics export plumbing for
+  signpost/OSLog workflow integration.
+- Adaptive routing policy state and scoring model with closed-loop feedback from
+  runtime/provider diagnostics.
+- WASM skill execution runtime support integrated into the invocation engine.
+- Personal-data skills kit with connector metadata, frontmatter parsing, policy
+  enforcement, and Apple connector adapter scaffolding.
+- Intent graph promoted to first-class SDK/protocol/runtime surface:
+  - `IntentGraph` models in `OpenClawProtocol`
+  - runtime graph construction/execution APIs
+  - SDK facade methods for graph generation and graph-backed runs
+- Dynamic iOS App Intents + shortcuts wired to intent-graph-aware bridge flows
+  and selectable node-kind entities.
+- Live Activities support for long-running runs in the iOS sample, including
+  diagnostics-driven progress/status updates.
+- Proactive automation layer:
+  - persisted rule store (`AutomationRuleStore`)
+  - execution runner (`AutomationRunner`)
+  - background continuation hooks for scheduled automation ticks
+- Multimodal on-device session mode:
+  - `MediaAttachment` protocol model
+  - runtime attachment normalization/injection
+  - channel attachment forwarding
+  - iOS chat attachment import/staging UX
+- SwiftData + CloudKit-ready memory graph bridge:
+  - `ConversationMemoryStoreProtocol`
+  - `SwiftDataMemoryGraphStore`
+  - legacy conversation-memory migration helper.
+- Ask OpenClaw share-extension scaffold and app inbox bridge contract for
+  prompt handoff via App Group defaults.
+- Apple platform matrix CI validation (`Scripts/validate-apple-matrix.sh`) and
+  CI workflow matrix coverage.
+
+### Changed
+
+- `OpenClawConfig.runtime` now includes `memoryGraph` controls for staged
+  rollout of SwiftData/CloudKit memory backends.
+- iOS sample app startup now consumes share-inbox payloads into the chat
+  composer for extension-to-app continuity.
+- CI now validates Apple platform declarations and share-extension artifacts in
+  addition to existing Swift/Linux/iOS build gates.
+
+### Tests
+
+- Expanded replay/runtime diagnostics tests for deterministic sequence ordering,
+  provider fallback metadata, and SDK replay filtering behavior.
+- Added skill connector parsing/enforcement tests and permission grant/deny
+  invocation coverage.
+- Added intent graph SDK facade tests and iOS intent bridge/entity tests.
+- Added Live Activity and multimodal iOS/UI/runtime/channel assertions.
+- Added proactive automation rule-store/runner tests and background hook tests.
+- Added memory-graph migration/config regression tests for SwiftData+CloudKit
+  bridge behavior.
+
 ## 2026.1.5 - 2026-02-28
 
 ### Added

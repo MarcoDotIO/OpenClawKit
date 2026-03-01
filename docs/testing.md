@@ -42,14 +42,24 @@ Never commit `.env`.
 3. `swift test`
 4. `./Scripts/build-ios-example.sh`
 5. `./Scripts/test-ios-example.sh`
+6. `Scripts/validate-apple-matrix.sh --platform macos`
+7. `Scripts/validate-apple-matrix.sh --platform ios`
 
-## 2026.1.5 Reliability + Platform Coverage Highlights
+## 2026.2.0 Reliability + Platform Coverage Highlights
 
-- iOS unit/UI harness coverage for deploy/chat/models keyboard behavior, Telegram
-  deploy controls, and chat skill-picker visibility.
-- Telegram adapter replay safety coverage for persisted offsets and duplicate
-  update handling across restart scenarios (unit + E2E).
-- Skill coverage expansion for bundled iOS sample skills and hyphenated explicit
-  invocation paths.
-- Deterministic iOS skills bundling verification in build validation
-  (`Scripts/verify-ios-skills-bundle.sh`).
+- Replay/diagnostics reliability:
+  deterministic replay sequence tests, replay store compaction/recovery, and
+  SDK replay query filtering coverage.
+- Router/telemetry reliability:
+  adaptive routing policy + closed-loop diagnostics tests for provider scoring
+  behavior under runtime feedback.
+- Skills/runtime reliability:
+  WASM execution tests plus connector-permission policy coverage across allow/deny paths.
+- Apple integration reliability:
+  intent-graph App Intents tests, Live Activity status checks, proactive
+  automation background hook tests, and multimodal iOS/UI/runtime assertions.
+- Memory reliability:
+  SwiftData+CloudKit-ready memory graph migration/config tests.
+- CI platform coverage:
+  Apple matrix contract validation in `Scripts/validate-apple-matrix.sh`
+  (platform declarations, share-extension scaffold, iOS 26 API guard checks).
