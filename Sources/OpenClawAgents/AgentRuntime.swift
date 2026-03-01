@@ -1,6 +1,7 @@
 import Foundation
 import OpenClawCore
 import OpenClawGateway
+import OpenClawMedia
 import OpenClawModels
 import OpenClawProtocol
 import OpenClawSkills
@@ -56,6 +57,7 @@ public struct AgentRunRequest: Sendable {
     public let toolCalls: [AgentToolCall]
     public let modelProviderID: String?
     public let workspaceRootPath: String?
+    public let attachments: [MediaAttachment]
 
     /// Creates a run request.
     /// - Parameters:
@@ -65,13 +67,15 @@ public struct AgentRunRequest: Sendable {
     ///   - toolCalls: Ordered tool calls to execute before model generation.
     ///   - modelProviderID: Optional provider override.
     ///   - workspaceRootPath: Optional workspace root for skill/bootstrap prompt injection.
+    ///   - attachments: Optional multimodal attachments to normalize and reference in prompt context.
     public init(
         runID: String = UUID().uuidString,
         sessionKey: String,
         prompt: String,
         toolCalls: [AgentToolCall] = [],
         modelProviderID: String? = nil,
-        workspaceRootPath: String? = nil
+        workspaceRootPath: String? = nil,
+        attachments: [MediaAttachment] = []
     ) {
         self.runID = runID
         self.sessionKey = sessionKey
@@ -79,6 +83,7 @@ public struct AgentRunRequest: Sendable {
         self.toolCalls = toolCalls
         self.modelProviderID = modelProviderID
         self.workspaceRootPath = workspaceRootPath
+        self.attachments = attachments
     }
 }
 
@@ -89,6 +94,7 @@ public struct AgentRunResult: Sendable {
     public let output: String
     public let toolResults: [AgentToolResult]
     public let events: [AgentRunEvent]
+    public let attachments: [MediaAttachment]
 
     /// Creates a run result.
     /// - Parameters:
@@ -97,18 +103,38 @@ public struct AgentRunResult: Sendable {
     ///   - output: Model output text.
     ///   - toolResults: Tool execution outputs.
     ///   - events: Lifecycle events emitted during run.
+    ///   - attachments: Normalized multimodal attachments used during prompt generation.
     public init(
         runID: String,
         sessionKey: String,
         output: String,
         toolResults: [AgentToolResult],
-        events: [AgentRunEvent]
+        events: [AgentRunEvent],
+        attachments: [MediaAttachment] = []
     ) {
         self.runID = runID
         self.sessionKey = sessionKey
         self.output = output
         self.toolResults = toolResults
         self.events = events
+        self.attachments = attachments
+    }
+}
+
+/// Output payload for runs executed with an intent graph.
+public struct IntentGraphRunResult: Sendable {
+    /// Intent graph used to represent this run plan.
+    public let graph: IntentGraph
+    /// Completed run payload.
+    public let result: AgentRunResult
+
+    /// Creates an intent-graph run result.
+    /// - Parameters:
+    ///   - graph: Intent graph generated for the run.
+    ///   - result: Completed run payload.
+    public init(graph: IntentGraph, result: AgentRunResult) {
+        self.graph = graph
+        self.result = result
     }
 }
 
@@ -142,6 +168,7 @@ public actor EmbeddedAgentRuntime {
     private let gatewayClient: GatewayClient
     private let toolRegistry: AgentToolRegistry
     private let modelRouter: ModelRouter
+    private let mediaPipeline: MediaPipeline
     private let diagnosticsSink: RuntimeDiagnosticSink?
 
     /// Creates an embedded runtime.
@@ -149,16 +176,19 @@ public actor EmbeddedAgentRuntime {
     ///   - gatewayClient: Gateway transport client.
     ///   - toolRegistry: Registry used to resolve tool calls.
     ///   - modelRouter: Router for model provider selection.
+    ///   - mediaPipeline: Media pipeline used to normalize multimodal attachments.
     ///   - diagnosticsSink: Optional diagnostics event sink.
     public init(
         gatewayClient: GatewayClient = GatewayClient(),
         toolRegistry: AgentToolRegistry = AgentToolRegistry(),
         modelRouter: ModelRouter = ModelRouter(),
+        mediaPipeline: MediaPipeline = MediaPipeline(),
         diagnosticsSink: RuntimeDiagnosticSink? = nil
     ) {
         self.gatewayClient = gatewayClient
         self.toolRegistry = toolRegistry
         self.modelRouter = modelRouter
+        self.mediaPipeline = mediaPipeline
         self.diagnosticsSink = diagnosticsSink
     }
 
@@ -205,6 +235,7 @@ public actor EmbeddedAgentRuntime {
                 "providerID": request.modelProviderID ?? "",
                 "requestedProviderID": request.modelProviderID ?? "",
                 "toolCallCount": String(request.toolCalls.count),
+                "attachmentCount": String(request.attachments.count),
             ]
         )
         await self.emitDiagnostic(
@@ -214,17 +245,23 @@ public actor EmbeddedAgentRuntime {
             metadata: [
                 "providerID": request.modelProviderID ?? "",
                 "requestedProviderID": request.modelProviderID ?? "",
+                "attachmentCount": String(request.attachments.count),
             ]
         )
 
         do {
             let execution = try await withThrowingTaskGroup(of: RunExecution.self) { group in
-                group.addTask { [gatewayClient, toolRegistry, modelRouter] in
+                group.addTask { [gatewayClient, toolRegistry, modelRouter, mediaPipeline] in
                     var events: [AgentRunEvent] = [AgentRunEvent(runID: runID, kind: .runStarted)]
                     var toolResults: [AgentToolResult] = []
+                    let normalizedAttachments = try await Self.normalizeAttachments(
+                        request.attachments,
+                        using: mediaPipeline
+                    )
                     let composedPrompt = try await Self.composePrompt(
                         basePrompt: request.prompt,
-                        workspaceRootPath: request.workspaceRootPath
+                        workspaceRootPath: request.workspaceRootPath,
+                        attachments: normalizedAttachments
                     )
 
                     if await gatewayClient.isConnected() == false {
@@ -261,7 +298,8 @@ public actor EmbeddedAgentRuntime {
                         sessionKey: request.sessionKey,
                         output: modelResponse.text,
                         toolResults: toolResults,
-                        events: events
+                        events: events,
+                        attachments: normalizedAttachments
                     )
                     return RunExecution(
                         result: result,
@@ -291,6 +329,7 @@ public actor EmbeddedAgentRuntime {
                     "providerID": execution.providerID,
                     "modelID": execution.modelID ?? "",
                     "latencyMs": String(execution.modelLatencyMs),
+                    "attachmentCount": String(execution.result.attachments.count),
                 ]
             )
             let runLatencyMs = max(0, Int(Date().timeIntervalSince(runStartedAt) * 1000))
@@ -303,6 +342,7 @@ public actor EmbeddedAgentRuntime {
                     "providerID": execution.providerID,
                     "modelID": execution.modelID ?? "",
                     "outputLength": String(execution.result.output.count),
+                    "attachmentCount": String(execution.result.attachments.count),
                 ]
             )
             return execution.result
@@ -323,6 +363,7 @@ public actor EmbeddedAgentRuntime {
                     "requestedProviderID": request.modelProviderID ?? "",
                     "error": String(describing: error),
                     "timedOut": String(timedOut),
+                    "attachmentCount": String(request.attachments.count),
                 ]
             )
             await self.emitDiagnostic(
@@ -335,10 +376,137 @@ public actor EmbeddedAgentRuntime {
                     "requestedProviderID": request.modelProviderID ?? "",
                     "timedOut": String(timedOut),
                     "error": String(describing: error),
+                    "attachmentCount": String(request.attachments.count),
                 ]
             )
             throw error
         }
+    }
+
+    /// Builds an intent graph for a run request without executing the run.
+    /// - Parameter request: Run request payload.
+    /// - Returns: Deterministic intent graph representation.
+    public func makeIntentGraph(for request: AgentRunRequest) -> IntentGraph {
+        var nodes: [IntentGraphNode] = []
+        var edges: [IntentGraphEdge] = []
+
+        let runNodeID = "run:\(request.runID)"
+        let promptNodeID = "prompt:\(request.runID)"
+        let modelNodeID = "model:\(request.runID)"
+        let outputNodeID = "output:\(request.runID)"
+
+        nodes.append(
+            IntentGraphNode(
+                id: runNodeID,
+                kind: .run,
+                title: "Agent Run",
+                metadata: [
+                    "runID": request.runID,
+                    "sessionKey": request.sessionKey,
+                    "requestedProviderID": request.modelProviderID ?? "",
+                ]
+            )
+        )
+        nodes.append(
+            IntentGraphNode(
+                id: promptNodeID,
+                kind: .prompt,
+                title: "Prompt",
+                metadata: [
+                    "length": String(request.prompt.count),
+                    "hasWorkspaceRoot": String(request.workspaceRootPath != nil),
+                    "attachmentCount": String(request.attachments.count),
+                ]
+            )
+        )
+        nodes.append(
+            IntentGraphNode(
+                id: modelNodeID,
+                kind: .model,
+                title: "Model Route",
+                metadata: [
+                    "requestedProviderID": request.modelProviderID ?? "",
+                ]
+            )
+        )
+        nodes.append(
+            IntentGraphNode(
+                id: outputNodeID,
+                kind: .output,
+                title: "Output",
+                metadata: [
+                    "toolCallCount": String(request.toolCalls.count),
+                ]
+            )
+        )
+
+        edges.append(IntentGraphEdge(sourceID: runNodeID, targetID: promptNodeID, kind: .initiates))
+        edges.append(IntentGraphEdge(sourceID: promptNodeID, targetID: modelNodeID, kind: .feeds))
+        edges.append(IntentGraphEdge(sourceID: modelNodeID, targetID: outputNodeID, kind: .produces))
+
+        if let workspaceRootPath = request.workspaceRootPath?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !workspaceRootPath.isEmpty
+        {
+            let skillNodeID = "skill:\(request.runID)"
+            nodes.append(
+                IntentGraphNode(
+                    id: skillNodeID,
+                    kind: .skill,
+                    title: "Workspace Skills",
+                    metadata: ["workspaceRootPath": workspaceRootPath]
+                )
+            )
+            edges.append(IntentGraphEdge(sourceID: runNodeID, targetID: skillNodeID, kind: .reads))
+            edges.append(IntentGraphEdge(sourceID: skillNodeID, targetID: modelNodeID, kind: .feeds))
+        }
+
+        for (index, call) in request.toolCalls.enumerated() {
+            let toolNodeID = "tool:\(request.runID):\(index)"
+            nodes.append(
+                IntentGraphNode(
+                    id: toolNodeID,
+                    kind: .tool,
+                    title: call.name,
+                    metadata: [
+                        "order": String(index),
+                        "argumentCount": String(call.arguments.count),
+                    ]
+                )
+            )
+            edges.append(IntentGraphEdge(sourceID: runNodeID, targetID: toolNodeID, kind: .invokes))
+            edges.append(IntentGraphEdge(sourceID: toolNodeID, targetID: modelNodeID, kind: .feeds))
+        }
+
+        let sortedNodes = nodes.sorted(by: { $0.id < $1.id })
+        let sortedEdges = edges.sorted {
+            if $0.sourceID != $1.sourceID {
+                return $0.sourceID < $1.sourceID
+            }
+            if $0.targetID != $1.targetID {
+                return $0.targetID < $1.targetID
+            }
+            return $0.kind.rawValue < $1.kind.rawValue
+        }
+        return IntentGraph(
+            runID: request.runID,
+            sessionKey: request.sessionKey,
+            nodes: sortedNodes,
+            edges: sortedEdges
+        )
+    }
+
+    /// Executes a run request and returns both execution result and intent graph.
+    /// - Parameters:
+    ///   - request: Run request payload.
+    ///   - timeoutMs: Timeout in milliseconds.
+    /// - Returns: Combined graph + run result payload.
+    public func runIntentGraph(
+        _ request: AgentRunRequest,
+        timeoutMs: Int = 30_000
+    ) async throws -> IntentGraphRunResult {
+        let graph = self.makeIntentGraph(for: request)
+        let result = try await self.run(request, timeoutMs: timeoutMs)
+        return IntentGraphRunResult(graph: graph, result: result)
     }
 
     /// Executes an agent run and streams incremental model output chunks.
@@ -364,6 +532,7 @@ public actor EmbeddedAgentRuntime {
                             "providerID": request.modelProviderID ?? "",
                             "requestedProviderID": request.modelProviderID ?? "",
                             "toolCallCount": String(request.toolCalls.count),
+                            "attachmentCount": String(request.attachments.count),
                             "streaming": "true",
                         ]
                     )
@@ -374,13 +543,19 @@ public actor EmbeddedAgentRuntime {
                         metadata: [
                             "providerID": request.modelProviderID ?? "",
                             "requestedProviderID": request.modelProviderID ?? "",
+                            "attachmentCount": String(request.attachments.count),
                             "streaming": "true",
                         ]
                     )
 
+                    let normalizedAttachments = try await Self.normalizeAttachments(
+                        request.attachments,
+                        using: self.mediaPipeline
+                    )
                     let composedPrompt = try await Self.composePrompt(
                         basePrompt: request.prompt,
-                        workspaceRootPath: request.workspaceRootPath
+                        workspaceRootPath: request.workspaceRootPath,
+                        attachments: normalizedAttachments
                     )
 
                     if await self.gatewayClient.isConnected() == false {
@@ -450,6 +625,7 @@ public actor EmbeddedAgentRuntime {
                             "providerID": request.modelProviderID ?? "",
                             "modelID": "",
                             "latencyMs": String(modelLatencyMs),
+                            "attachmentCount": String(normalizedAttachments.count),
                             "streaming": "true",
                         ]
                     )
@@ -463,6 +639,7 @@ public actor EmbeddedAgentRuntime {
                             "providerID": request.modelProviderID ?? "",
                             "modelID": "",
                             "outputLength": String(output.count),
+                            "attachmentCount": String(normalizedAttachments.count),
                             "streaming": "true",
                         ]
                     )
@@ -479,6 +656,7 @@ public actor EmbeddedAgentRuntime {
                             "requestedProviderID": request.modelProviderID ?? "",
                             "error": String(describing: error),
                             "timedOut": String(timedOut),
+                            "attachmentCount": String(request.attachments.count),
                             "streaming": "true",
                         ]
                     )
@@ -492,6 +670,7 @@ public actor EmbeddedAgentRuntime {
                             "requestedProviderID": request.modelProviderID ?? "",
                             "timedOut": String(timedOut),
                             "error": String(describing: error),
+                            "attachmentCount": String(request.attachments.count),
                             "streaming": "true",
                         ]
                     )
@@ -505,37 +684,90 @@ public actor EmbeddedAgentRuntime {
     /// - Parameters:
     ///   - basePrompt: Original user prompt.
     ///   - workspaceRootPath: Optional workspace path containing bootstrap/skills.
+    ///   - attachments: Optional normalized multimodal attachments.
     /// - Returns: Prompt sent to model provider.
-    private static func composePrompt(basePrompt: String, workspaceRootPath: String?) async throws -> String {
-        guard let workspaceRootPath else {
-            return basePrompt
-        }
-        let trimmed = workspaceRootPath.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            return basePrompt
-        }
-
-        let registry = SkillRegistry(workspaceRoot: URL(fileURLWithPath: trimmed))
-        let snapshot = try await registry.loadPromptSnapshot()
-        let bootstrap = try await BootstrapContextLoader(
-            workspaceRoot: URL(fileURLWithPath: trimmed)
-        ).loadPromptSnapshot()
-        let skillsPrompt = snapshot.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        let bootstrapPrompt = bootstrap.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        if skillsPrompt.isEmpty && bootstrapPrompt.isEmpty {
-            return basePrompt
-        }
-
+    private static func composePrompt(
+        basePrompt: String,
+        workspaceRootPath: String?,
+        attachments: [MediaAttachment] = []
+    ) async throws -> String {
         var sections: [String] = []
-        if !bootstrapPrompt.isEmpty {
-            sections.append(bootstrapPrompt)
+        if let workspaceRootPath {
+            let trimmed = workspaceRootPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                let registry = SkillRegistry(workspaceRoot: URL(fileURLWithPath: trimmed))
+                let snapshot = try await registry.loadPromptSnapshot()
+                let bootstrap = try await BootstrapContextLoader(
+                    workspaceRoot: URL(fileURLWithPath: trimmed)
+                ).loadPromptSnapshot()
+                let skillsPrompt = snapshot.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+                let bootstrapPrompt = bootstrap.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !bootstrapPrompt.isEmpty {
+                    sections.append(bootstrapPrompt)
+                }
+                if !skillsPrompt.isEmpty {
+                    sections.append(skillsPrompt)
+                }
+            }
         }
-        if !skillsPrompt.isEmpty {
-            sections.append(skillsPrompt)
+        if !attachments.isEmpty {
+            sections.append(Self.composeAttachmentSection(attachments))
         }
+        if sections.isEmpty {
+            return basePrompt
+        }
+
         sections.append("## User Request")
         sections.append(basePrompt)
         return sections.joined(separator: "\n\n")
+    }
+
+    private static func normalizeAttachments(
+        _ attachments: [MediaAttachment],
+        using mediaPipeline: MediaPipeline
+    ) async throws -> [MediaAttachment] {
+        guard !attachments.isEmpty else {
+            return []
+        }
+        var normalized: [MediaAttachment] = []
+        normalized.reserveCapacity(attachments.count)
+        for attachment in attachments {
+            let blob = MediaBlob(id: attachment.id, mimeType: attachment.mimeType, data: attachment.data)
+            let normalizedBlob = try await mediaPipeline.normalize(blob)
+            let kind = await mediaPipeline.kind(for: normalizedBlob.mimeType)
+            var metadata = attachment.metadata
+            metadata["kind"] = kind.rawValue
+            metadata["bytes"] = String(normalizedBlob.data.count)
+            normalized.append(
+                MediaAttachment(
+                    id: normalizedBlob.id,
+                    mimeType: normalizedBlob.mimeType,
+                    data: normalizedBlob.data,
+                    fileName: attachment.fileName,
+                    metadata: metadata
+                )
+            )
+        }
+        return normalized
+    }
+
+    private static func composeAttachmentSection(_ attachments: [MediaAttachment]) -> String {
+        var lines: [String] = ["## Attachments"]
+        lines.reserveCapacity(attachments.count + 1)
+        for attachment in attachments {
+            let trimmedName = attachment.fileName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let displayName: String
+            if trimmedName.isEmpty {
+                displayName = "attachment-\(attachment.id.uuidString.prefix(8))"
+            } else {
+                displayName = trimmedName
+            }
+            let kind = attachment.metadata["kind"] ?? "unknown"
+            lines.append(
+                "- \(displayName) (\(attachment.mimeType), kind=\(kind), bytes=\(attachment.byteCount))"
+            )
+        }
+        return lines.joined(separator: "\n")
     }
 
     private func emitDiagnostic(

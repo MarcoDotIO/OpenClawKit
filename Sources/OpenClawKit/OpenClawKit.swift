@@ -196,6 +196,46 @@ public struct OpenClawSDK: Sendable {
         return try await engine.events(in: window, limit: limit)
     }
 
+    /// Builds an intent graph for a run request.
+    /// - Parameters:
+    ///   - request: Run request payload.
+    ///   - runtime: Optional preconfigured runtime to use.
+    ///   - diagnosticsPipeline: Optional diagnostics pipeline for ephemeral runtime creation.
+    /// - Returns: Deterministic intent graph representation.
+    public func makeIntentGraph(
+        for request: AgentRunRequest,
+        runtime: EmbeddedAgentRuntime? = nil,
+        diagnosticsPipeline: RuntimeDiagnosticsPipeline? = nil
+    ) async -> IntentGraph {
+        if let runtime {
+            return await runtime.makeIntentGraph(for: request)
+        }
+        let diagnosticsSink = await diagnosticsPipeline?.sink()
+        let ephemeralRuntime = EmbeddedAgentRuntime(diagnosticsSink: diagnosticsSink)
+        return await ephemeralRuntime.makeIntentGraph(for: request)
+    }
+
+    /// Executes a run request through the intent graph API surface.
+    /// - Parameters:
+    ///   - request: Run request payload.
+    ///   - runtime: Optional preconfigured runtime to use.
+    ///   - timeoutMs: Timeout in milliseconds.
+    ///   - diagnosticsPipeline: Optional diagnostics pipeline for ephemeral runtime creation.
+    /// - Returns: Combined graph and run result payload.
+    public func runIntentGraph(
+        _ request: AgentRunRequest,
+        runtime: EmbeddedAgentRuntime? = nil,
+        timeoutMs: Int = 30_000,
+        diagnosticsPipeline: RuntimeDiagnosticsPipeline? = nil
+    ) async throws -> IntentGraphRunResult {
+        if let runtime {
+            return try await runtime.runIntentGraph(request, timeoutMs: timeoutMs)
+        }
+        let diagnosticsSink = await diagnosticsPipeline?.sink()
+        let ephemeralRuntime = EmbeddedAgentRuntime(diagnosticsSink: diagnosticsSink)
+        return try await ephemeralRuntime.runIntentGraph(request, timeoutMs: timeoutMs)
+    }
+
     /// Applies diagnostics feedback to adaptive model-router state.
     /// - Parameters:
     ///   - router: Model router to optimize.
