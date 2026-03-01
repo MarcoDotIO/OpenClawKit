@@ -161,6 +161,38 @@ struct ModelRoutingTests {
         }
     }
 
+    actor MockBedrockTransport: BedrockHTTPTransport {
+        let statusCode: Int
+        let body: Data
+        private(set) var lastPath: String?
+        private(set) var lastRegion: String?
+        private(set) var lastAuthorization: String?
+
+        init(statusCode: Int = 200, body: Data) {
+            self.statusCode = statusCode
+            self.body = body
+        }
+
+        func data(for request: URLRequest) async throws -> HTTPResponseData {
+            self.lastPath = request.url?.path
+            self.lastRegion = request.value(forHTTPHeaderField: "x-amz-region")
+            self.lastAuthorization = request.value(forHTTPHeaderField: "Authorization")
+            return HTTPResponseData(statusCode: self.statusCode, headers: [:], body: self.body)
+        }
+
+        func path() -> String? {
+            self.lastPath
+        }
+
+        func region() -> String? {
+            self.lastRegion
+        }
+
+        func authorization() -> String? {
+            self.lastAuthorization
+        }
+    }
+
     @Test
     func routerUsesDefaultProviderWhenRequestDoesNotSpecifyOne() async throws {
         let router = ModelRouter()
@@ -1009,6 +1041,151 @@ struct ModelRoutingTests {
 
         #expect(response.providerID == VercelAIGatewayModelProvider.providerID)
         #expect(response.text == "vercel-output")
+    }
+
+    @Test
+    func bedrockProviderParsesConverseResponse() async throws {
+        let transport = MockBedrockTransport(
+            body: Data("""
+            {"output":{"message":{"role":"assistant","content":[{"text":"bedrock-output"}]}}}
+            """.utf8)
+        )
+        let provider = BedrockConverseModelProvider(
+            configuration: ProviderServiceConfig(
+                enabled: true,
+                apiStyle: .bedrockConverse,
+                authMode: .awsSDK,
+                modelID: "anthropic.claude-3-5-sonnet",
+                baseURL: "https://bedrock-runtime.us-east-1.amazonaws.com",
+                region: "us-east-1",
+                profile: "default"
+            ),
+            transport: transport
+        )
+        let response = try await provider.generate(
+            ModelGenerationRequest(sessionKey: "s1", prompt: "hello")
+        )
+
+        #expect(response.providerID == BedrockConverseModelProvider.providerID)
+        #expect(response.text == "bedrock-output")
+        #expect(await transport.path()?.contains("/model/anthropic.claude-3-5-sonnet/converse") == true)
+        #expect(await transport.region() == "us-east-1")
+    }
+
+    @Test
+    func githubCopilotProviderParsesChatCompletionsResponse() async throws {
+        let transport = MockOpenAICompatibleTransport(
+            body: Data("""
+            {"model":"gpt-5","choices":[{"index":0,"message":{"role":"assistant","content":"copilot-output"}}]}
+            """.utf8)
+        )
+        let provider = GitHubCopilotModelProvider(
+            configuration: ProviderServiceConfig(
+                enabled: true,
+                apiStyle: .openAICompletions,
+                authMode: .bearerToken,
+                modelID: "gpt-5",
+                accessToken: "copilot-token",
+                baseURL: "https://api.githubcopilot.com",
+                chatCompletionsPath: "chat/completions"
+            ),
+            transport: transport
+        )
+        let response = try await provider.generate(
+            ModelGenerationRequest(sessionKey: "s1", prompt: "hello")
+        )
+
+        #expect(response.providerID == GitHubCopilotModelProvider.providerID)
+        #expect(response.text == "copilot-output")
+        #expect(await transport.authorization() == "Bearer copilot-token")
+    }
+
+    @Test
+    func ollamaProviderAllowsNoAuthorizationHeader() async throws {
+        let transport = MockOpenAICompatibleTransport(
+            body: Data("""
+            {"model":"llama3.3","choices":[{"index":0,"message":{"role":"assistant","content":"ollama-output"}}]}
+            """.utf8)
+        )
+        let provider = OllamaModelProvider(
+            configuration: ProviderServiceConfig(
+                enabled: true,
+                apiStyle: .ollama,
+                authMode: .none,
+                modelID: "llama3.3",
+                baseURL: "http://127.0.0.1:11434/v1",
+                chatCompletionsPath: "chat/completions"
+            ),
+            transport: transport
+        )
+        let response = try await provider.generate(
+            ModelGenerationRequest(sessionKey: "s1", prompt: "hello")
+        )
+
+        #expect(response.providerID == OllamaModelProvider.providerID)
+        #expect(response.text == "ollama-output")
+        #expect(await transport.authorization() == nil)
+    }
+
+    @Test
+    func routerSupportsVLLMProviderID() async throws {
+        let transport = MockOpenAICompatibleTransport(
+            body: Data("""
+            {"model":"qwen2.5-coder-32b-instruct","choices":[{"index":0,"message":{"role":"assistant","content":"vllm-output"}}]}
+            """.utf8)
+        )
+        let router = ModelRouter()
+        await router.register(
+            VLLMModelProvider(
+                configuration: ProviderServiceConfig(
+                    enabled: true,
+                    apiStyle: .openAICompletions,
+                    authMode: .none,
+                    modelID: "qwen2.5-coder-32b-instruct",
+                    baseURL: "http://127.0.0.1:8000/v1",
+                    chatCompletionsPath: "chat/completions"
+                ),
+                transport: transport
+            )
+        )
+        let response = try await router.generate(
+            ModelGenerationRequest(
+                sessionKey: "s1",
+                prompt: "hello",
+                providerID: VLLMModelProvider.providerID
+            )
+        )
+
+        #expect(response.providerID == VLLMModelProvider.providerID)
+        #expect(response.text == "vllm-output")
+    }
+
+    @Test
+    func qwenPortalProviderSupportsOAuthAuthMode() async throws {
+        let transport = MockOpenAICompatibleTransport(
+            body: Data("""
+            {"model":"coder-model","choices":[{"index":0,"message":{"role":"assistant","content":"qwen-output"}}]}
+            """.utf8)
+        )
+        let provider = QwenPortalModelProvider(
+            configuration: ProviderServiceConfig(
+                enabled: true,
+                apiStyle: .openAICompletions,
+                authMode: .oauthToken,
+                modelID: "coder-model",
+                accessToken: "qwen-oauth",
+                baseURL: "https://portal.qwen.ai/v1",
+                chatCompletionsPath: "chat/completions"
+            ),
+            transport: transport
+        )
+        let response = try await provider.generate(
+            ModelGenerationRequest(sessionKey: "s1", prompt: "hello")
+        )
+
+        #expect(response.providerID == QwenPortalModelProvider.providerID)
+        #expect(response.text == "qwen-output")
+        #expect(await transport.authorization() == "Bearer qwen-oauth")
     }
 
     @Test

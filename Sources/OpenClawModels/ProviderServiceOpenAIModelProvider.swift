@@ -647,3 +647,175 @@ public struct ZAIModelProvider: ModelProvider {
         try await self.provider.generate(request)
     }
 }
+
+/// GitHub Copilot provider service implementation.
+public struct GitHubCopilotModelProvider: ModelProvider {
+    /// Canonical provider identifier.
+    public static let providerID = "github-copilot"
+
+    /// Provider identifier.
+    public let id: String
+
+    private let provider: ProviderServiceOpenAIModelProvider
+
+    /// Creates a GitHub Copilot provider.
+    /// - Parameters:
+    ///   - id: Provider identifier.
+    ///   - configuration: Provider service configuration.
+    ///   - transport: HTTP transport implementation.
+    public init(
+        id: String = GitHubCopilotModelProvider.providerID,
+        configuration: ProviderServiceConfig = ProviderServiceConfig(
+            enabled: false,
+            apiStyle: .openAICompletions,
+            authMode: .bearerToken,
+            modelID: "gpt-5",
+            baseURL: "https://api.githubcopilot.com",
+            chatCompletionsPath: "chat/completions"
+        ),
+        transport: any OpenAICompatibleHTTPTransport = HTTPClient()
+    ) {
+        self.id = id
+        self.provider = ProviderServiceOpenAIModelProvider(
+            id: id,
+            configuration: configuration,
+            transport: transport
+        )
+    }
+
+    /// Generates text from GitHub Copilot.
+    /// - Parameter request: Generation request payload.
+    /// - Returns: Generated response payload.
+    public func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
+        try await self.provider.generate(request)
+    }
+}
+
+/// Ollama provider service implementation.
+public struct OllamaModelProvider: ModelProvider {
+    /// Canonical provider identifier.
+    public static let providerID = "ollama"
+
+    /// Provider identifier.
+    public let id: String
+
+    private let provider: ProviderServiceOpenAIModelProvider
+
+    /// Creates an Ollama provider.
+    /// - Parameters:
+    ///   - id: Provider identifier.
+    ///   - configuration: Provider service configuration.
+    ///   - transport: HTTP transport implementation.
+    public init(
+        id: String = OllamaModelProvider.providerID,
+        configuration: ProviderServiceConfig = ProviderServiceConfig(
+            enabled: false,
+            apiStyle: .ollama,
+            authMode: .none,
+            modelID: "llama3.3",
+            baseURL: "http://127.0.0.1:11434/v1",
+            chatCompletionsPath: "chat/completions"
+        ),
+        transport: any OpenAICompatibleHTTPTransport = HTTPClient()
+    ) {
+        self.id = id
+        self.provider = ProviderServiceOpenAIModelProvider(
+            id: id,
+            configuration: configuration,
+            transport: transport
+        )
+    }
+
+    /// Generates text from Ollama.
+    /// - Parameter request: Generation request payload.
+    /// - Returns: Generated response payload.
+    public func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
+        try await self.provider.generate(request)
+    }
+}
+
+/// vLLM provider service implementation.
+public struct VLLMModelProvider: ModelProvider {
+    /// Canonical provider identifier.
+    public static let providerID = "vllm"
+
+    /// Provider identifier.
+    public let id: String
+
+    private let provider: ProviderServiceOpenAIModelProvider
+
+    /// Creates a vLLM provider.
+    /// - Parameters:
+    ///   - id: Provider identifier.
+    ///   - configuration: Provider service configuration.
+    ///   - transport: HTTP transport implementation.
+    public init(
+        id: String = VLLMModelProvider.providerID,
+        configuration: ProviderServiceConfig = ProviderServiceConfig(
+            enabled: false,
+            apiStyle: .openAICompletions,
+            authMode: .none,
+            modelID: "qwen2.5-coder-32b-instruct",
+            baseURL: "http://127.0.0.1:8000/v1",
+            chatCompletionsPath: "chat/completions"
+        ),
+        transport: any OpenAICompatibleHTTPTransport = HTTPClient()
+    ) {
+        self.id = id
+        self.provider = ProviderServiceOpenAIModelProvider(
+            id: id,
+            configuration: configuration,
+            transport: transport
+        )
+    }
+
+    /// Generates text from vLLM.
+    /// - Parameter request: Generation request payload.
+    /// - Returns: Generated response payload.
+    public func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
+        try await self.provider.generate(request)
+    }
+}
+
+/// Qwen Portal provider service implementation.
+public struct QwenPortalModelProvider: ModelProvider {
+    /// Canonical provider identifier.
+    public static let providerID = "qwen-portal"
+
+    /// Provider identifier.
+    public let id: String
+
+    private let provider: ProviderServiceOpenAIModelProvider
+
+    /// Creates a Qwen Portal provider.
+    /// - Parameters:
+    ///   - id: Provider identifier.
+    ///   - configuration: Provider service configuration.
+    ///   - transport: HTTP transport implementation.
+    public init(
+        id: String = QwenPortalModelProvider.providerID,
+        configuration: ProviderServiceConfig = ProviderServiceConfig(
+            enabled: false,
+            apiStyle: .openAICompletions,
+            authMode: .oauthToken,
+            modelID: "coder-model",
+            baseURL: "https://portal.qwen.ai/v1",
+            chatCompletionsPath: "chat/completions"
+        ),
+        transport: any OpenAICompatibleHTTPTransport = HTTPClient()
+    ) {
+        self.id = id
+        self.provider = ProviderServiceOpenAIModelProvider(
+            id: id,
+            configuration: configuration,
+            transport: transport
+        )
+    }
+
+    /// Generates text from Qwen Portal.
+    /// - Parameter request: Generation request payload.
+    /// - Returns: Generated response payload.
+    public func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
+        try await self.provider.generate(request)
+    }
+}
