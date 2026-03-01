@@ -633,6 +633,203 @@ struct ModelRoutingTests {
     }
 
     @Test
+    func moonshotProviderParsesChatCompletionsResponse() async throws {
+        let transport = MockOpenAICompatibleTransport(
+            body: Data("""
+            {"model":"kimi-k2.5","choices":[{"index":0,"message":{"role":"assistant","content":"moonshot-output"}}]}
+            """.utf8)
+        )
+        let provider = MoonshotModelProvider(
+            configuration: ProviderServiceConfig(
+                enabled: true,
+                apiStyle: .openAICompletions,
+                authMode: .apiKey,
+                modelID: "kimi-k2.5",
+                apiKey: "moonshot-key",
+                baseURL: "https://api.moonshot.ai/v1",
+                chatCompletionsPath: "chat/completions"
+            ),
+            transport: transport
+        )
+        let response = try await provider.generate(
+            ModelGenerationRequest(sessionKey: "s1", prompt: "hello")
+        )
+
+        #expect(response.providerID == MoonshotModelProvider.providerID)
+        #expect(response.text == "moonshot-output")
+        #expect(await transport.authorization() == "Bearer moonshot-key")
+    }
+
+    @Test
+    func routerSupportsLiteLLMProviderID() async throws {
+        let transport = MockOpenAICompatibleTransport(
+            body: Data("""
+            {"model":"gpt-4.1-mini","choices":[{"index":0,"message":{"role":"assistant","content":"litellm-output"}}]}
+            """.utf8)
+        )
+        let router = ModelRouter()
+        await router.register(
+            LiteLLMModelProvider(
+                configuration: ProviderServiceConfig(
+                    enabled: true,
+                    apiStyle: .openAICompletions,
+                    authMode: .apiKey,
+                    modelID: "gpt-4.1-mini",
+                    apiKey: "litellm-key",
+                    baseURL: "http://127.0.0.1:4000/v1",
+                    chatCompletionsPath: "chat/completions"
+                ),
+                transport: transport
+            )
+        )
+        let response = try await router.generate(
+            ModelGenerationRequest(
+                sessionKey: "s1",
+                prompt: "hello",
+                providerID: LiteLLMModelProvider.providerID
+            )
+        )
+
+        #expect(response.providerID == LiteLLMModelProvider.providerID)
+        #expect(response.text == "litellm-output")
+    }
+
+    @Test
+    func togetherProviderParsesChatCompletionsResponse() async throws {
+        let transport = MockOpenAICompatibleTransport(
+            body: Data("""
+            {"model":"meta-llama/Llama-3.3-70B-Instruct-Turbo","choices":[{"index":0,"message":{"role":"assistant","content":"together-output"}}]}
+            """.utf8)
+        )
+        let provider = TogetherModelProvider(
+            configuration: ProviderServiceConfig(
+                enabled: true,
+                apiStyle: .openAICompletions,
+                authMode: .apiKey,
+                modelID: "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+                apiKey: "together-key",
+                baseURL: "https://api.together.xyz/v1",
+                chatCompletionsPath: "chat/completions"
+            ),
+            transport: transport
+        )
+        let response = try await provider.generate(
+            ModelGenerationRequest(sessionKey: "s1", prompt: "hello")
+        )
+
+        #expect(response.providerID == TogetherModelProvider.providerID)
+        #expect(response.text == "together-output")
+    }
+
+    @Test
+    func huggingFaceProviderParsesChatCompletionsResponse() async throws {
+        let transport = MockOpenAICompatibleTransport(
+            body: Data("""
+            {"model":"deepseek-ai/DeepSeek-R1","choices":[{"index":0,"message":{"role":"assistant","content":"huggingface-output"}}]}
+            """.utf8)
+        )
+        let provider = HuggingFaceModelProvider(
+            configuration: ProviderServiceConfig(
+                enabled: true,
+                apiStyle: .openAICompletions,
+                authMode: .apiKey,
+                modelID: "deepseek-ai/DeepSeek-R1",
+                apiKey: "huggingface-key",
+                baseURL: "https://router.huggingface.co/v1",
+                chatCompletionsPath: "chat/completions"
+            ),
+            transport: transport
+        )
+        let response = try await provider.generate(
+            ModelGenerationRequest(sessionKey: "s1", prompt: "hello")
+        )
+
+        #expect(response.providerID == HuggingFaceModelProvider.providerID)
+        #expect(response.text == "huggingface-output")
+    }
+
+    @Test
+    func qianfanProviderParsesChatCompletionsResponse() async throws {
+        let transport = MockOpenAICompatibleTransport(
+            body: Data("""
+            {"model":"deepseek-v3.2","choices":[{"index":0,"message":{"role":"assistant","content":"qianfan-output"}}]}
+            """.utf8)
+        )
+        let provider = QianfanModelProvider(
+            configuration: ProviderServiceConfig(
+                enabled: true,
+                apiStyle: .openAICompletions,
+                authMode: .apiKey,
+                modelID: "deepseek-v3.2",
+                apiKey: "qianfan-key",
+                baseURL: "https://qianfan.baidubce.com/v2",
+                chatCompletionsPath: "chat/completions"
+            ),
+            transport: transport
+        )
+        let response = try await provider.generate(
+            ModelGenerationRequest(sessionKey: "s1", prompt: "hello")
+        )
+
+        #expect(response.providerID == QianfanModelProvider.providerID)
+        #expect(response.text == "qianfan-output")
+    }
+
+    @Test
+    func nvidiaProviderParsesChatCompletionsResponse() async throws {
+        let transport = MockOpenAICompatibleTransport(
+            body: Data("""
+            {"model":"nvidia/llama-3.1-nemotron-70b-instruct","choices":[{"index":0,"message":{"role":"assistant","content":"nvidia-output"}}]}
+            """.utf8)
+        )
+        let provider = NVIDIAModelProvider(
+            configuration: ProviderServiceConfig(
+                enabled: true,
+                apiStyle: .openAICompletions,
+                authMode: .apiKey,
+                modelID: "nvidia/llama-3.1-nemotron-70b-instruct",
+                apiKey: "nvidia-key",
+                baseURL: "https://integrate.api.nvidia.com/v1",
+                chatCompletionsPath: "chat/completions"
+            ),
+            transport: transport
+        )
+        let response = try await provider.generate(
+            ModelGenerationRequest(sessionKey: "s1", prompt: "hello")
+        )
+
+        #expect(response.providerID == NVIDIAModelProvider.providerID)
+        #expect(response.text == "nvidia-output")
+    }
+
+    @Test
+    func zaiProviderParsesChatCompletionsResponse() async throws {
+        let transport = MockOpenAICompatibleTransport(
+            body: Data("""
+            {"model":"glm-4.7","choices":[{"index":0,"message":{"role":"assistant","content":"zai-output"}}]}
+            """.utf8)
+        )
+        let provider = ZAIModelProvider(
+            configuration: ProviderServiceConfig(
+                enabled: true,
+                apiStyle: .openAICompletions,
+                authMode: .apiKey,
+                modelID: "glm-4.7",
+                apiKey: "zai-key",
+                baseURL: "https://api.z.ai/api/paas/v4",
+                chatCompletionsPath: "chat/completions"
+            ),
+            transport: transport
+        )
+        let response = try await provider.generate(
+            ModelGenerationRequest(sessionKey: "s1", prompt: "hello")
+        )
+
+        #expect(response.providerID == ZAIModelProvider.providerID)
+        #expect(response.text == "zai-output")
+    }
+
+    @Test
     func routerSupportsGrokAliasProviderID() async throws {
         let transport = MockXAITransport(
             body: Data("""

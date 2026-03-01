@@ -346,3 +346,304 @@ public struct CerebrasModelProvider: ModelProvider {
         try await self.provider.generate(request)
     }
 }
+
+/// Moonshot provider service implementation.
+public struct MoonshotModelProvider: ModelProvider {
+    /// Canonical provider identifier.
+    public static let providerID = "moonshot"
+
+    /// Provider identifier.
+    public let id: String
+
+    private let provider: ProviderServiceOpenAIModelProvider
+
+    /// Creates a Moonshot provider.
+    /// - Parameters:
+    ///   - id: Provider identifier.
+    ///   - configuration: Provider service configuration.
+    ///   - transport: HTTP transport implementation.
+    public init(
+        id: String = MoonshotModelProvider.providerID,
+        configuration: ProviderServiceConfig = ProviderServiceConfig(
+            enabled: false,
+            apiStyle: .openAICompletions,
+            authMode: .apiKey,
+            modelID: "kimi-k2.5",
+            baseURL: "https://api.moonshot.ai/v1",
+            chatCompletionsPath: "chat/completions"
+        ),
+        transport: any OpenAICompatibleHTTPTransport = HTTPClient()
+    ) {
+        self.id = id
+        self.provider = ProviderServiceOpenAIModelProvider(
+            id: id,
+            configuration: configuration,
+            transport: transport
+        )
+    }
+
+    /// Generates text from Moonshot.
+    /// - Parameter request: Generation request payload.
+    /// - Returns: Generated response payload.
+    public func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
+        try await self.provider.generate(request)
+    }
+}
+
+/// LiteLLM provider service implementation.
+public struct LiteLLMModelProvider: ModelProvider {
+    /// Canonical provider identifier.
+    public static let providerID = "litellm"
+
+    /// Provider identifier.
+    public let id: String
+
+    private let provider: ProviderServiceOpenAIModelProvider
+
+    /// Creates a LiteLLM provider.
+    /// - Parameters:
+    ///   - id: Provider identifier.
+    ///   - configuration: Provider service configuration.
+    ///   - transport: HTTP transport implementation.
+    public init(
+        id: String = LiteLLMModelProvider.providerID,
+        configuration: ProviderServiceConfig = ProviderServiceConfig(
+            enabled: false,
+            apiStyle: .openAICompletions,
+            authMode: .apiKey,
+            modelID: "gpt-4.1-mini",
+            baseURL: "http://127.0.0.1:4000/v1",
+            chatCompletionsPath: "chat/completions"
+        ),
+        transport: any OpenAICompatibleHTTPTransport = HTTPClient()
+    ) {
+        self.id = id
+        self.provider = ProviderServiceOpenAIModelProvider(
+            id: id,
+            configuration: configuration,
+            transport: transport
+        )
+    }
+
+    /// Generates text from LiteLLM.
+    /// - Parameter request: Generation request payload.
+    /// - Returns: Generated response payload.
+    public func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
+        try await self.provider.generate(request)
+    }
+}
+
+/// Together provider service implementation.
+public struct TogetherModelProvider: ModelProvider {
+    /// Canonical provider identifier.
+    public static let providerID = "together"
+
+    /// Provider identifier.
+    public let id: String
+
+    private let provider: ProviderServiceOpenAIModelProvider
+
+    /// Creates a Together provider.
+    /// - Parameters:
+    ///   - id: Provider identifier.
+    ///   - configuration: Provider service configuration.
+    ///   - transport: HTTP transport implementation.
+    public init(
+        id: String = TogetherModelProvider.providerID,
+        configuration: ProviderServiceConfig = ProviderServiceConfig(
+            enabled: false,
+            apiStyle: .openAICompletions,
+            authMode: .apiKey,
+            modelID: "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+            baseURL: "https://api.together.xyz/v1",
+            chatCompletionsPath: "chat/completions"
+        ),
+        transport: any OpenAICompatibleHTTPTransport = HTTPClient()
+    ) {
+        self.id = id
+        self.provider = ProviderServiceOpenAIModelProvider(
+            id: id,
+            configuration: configuration,
+            transport: transport
+        )
+    }
+
+    /// Generates text from Together.
+    /// - Parameter request: Generation request payload.
+    /// - Returns: Generated response payload.
+    public func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
+        try await self.provider.generate(request)
+    }
+}
+
+/// Hugging Face Inference provider service implementation.
+public struct HuggingFaceModelProvider: ModelProvider {
+    /// Canonical provider identifier.
+    public static let providerID = "huggingface"
+
+    /// Provider identifier.
+    public let id: String
+
+    private let provider: ProviderServiceOpenAIModelProvider
+
+    /// Creates a Hugging Face provider.
+    /// - Parameters:
+    ///   - id: Provider identifier.
+    ///   - configuration: Provider service configuration.
+    ///   - transport: HTTP transport implementation.
+    public init(
+        id: String = HuggingFaceModelProvider.providerID,
+        configuration: ProviderServiceConfig = ProviderServiceConfig(
+            enabled: false,
+            apiStyle: .openAICompletions,
+            authMode: .apiKey,
+            modelID: "deepseek-ai/DeepSeek-R1",
+            baseURL: "https://router.huggingface.co/v1",
+            chatCompletionsPath: "chat/completions"
+        ),
+        transport: any OpenAICompatibleHTTPTransport = HTTPClient()
+    ) {
+        self.id = id
+        self.provider = ProviderServiceOpenAIModelProvider(
+            id: id,
+            configuration: configuration,
+            transport: transport
+        )
+    }
+
+    /// Generates text from Hugging Face Inference.
+    /// - Parameter request: Generation request payload.
+    /// - Returns: Generated response payload.
+    public func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
+        try await self.provider.generate(request)
+    }
+}
+
+/// Qianfan provider service implementation.
+public struct QianfanModelProvider: ModelProvider {
+    /// Canonical provider identifier.
+    public static let providerID = "qianfan"
+
+    /// Provider identifier.
+    public let id: String
+
+    private let provider: ProviderServiceOpenAIModelProvider
+
+    /// Creates a Qianfan provider.
+    /// - Parameters:
+    ///   - id: Provider identifier.
+    ///   - configuration: Provider service configuration.
+    ///   - transport: HTTP transport implementation.
+    public init(
+        id: String = QianfanModelProvider.providerID,
+        configuration: ProviderServiceConfig = ProviderServiceConfig(
+            enabled: false,
+            apiStyle: .openAICompletions,
+            authMode: .apiKey,
+            modelID: "deepseek-v3.2",
+            baseURL: "https://qianfan.baidubce.com/v2",
+            chatCompletionsPath: "chat/completions"
+        ),
+        transport: any OpenAICompatibleHTTPTransport = HTTPClient()
+    ) {
+        self.id = id
+        self.provider = ProviderServiceOpenAIModelProvider(
+            id: id,
+            configuration: configuration,
+            transport: transport
+        )
+    }
+
+    /// Generates text from Qianfan.
+    /// - Parameter request: Generation request payload.
+    /// - Returns: Generated response payload.
+    public func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
+        try await self.provider.generate(request)
+    }
+}
+
+/// NVIDIA provider service implementation.
+public struct NVIDIAModelProvider: ModelProvider {
+    /// Canonical provider identifier.
+    public static let providerID = "nvidia"
+
+    /// Provider identifier.
+    public let id: String
+
+    private let provider: ProviderServiceOpenAIModelProvider
+
+    /// Creates an NVIDIA provider.
+    /// - Parameters:
+    ///   - id: Provider identifier.
+    ///   - configuration: Provider service configuration.
+    ///   - transport: HTTP transport implementation.
+    public init(
+        id: String = NVIDIAModelProvider.providerID,
+        configuration: ProviderServiceConfig = ProviderServiceConfig(
+            enabled: false,
+            apiStyle: .openAICompletions,
+            authMode: .apiKey,
+            modelID: "nvidia/llama-3.1-nemotron-70b-instruct",
+            baseURL: "https://integrate.api.nvidia.com/v1",
+            chatCompletionsPath: "chat/completions"
+        ),
+        transport: any OpenAICompatibleHTTPTransport = HTTPClient()
+    ) {
+        self.id = id
+        self.provider = ProviderServiceOpenAIModelProvider(
+            id: id,
+            configuration: configuration,
+            transport: transport
+        )
+    }
+
+    /// Generates text from NVIDIA.
+    /// - Parameter request: Generation request payload.
+    /// - Returns: Generated response payload.
+    public func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
+        try await self.provider.generate(request)
+    }
+}
+
+/// Z.AI provider service implementation.
+public struct ZAIModelProvider: ModelProvider {
+    /// Canonical provider identifier.
+    public static let providerID = "zai"
+
+    /// Provider identifier.
+    public let id: String
+
+    private let provider: ProviderServiceOpenAIModelProvider
+
+    /// Creates a Z.AI provider.
+    /// - Parameters:
+    ///   - id: Provider identifier.
+    ///   - configuration: Provider service configuration.
+    ///   - transport: HTTP transport implementation.
+    public init(
+        id: String = ZAIModelProvider.providerID,
+        configuration: ProviderServiceConfig = ProviderServiceConfig(
+            enabled: false,
+            apiStyle: .openAICompletions,
+            authMode: .apiKey,
+            modelID: "glm-4.7",
+            baseURL: "https://api.z.ai/api/paas/v4",
+            chatCompletionsPath: "chat/completions"
+        ),
+        transport: any OpenAICompatibleHTTPTransport = HTTPClient()
+    ) {
+        self.id = id
+        self.provider = ProviderServiceOpenAIModelProvider(
+            id: id,
+            configuration: configuration,
+            transport: transport
+        )
+    }
+
+    /// Generates text from Z.AI.
+    /// - Parameter request: Generation request payload.
+    /// - Returns: Generated response payload.
+    public func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
+        try await self.provider.generate(request)
+    }
+}
