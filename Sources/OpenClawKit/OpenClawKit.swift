@@ -130,9 +130,14 @@ public struct OpenClawSDK: Sendable {
     /// - Returns: Diagnostics pipeline actor.
     public func makeDiagnosticsPipeline(
         eventLimit: Int = 500,
-        replayStore: (any ReplayStore)? = nil
+        replayStore: (any ReplayStore)? = nil,
+        timelineSink: (any RuntimeTimelineSink)? = nil
     ) -> RuntimeDiagnosticsPipeline {
-        RuntimeDiagnosticsPipeline(eventLimit: eventLimit, replayStore: replayStore)
+        RuntimeDiagnosticsPipeline(
+            eventLimit: eventLimit,
+            replayStore: replayStore,
+            timelineSink: timelineSink
+        )
     }
 
     /// Creates a default file-backed replay store.
@@ -189,6 +194,43 @@ public struct OpenClawSDK: Sendable {
     ) async throws -> [ReplayEventEnvelope] {
         let engine = ReplayEngine(store: store)
         return try await engine.events(in: window, limit: limit)
+    }
+
+    /// Returns timeline records derived from recent diagnostics events.
+    /// - Parameters:
+    ///   - pipeline: Runtime diagnostics pipeline.
+    ///   - limit: Maximum number of records to include.
+    public func runtimeTimeline(
+        from pipeline: RuntimeDiagnosticsPipeline,
+        limit: Int = 500
+    ) async -> [RuntimeTimelineRecord] {
+        let events = await pipeline.recentEvents(limit: limit)
+        return events.map(RuntimeTimelineRecord.init(event:))
+    }
+
+    /// Exports timeline records to a JSON file for profiling correlation.
+    /// - Parameters:
+    ///   - pipeline: Runtime diagnostics pipeline.
+    ///   - limit: Maximum number of records to export.
+    ///   - fileURL: Destination JSON file URL.
+    /// - Returns: Written file URL.
+    @discardableResult
+    public func exportRuntimeTimeline(
+        from pipeline: RuntimeDiagnosticsPipeline,
+        limit: Int = 500,
+        to fileURL: URL
+    ) async throws -> URL {
+        let timeline = await self.runtimeTimeline(from: pipeline, limit: limit)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .millisecondsSince1970
+        let payload = try encoder.encode(timeline)
+        try FileManager.default.createDirectory(
+            at: fileURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try payload.write(to: fileURL, options: [.atomic])
+        return fileURL
     }
 
     /// Runs a lightweight security audit and optionally publishes findings to diagnostics.

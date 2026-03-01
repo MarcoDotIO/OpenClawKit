@@ -182,6 +182,7 @@ public actor RuntimeDiagnosticsPipeline {
 
     private let eventLimit: Int
     private let replayStore: (any ReplayStore)?
+    private let timelineSink: (any RuntimeTimelineSink)?
     private var events: [RuntimeDiagnosticEvent] = []
     private var replaySequence = Int64(0)
     private var replaySequenceInitialized = false
@@ -203,11 +204,18 @@ public actor RuntimeDiagnosticsPipeline {
     private var channelMetrics: [String: MutableChannelMetrics] = [:]
 
     /// Creates a diagnostics pipeline.
-    /// - Parameter eventLimit: Maximum number of recent events retained.
-    /// - Parameter replayStore: Optional replay store used for deterministic event capture.
-    public init(eventLimit: Int = 500, replayStore: (any ReplayStore)? = nil) {
+    /// - Parameters:
+    ///   - eventLimit: Maximum number of recent events retained.
+    ///   - replayStore: Optional replay store used for deterministic event capture.
+    ///   - timelineSink: Optional timeline sink for Instruments/diagnostics export.
+    public init(
+        eventLimit: Int = 500,
+        replayStore: (any ReplayStore)? = nil,
+        timelineSink: (any RuntimeTimelineSink)? = nil
+    ) {
         self.eventLimit = max(1, eventLimit)
         self.replayStore = replayStore
+        self.timelineSink = timelineSink
     }
 
     /// Returns a sink closure suitable for runtime/channel injection.
@@ -225,6 +233,7 @@ public actor RuntimeDiagnosticsPipeline {
             self.events.removeFirst(self.events.count - self.eventLimit)
         }
         self.apply(event)
+        await self.timelineSink?.record(RuntimeTimelineRecord(event: event))
         await self.appendReplayEvent(for: event)
     }
 

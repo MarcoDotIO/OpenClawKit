@@ -171,6 +171,62 @@ struct RuntimeDiagnosticsPipelineTests {
     }
 
     @Test
+    func pipelinePublishesRecordsToTimelineSink() async {
+        let timelineSink = BufferedRuntimeTimelineSink(limit: 20)
+        let pipeline = RuntimeDiagnosticsPipeline(
+            eventLimit: 20,
+            timelineSink: timelineSink
+        )
+        await pipeline.record(
+            RuntimeDiagnosticEvent(
+                subsystem: "runtime",
+                name: "run.started",
+                runID: "timeline-1",
+                sessionKey: "timeline-session"
+            )
+        )
+        await pipeline.record(
+            RuntimeDiagnosticEvent(
+                subsystem: "runtime",
+                name: "run.completed",
+                runID: "timeline-1",
+                sessionKey: "timeline-session"
+            )
+        )
+
+        let records = await timelineSink.timeline()
+        #expect(records.map(\.name) == ["run.started", "run.completed"])
+        #expect(records.map(\.runID) == ["timeline-1", "timeline-1"])
+    }
+
+    @Test
+    func sdkExportsTimelineJSON() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("openclawkit-timeline-export-tests", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let pipeline = RuntimeDiagnosticsPipeline(eventLimit: 10)
+        await pipeline.record(RuntimeDiagnosticEvent(subsystem: "runtime", name: "run.started", runID: "export-1"))
+        await pipeline.record(RuntimeDiagnosticEvent(subsystem: "runtime", name: "run.completed", runID: "export-1"))
+
+        let destination = root.appendingPathComponent("timeline.json", isDirectory: false)
+        let exported = try await OpenClawSDK.shared.exportRuntimeTimeline(
+            from: pipeline,
+            limit: 10,
+            to: destination
+        )
+        let data = try Data(contentsOf: exported)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .millisecondsSince1970
+        let records = try decoder.decode([RuntimeTimelineRecord].self, from: data)
+        #expect(records.count == 2)
+        #expect(records.first?.name == "run.started")
+        #expect(records.last?.name == "run.completed")
+    }
+
+    @Test
     func runtimeEmitsMetricsThroughPipelineSink() async throws {
         let pipeline = RuntimeDiagnosticsPipeline(eventLimit: 100)
         let sink = await pipeline.sink()
