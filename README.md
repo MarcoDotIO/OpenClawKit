@@ -13,31 +13,30 @@ OpenClawKit is a Swift-native agent SDK for Apple platforms and Linux services.
 It provides a complete runtime surface: protocol contracts, model routing, channels,
 skills, memory, observability, security, iOS app integrations, and release-grade tooling.
 
-## 2026.2.0 Highlights
+## 2026.2.1 Highlights
 
-### Core Breakthroughs
+### Channel + Model-Service Parity
 
-- **Deterministic Replay Runtime (Flight Recorder)**  
-  Stable replay schemas (`ReplayEvent`, `ReplayEventEnvelope`), append-only replay stores,
-  deterministic replay engine queries, and SDK replay APIs.
-- **Self-Optimizing Router (Latency/Cost/Quality Autopilot)**  
-  Adaptive routing state and feedback loops powered by runtime diagnostics and provider telemetry.
-- **WASM Skill Runtime (Portable + Safer Skills)**  
-  Runtime WASM skill execution support integrated into skill invocation flow.
+- Channel adapter parity against OpenClaw references:
+  Slack, Google Chat, Signal, iMessage (with availability guards), Microsoft Teams,
+  production WebChat, and hardened WhatsApp Cloud behavior/diagnostics.
+- Provider service parity for xAI/Grok and the remaining provider packs:
+  OpenRouter, Groq, Mistral, Cerebras, Moonshot, LiteLLM, Together, Hugging Face,
+  Qianfan, NVIDIA, Z.AI, MiniMax, MiniMax Portal, Synthetic, Xiaomi,
+  Cloudflare AI Gateway, Vercel AI Gateway, Amazon Bedrock, GitHub Copilot,
+  Ollama, vLLM, and Qwen Portal.
+- Unified provider matrix through `ProviderServiceConfig` with explicit API style
+  and auth mode controls (`apiKey`, bearer/OAuth token, `awsSDK`, `none`).
 
-### Apple-First Features
+### Security + Validation Hardening
 
-- Secure Enclave-signed replay ledger hooks with integrity verification support.
-- Instruments-native timeline sink (`OSLog`/signpost-friendly diagnostics export).
-- Intent graph as a first-class protocol/runtime/SDK surface.
-- App Intents + App Shortcuts updated to intent-graph aware flows.
-- Live Activities support for long-running runs in the iOS sample.
-- Proactive automation layer with persisted rules + background tick hooks.
-- Personal-data skills kit with permissioned connector policy gates.
-- Multimodal on-device session mode (attachments in protocol/runtime/channel/iOS chat).
-- SwiftData + CloudKit-ready memory graph store with legacy migration bridge.
-- Ask OpenClaw Share Extension scaffold + app inbox bridge.
-- CI Apple matrix validation for platform declarations and iOS build coverage.
+- Security audit coverage expanded for new channel/provider secrets and risky defaults,
+  including mention-only gates, verification/shared-secret checks, insecure service
+  URL checks, and provider auth/region diagnostics.
+- iOS sample deploy surfaces now expose parity provider/channel configuration with
+  migration-safe secure secret persistence.
+- Full release gate is enforced across Swift build/test, networking concurrency,
+  iOS build/test, and Apple matrix validation.
 
 ## Table of Contents
 
@@ -111,8 +110,10 @@ print(await diagnostics.usageSnapshot().runsCompleted)
 ## Runtime Features
 
 - Actor-isolated embedded runtime orchestration (`EmbeddedAgentRuntime`)
-- Multi-provider model routing with fallback and adaptive optimization
-- Channel adapters (Discord, Telegram, WhatsApp Cloud, webchat)
+- Multi-provider model routing with fallback and adaptive optimization across
+  OpenAI-compatible, Anthropic-compatible, Gemini, xAI, Bedrock, and local runtimes
+- Channel adapters (Discord, Telegram, WhatsApp Cloud, Slack, Google Chat, Signal,
+  iMessage, Microsoft Teams, and production WebChat)
 - Skill discovery/invocation (`SKILL.md`, JS/WASM executors)
 - Prompt bootstrap context loading (`AGENTS.md`, identity/personality files)
 - Persistent session routing and conversation memory
@@ -158,6 +159,7 @@ print(await diagnostics.usageSnapshot().runsCompleted)
 ### iOS Sample App (`Examples/iOS/OpenClawiOS`)
 
 - Deploy/chat/models/skills/channels/diagnostics flows
+- Provider/channel parity selection surfaces with secure credential persistence
 - Intent-graph aware App Intents + shortcuts
 - Live Activities status surfaces for run lifecycle
 - Proactive background automation hooks
@@ -221,6 +223,8 @@ CI workflows:
 - [Architecture](docs/architecture.md)
 - [API Surface](docs/api-surface.md)
 - [Testing Guide](docs/testing.md)
+- [2026.2.1 Parity Manifest](docs/parity-2026.2.1.md)
+- [2026.2.1 Roadmap](docs/roadmap-2026.2.1.md)
 - [Changelog](CHANGELOG.md)
 
 Protocol generation:

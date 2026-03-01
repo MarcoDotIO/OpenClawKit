@@ -31,8 +31,10 @@ Some integration-style E2E workflows may require provider keys:
 
 - `OPENAI_API_KEY`
 - `GEMINI_API_KEY`
+- `ANTHROPIC_API_KEY`
+- `XAI_API_KEY`
 
-Set these in local `.env` (ignored by git) when running provider-backed E2E scenarios.
+Set these in local `.env` (ignored by git) when running live provider-backed scenarios.
 Never commit `.env`.
 
 ## Recommended Local Validation Sequence
@@ -45,21 +47,20 @@ Never commit `.env`.
 6. `Scripts/validate-apple-matrix.sh --platform macos`
 7. `Scripts/validate-apple-matrix.sh --platform ios`
 
-## 2026.2.0 Reliability + Platform Coverage Highlights
+## 2026.2.1 Parity Coverage Highlights
 
-- Replay/diagnostics reliability:
-  deterministic replay sequence tests, replay store compaction/recovery, and
-  SDK replay query filtering coverage.
-- Router/telemetry reliability:
-  adaptive routing policy + closed-loop diagnostics tests for provider scoring
-  behavior under runtime feedback.
-- Skills/runtime reliability:
-  WASM execution tests plus connector-permission policy coverage across allow/deny paths.
-- Apple integration reliability:
-  intent-graph App Intents tests, Live Activity status checks, proactive
-  automation background hook tests, and multimodal iOS/UI/runtime assertions.
-- Memory reliability:
-  SwiftData+CloudKit-ready memory graph migration/config tests.
+- Channel adapter reliability:
+  dedicated suites for Slack, Google Chat, Signal, iMessage, Microsoft Teams,
+  WebChat, and parity-expanded WhatsApp Cloud handling.
+- Provider parity reliability:
+  routing/unit tests for xAI/Grok, OpenAI-compatible packs, Anthropic-compatible
+  gateway packs, and unique protocol providers (Bedrock/Copilot/Ollama/vLLM/Qwen).
+- Config matrix reliability:
+  serialization/defaulting coverage for expanded provider-service auth/API-style
+  fields and channel config surfaces.
+- Security reliability:
+  regression coverage for parity secret detection and risky-default findings,
+  including local-runtime auth-none exemptions and AWS-region checks.
 - CI platform coverage:
-  Apple matrix contract validation in `Scripts/validate-apple-matrix.sh`
-  (platform declarations, share-extension scaffold, iOS 26 API guard checks).
+  full per-commit gate remains required, including Apple matrix validation in
+  `Scripts/validate-apple-matrix.sh` for macOS and iOS declarations.

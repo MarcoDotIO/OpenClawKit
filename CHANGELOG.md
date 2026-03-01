@@ -1,5 +1,48 @@
 # Changelog
 
+## 2026.2.1 - 2026-03-01
+
+### Added
+
+- Channel adapter parity wave completed:
+  - Slack, Google Chat, Signal, iMessage, Microsoft Teams, and production WebChat adapters
+  - parity expansion for `WhatsAppCloudChannelAdapter` diagnostics/webhook handling.
+- Model service parity completed across remaining OpenClaw provider families:
+  - first-class `xai` / Grok support
+  - OpenAI-compatible packs: `openrouter`, `groq`, `mistral`, `cerebras`,
+    `moonshot`, `litellm`, `together`, `huggingface`, `qianfan`, `nvidia`, `zai`
+  - Anthropic-compatible/gateway pack: `minimax`, `minimax-portal`, `synthetic`,
+    `xiaomi`, `cloudflare-ai-gateway`, `vercel-ai-gateway`
+  - unique protocol pack: `amazon-bedrock`, `github-copilot`, `ollama`,
+    `vllm`, `qwen-portal`.
+- Generic provider-service model layers:
+  - `ProviderServiceOpenAIModelProvider`
+  - `ProviderServiceAnthropicModelProvider`
+  - `BedrockConverseModelProvider`
+  for consistent config/auth handling across provider families.
+
+### Changed
+
+- `OpenClawConfig` channel/model config surfaces now fully cover the parity matrix
+  with backward-compatible decode defaults.
+- `SecurityAuditReport` now audits newly added channel/provider credentials and
+  emits risky-default findings for parity-specific misconfiguration cases.
+- iOS sample deployment/state flows now expose all parity providers/channels and
+  persist credentials through secure storage with migration-safe settings updates.
+
+### Tests
+
+- Expanded adapter test suites for new channel behavior, mention-only gating, and
+  webhook/transport edge handling.
+- Expanded model routing tests for all parity providers plus auth/api-style
+  validation failures and protocol-specific request expectations.
+- Expanded config/security regression suites for provider matrix serialization and
+  security-audit parity checks (including local auth-none exemptions and provider
+  secret detection).
+- Kept full per-commit validation gate green:
+  Swift warnings-as-errors build, networking concurrency check, `swift test`,
+  iOS build/test scripts, and Apple matrix validation for macOS + iOS.
+
 ## 2026.2.0 - 2026-03-01
 
 ### Added
