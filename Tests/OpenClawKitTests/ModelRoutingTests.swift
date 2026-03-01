@@ -86,6 +86,9 @@ struct ModelRoutingTests {
     actor MockAnthropicTransport: AnthropicHTTPTransport {
         let statusCode: Int
         let body: Data
+        private(set) var lastPath: String?
+        private(set) var lastAPIKey: String?
+        private(set) var lastAuthorization: String?
 
         init(statusCode: Int = 200, body: Data) {
             self.statusCode = statusCode
@@ -93,8 +96,22 @@ struct ModelRoutingTests {
         }
 
         func data(for request: URLRequest) async throws -> HTTPResponseData {
-            _ = request
+            self.lastPath = request.url?.path
+            self.lastAPIKey = request.value(forHTTPHeaderField: "x-api-key")
+            self.lastAuthorization = request.value(forHTTPHeaderField: "Authorization")
             return HTTPResponseData(statusCode: self.statusCode, headers: [:], body: self.body)
+        }
+
+        func path() -> String? {
+            self.lastPath
+        }
+
+        func apiKey() -> String? {
+            self.lastAPIKey
+        }
+
+        func authorization() -> String? {
+            self.lastAuthorization
         }
     }
 
@@ -827,6 +844,171 @@ struct ModelRoutingTests {
 
         #expect(response.providerID == ZAIModelProvider.providerID)
         #expect(response.text == "zai-output")
+    }
+
+    @Test
+    func minimaxProviderParsesMessagesResponse() async throws {
+        let transport = MockAnthropicTransport(
+            body: Data("""
+            {"id":"msg_1","model":"MiniMax-M2.1","content":[{"type":"text","text":"minimax-output"}]}
+            """.utf8)
+        )
+        let provider = MinimaxModelProvider(
+            configuration: ProviderServiceConfig(
+                enabled: true,
+                apiStyle: .anthropicMessages,
+                authMode: .apiKey,
+                modelID: "MiniMax-M2.1",
+                apiKey: "minimax-key",
+                baseURL: "https://api.minimax.io/anthropic",
+                messagesPath: "messages"
+            ),
+            transport: transport
+        )
+        let response = try await provider.generate(
+            ModelGenerationRequest(sessionKey: "s1", prompt: "hello")
+        )
+
+        #expect(response.providerID == MinimaxModelProvider.providerID)
+        #expect(response.text == "minimax-output")
+        #expect(await transport.path()?.contains("/anthropic/messages") == true)
+        #expect(await transport.apiKey() == "minimax-key")
+    }
+
+    @Test
+    func minimaxPortalProviderSupportsOAuthAuthMode() async throws {
+        let transport = MockAnthropicTransport(
+            body: Data("""
+            {"id":"msg_1","model":"MiniMax-M2.1","content":[{"type":"text","text":"minimax-portal-output"}]}
+            """.utf8)
+        )
+        let provider = MinimaxPortalModelProvider(
+            configuration: ProviderServiceConfig(
+                enabled: true,
+                apiStyle: .anthropicMessages,
+                authMode: .oauthToken,
+                modelID: "MiniMax-M2.1",
+                accessToken: "minimax-oauth",
+                baseURL: "https://api.minimax.io/anthropic",
+                messagesPath: "messages"
+            ),
+            transport: transport
+        )
+        let response = try await provider.generate(
+            ModelGenerationRequest(sessionKey: "s1", prompt: "hello")
+        )
+
+        #expect(response.providerID == MinimaxPortalModelProvider.providerID)
+        #expect(response.text == "minimax-portal-output")
+        #expect(await transport.authorization() == "Bearer minimax-oauth")
+    }
+
+    @Test
+    func syntheticProviderParsesMessagesResponse() async throws {
+        let transport = MockAnthropicTransport(
+            body: Data("""
+            {"id":"msg_1","model":"hf:MiniMaxAI/MiniMax-M2.1","content":[{"type":"text","text":"synthetic-output"}]}
+            """.utf8)
+        )
+        let provider = SyntheticModelProvider(
+            configuration: ProviderServiceConfig(
+                enabled: true,
+                apiStyle: .anthropicMessages,
+                authMode: .apiKey,
+                modelID: "hf:MiniMaxAI/MiniMax-M2.1",
+                apiKey: "synthetic-key",
+                baseURL: "https://api.synthetic.new/anthropic",
+                messagesPath: "messages"
+            ),
+            transport: transport
+        )
+        let response = try await provider.generate(
+            ModelGenerationRequest(sessionKey: "s1", prompt: "hello")
+        )
+
+        #expect(response.providerID == SyntheticModelProvider.providerID)
+        #expect(response.text == "synthetic-output")
+    }
+
+    @Test
+    func xiaomiProviderParsesMessagesResponse() async throws {
+        let transport = MockAnthropicTransport(
+            body: Data("""
+            {"id":"msg_1","model":"mimo-v2-flash","content":[{"type":"text","text":"xiaomi-output"}]}
+            """.utf8)
+        )
+        let provider = XiaomiModelProvider(
+            configuration: ProviderServiceConfig(
+                enabled: true,
+                apiStyle: .anthropicMessages,
+                authMode: .apiKey,
+                modelID: "mimo-v2-flash",
+                apiKey: "xiaomi-key",
+                baseURL: "https://api.xiaomimimo.com/anthropic",
+                messagesPath: "messages"
+            ),
+            transport: transport
+        )
+        let response = try await provider.generate(
+            ModelGenerationRequest(sessionKey: "s1", prompt: "hello")
+        )
+
+        #expect(response.providerID == XiaomiModelProvider.providerID)
+        #expect(response.text == "xiaomi-output")
+    }
+
+    @Test
+    func cloudflareAIGatewayProviderParsesMessagesResponse() async throws {
+        let transport = MockAnthropicTransport(
+            body: Data("""
+            {"id":"msg_1","model":"claude-3-5-sonnet-latest","content":[{"type":"text","text":"cloudflare-output"}]}
+            """.utf8)
+        )
+        let provider = CloudflareAIGatewayModelProvider(
+            configuration: ProviderServiceConfig(
+                enabled: true,
+                apiStyle: .anthropicMessages,
+                authMode: .apiKey,
+                modelID: "claude-3-5-sonnet-latest",
+                apiKey: "cloudflare-key",
+                baseURL: "https://gateway.ai.cloudflare.com/v1",
+                messagesPath: "messages"
+            ),
+            transport: transport
+        )
+        let response = try await provider.generate(
+            ModelGenerationRequest(sessionKey: "s1", prompt: "hello")
+        )
+
+        #expect(response.providerID == CloudflareAIGatewayModelProvider.providerID)
+        #expect(response.text == "cloudflare-output")
+    }
+
+    @Test
+    func vercelAIGatewayProviderParsesMessagesResponse() async throws {
+        let transport = MockAnthropicTransport(
+            body: Data("""
+            {"id":"msg_1","model":"anthropic/claude-opus-4.6","content":[{"type":"text","text":"vercel-output"}]}
+            """.utf8)
+        )
+        let provider = VercelAIGatewayModelProvider(
+            configuration: ProviderServiceConfig(
+                enabled: true,
+                apiStyle: .anthropicMessages,
+                authMode: .apiKey,
+                modelID: "anthropic/claude-opus-4.6",
+                apiKey: "vercel-key",
+                baseURL: "https://ai-gateway.vercel.sh/v1",
+                messagesPath: "messages"
+            ),
+            transport: transport
+        )
+        let response = try await provider.generate(
+            ModelGenerationRequest(sessionKey: "s1", prompt: "hello")
+        )
+
+        #expect(response.providerID == VercelAIGatewayModelProvider.providerID)
+        #expect(response.text == "vercel-output")
     }
 
     @Test
