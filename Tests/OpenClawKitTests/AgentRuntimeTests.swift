@@ -90,7 +90,8 @@ struct AgentRuntimeTests {
                     runID: "run-timeout-diagnostics",
                     sessionKey: "main",
                     prompt: "slow",
-                    toolCalls: [AgentToolCall(name: "slow")]
+                    toolCalls: [AgentToolCall(name: "slow")],
+                    modelProviderID: "openai"
                 ),
                 timeoutMs: 50
             )
@@ -107,6 +108,7 @@ struct AgentRuntimeTests {
         let events = await pipeline.recentEvents(limit: 10)
         #expect(events.contains(where: { $0.name == "run.failed" && $0.metadata["timedOut"] == "true" }))
         #expect(events.contains(where: { $0.name == "model.call.failed" && $0.metadata["timedOut"] == "true" }))
+        #expect(events.contains(where: { $0.name == "model.call.failed" && $0.metadata["providerID"] == "openai" }))
     }
 
     @Test

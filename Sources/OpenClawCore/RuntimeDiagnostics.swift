@@ -181,7 +181,10 @@ public actor RuntimeDiagnosticsPipeline {
     }
 
     private let eventLimit: Int
+    private let replayStore: (any ReplayStore)?
     private var events: [RuntimeDiagnosticEvent] = []
+    private var replaySequence = Int64(0)
+    private var replaySequenceInitialized = false
 
     private var runsStarted = 0
     private var runsCompleted = 0
@@ -201,8 +204,10 @@ public actor RuntimeDiagnosticsPipeline {
 
     /// Creates a diagnostics pipeline.
     /// - Parameter eventLimit: Maximum number of recent events retained.
-    public init(eventLimit: Int = 500) {
+    /// - Parameter replayStore: Optional replay store used for deterministic event capture.
+    public init(eventLimit: Int = 500, replayStore: (any ReplayStore)? = nil) {
         self.eventLimit = max(1, eventLimit)
+        self.replayStore = replayStore
     }
 
     /// Returns a sink closure suitable for runtime/channel injection.
@@ -214,12 +219,13 @@ public actor RuntimeDiagnosticsPipeline {
 
     /// Records one diagnostics event and updates usage aggregates.
     /// - Parameter event: Diagnostics event.
-    public func record(_ event: RuntimeDiagnosticEvent) {
+    public func record(_ event: RuntimeDiagnosticEvent) async {
         self.events.append(event)
         if self.events.count > self.eventLimit {
             self.events.removeFirst(self.events.count - self.eventLimit)
         }
         self.apply(event)
+        await self.appendReplayEvent(for: event)
     }
 
     /// Returns recent events in chronological order.
@@ -316,7 +322,10 @@ public actor RuntimeDiagnosticsPipeline {
             self.modelMetrics[providerID] = current
         case ("runtime", "model.call.failed"):
             self.modelFailures += 1
-            let providerID = Self.stringValue(event.metadata["providerID"], fallback: "unknown")
+            let providerID = Self.stringValue(
+                event.metadata["providerID"] ?? event.metadata["requestedProviderID"],
+                fallback: "unknown"
+            )
             let modelID = Self.stringValue(event.metadata["modelID"], fallback: "unknown")
             var current = self.modelMetrics[providerID] ?? MutableModelMetrics(modelID: modelID)
             current.modelID = modelID
@@ -349,6 +358,38 @@ public actor RuntimeDiagnosticsPipeline {
         default:
             break
         }
+    }
+
+    private func appendReplayEvent(for event: RuntimeDiagnosticEvent) async {
+        guard let replayStore else {
+            return
+        }
+        await self.ensureReplaySequenceInitialized(using: replayStore)
+
+        let sequence = self.replaySequence
+        self.replaySequence += 1
+        let replayEvent = ReplayEvent(
+            diagnosticEvent: event,
+            sequenceNumber: sequence
+        )
+        do {
+            try await replayStore.append(ReplayEventEnvelope(event: replayEvent))
+        } catch {
+            // Replay persistence must never fail the diagnostics pipeline.
+        }
+    }
+
+    private func ensureReplaySequenceInitialized(using replayStore: any ReplayStore) async {
+        guard !self.replaySequenceInitialized else {
+            return
+        }
+        if let events = try? await replayStore.loadAll(),
+           let last = events.last?.event.sequenceNumber {
+            self.replaySequence = last + 1
+        } else {
+            self.replaySequence = 0
+        }
+        self.replaySequenceInitialized = true
     }
 
     private static func intValue(_ raw: String?) -> Int {

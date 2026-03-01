@@ -106,6 +106,71 @@ struct RuntimeDiagnosticsPipelineTests {
     }
 
     @Test
+    func pipelinePersistsDeterministicReplayEventsFromRuntimeAndChannel() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("openclawkit-runtime-replay-tests", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let replayStore = FileReplayStore(fileURL: root.appendingPathComponent("events.jsonl", isDirectory: false))
+        let pipeline = RuntimeDiagnosticsPipeline(eventLimit: 20, replayStore: replayStore)
+        await pipeline.record(
+            RuntimeDiagnosticEvent(
+                subsystem: "runtime",
+                name: "run.started",
+                runID: "run-r1",
+                sessionKey: "session-r1"
+            )
+        )
+        await pipeline.record(
+            RuntimeDiagnosticEvent(
+                subsystem: "channel",
+                name: "inbound.received",
+                sessionKey: "session-r1",
+                metadata: ["channel": "webchat"]
+            )
+        )
+        await pipeline.record(
+            RuntimeDiagnosticEvent(
+                subsystem: "runtime",
+                name: "run.completed",
+                runID: "run-r1",
+                sessionKey: "session-r1",
+                metadata: ["latencyMs": "99"]
+            )
+        )
+
+        let replayEvents = try await replayStore.loadAll()
+        #expect(replayEvents.map { $0.event.sequenceNumber ?? -1 } == [0, 1, 2])
+        #expect(replayEvents.map(\.event.subsystem) == ["runtime", "channel", "runtime"])
+        #expect(replayEvents.map(\.event.name) == ["run.started", "inbound.received", "run.completed"])
+    }
+
+    @Test
+    func modelFailureMetricsFallbackToRequestedProviderID() async {
+        let pipeline = RuntimeDiagnosticsPipeline(eventLimit: 10)
+        await pipeline.record(
+            RuntimeDiagnosticEvent(
+                subsystem: "runtime",
+                name: "model.call.failed",
+                runID: "run-fallback",
+                sessionKey: "session-fallback",
+                metadata: [
+                    "requestedProviderID": "anthropic",
+                    "modelID": "claude",
+                    "timedOut": "false",
+                ]
+            )
+        )
+
+        let snapshot = await pipeline.usageSnapshot()
+        #expect(snapshot.modelFailures == 1)
+        #expect(snapshot.models.first?.providerID == "anthropic")
+        #expect(snapshot.models.first?.modelID == "claude")
+    }
+
+    @Test
     func runtimeEmitsMetricsThroughPipelineSink() async throws {
         let pipeline = RuntimeDiagnosticsPipeline(eventLimit: 100)
         let sink = await pipeline.sink()

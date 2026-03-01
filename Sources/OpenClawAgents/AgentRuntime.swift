@@ -202,6 +202,7 @@ public actor EmbeddedAgentRuntime {
             runID: runID,
             sessionKey: request.sessionKey,
             metadata: [
+                "providerID": request.modelProviderID ?? "",
                 "requestedProviderID": request.modelProviderID ?? "",
                 "toolCallCount": String(request.toolCalls.count),
             ]
@@ -210,7 +211,10 @@ public actor EmbeddedAgentRuntime {
             name: "model.call.started",
             runID: runID,
             sessionKey: request.sessionKey,
-            metadata: ["requestedProviderID": request.modelProviderID ?? ""]
+            metadata: [
+                "providerID": request.modelProviderID ?? "",
+                "requestedProviderID": request.modelProviderID ?? "",
+            ]
         )
 
         do {
@@ -315,6 +319,7 @@ public actor EmbeddedAgentRuntime {
                 runID: runID,
                 sessionKey: request.sessionKey,
                 metadata: [
+                    "providerID": request.modelProviderID ?? "",
                     "requestedProviderID": request.modelProviderID ?? "",
                     "error": String(describing: error),
                     "timedOut": String(timedOut),
@@ -326,6 +331,7 @@ public actor EmbeddedAgentRuntime {
                 sessionKey: request.sessionKey,
                 metadata: [
                     "latencyMs": String(runLatencyMs),
+                    "providerID": request.modelProviderID ?? "",
                     "requestedProviderID": request.modelProviderID ?? "",
                     "timedOut": String(timedOut),
                     "error": String(describing: error),
@@ -355,6 +361,7 @@ public actor EmbeddedAgentRuntime {
                         runID: runID,
                         sessionKey: request.sessionKey,
                         metadata: [
+                            "providerID": request.modelProviderID ?? "",
                             "requestedProviderID": request.modelProviderID ?? "",
                             "toolCallCount": String(request.toolCalls.count),
                             "streaming": "true",
@@ -365,6 +372,7 @@ public actor EmbeddedAgentRuntime {
                         runID: runID,
                         sessionKey: request.sessionKey,
                         metadata: [
+                            "providerID": request.modelProviderID ?? "",
                             "requestedProviderID": request.modelProviderID ?? "",
                             "streaming": "true",
                         ]
@@ -467,6 +475,7 @@ public actor EmbeddedAgentRuntime {
                         runID: runID,
                         sessionKey: request.sessionKey,
                         metadata: [
+                            "providerID": request.modelProviderID ?? "",
                             "requestedProviderID": request.modelProviderID ?? "",
                             "error": String(describing: error),
                             "timedOut": String(timedOut),
@@ -479,6 +488,7 @@ public actor EmbeddedAgentRuntime {
                         sessionKey: request.sessionKey,
                         metadata: [
                             "latencyMs": String(runLatencyMs),
+                            "providerID": request.modelProviderID ?? "",
                             "requestedProviderID": request.modelProviderID ?? "",
                             "timedOut": String(timedOut),
                             "error": String(describing: error),

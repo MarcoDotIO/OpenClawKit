@@ -184,7 +184,11 @@ public struct OpenClawSDK: Sendable {
         let diagnosticsSink = await diagnosticsPipeline?.sink()
         let sessionStore = SessionStore(fileURL: sessionStoreURL)
         try await sessionStore.load()
-        let channelRegistry = ChannelRegistry()
+        let channelRegistry = ChannelRegistry(
+            sendRetryPolicy: ChannelSendRetryPolicy(),
+            sendThrottlePolicy: ChannelSendThrottlePolicy(),
+            diagnosticsSink: diagnosticsSink
+        )
         let webchat = InMemoryChannelAdapter(id: .webchat)
         await channelRegistry.register(webchat)
         try await webchat.start()
