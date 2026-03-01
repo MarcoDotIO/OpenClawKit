@@ -24,6 +24,9 @@ struct OpenClawiOSApp: App {
                 .onAppear {
                     OpenClawIntentBridge.shared.bind(self.appState)
                     BackgroundContinuationManager.shared.scheduleInitialTasksIfNeeded()
+                    if let sharedPrompt = SharePromptInbox.dequeue() {
+                        self.appState.pendingMessage = sharedPrompt.prompt
+                    }
                 }
         }
     }

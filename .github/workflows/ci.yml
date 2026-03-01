@@ -65,3 +65,44 @@ jobs:
 
       - name: Build iOS example
         run: Scripts/build-ios-example.sh
+
+  apple-platform-matrix:
+    name: Apple Platform Matrix (${{ matrix.platform }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - macos
+          - ios
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select latest Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest
+
+      - name: Setup Swift 6.2
+        uses: swift-actions/setup-swift@v3
+        with:
+          swift-version: "6.2.0"
+          skip-verify-signature: true
+
+      - name: Print Xcode and Swift versions
+        run: |
+          xcodebuild -version
+          xcrun swift --version
+          swift --version
+
+      - name: Validate Apple matrix contract
+        run: Scripts/validate-apple-matrix.sh --platform "${{ matrix.platform }}"
+
+      - name: Build Swift package on macOS
+        if: matrix.platform == 'macos'
+        run: swift build -Xswiftc -warnings-as-errors
+
+      - name: Build iOS example
+        if: matrix.platform == 'ios'
+        run: Scripts/build-ios-example.sh
