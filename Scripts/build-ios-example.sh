@@ -13,3 +13,5 @@ xcodebuild \
   CODE_SIGNING_ALLOWED=NO \
   CODE_SIGNING_REQUIRED=NO \
   build
+
+bash Scripts/verify-ios-skills-bundle.sh
