@@ -2,6 +2,7 @@ import Foundation
 import OpenClawKit
 import Combine
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Observable app state coordinating deployment and chat flows in the iOS example.
 @MainActor
@@ -121,6 +122,31 @@ final class OpenClawAppState: ObservableObject {
         let requiresExplicitInvocation: Bool
         let userInvocable: Bool
         let entrypoint: String?
+    }
+
+    /// Render model for one staged chat attachment.
+    struct PendingAttachment: Identifiable, Sendable, Equatable {
+        let id: UUID
+        let fileName: String
+        let mimeType: String
+        let data: Data
+
+        var byteCount: Int {
+            self.data.count
+        }
+
+        var byteCountLabel: String {
+            ByteCountFormatter.string(fromByteCount: Int64(self.byteCount), countStyle: .file)
+        }
+
+        var mediaAttachment: MediaAttachment {
+            MediaAttachment(
+                id: self.id,
+                mimeType: self.mimeType,
+                data: self.data,
+                fileName: self.fileName
+            )
+        }
     }
 
     /// Render model for channel health rows.
@@ -407,6 +433,7 @@ final class OpenClawAppState: ObservableObject {
     @Published var personality: String = ""
     @Published var pendingMessage: String = ""
     @Published var selectedSkillName: String = ""
+    @Published private(set) var pendingAttachments: [PendingAttachment] = []
 
     @Published private(set) var deploymentState: DeploymentState = .stopped
     @Published private(set) var statusText: String = "Not deployed"
@@ -417,10 +444,17 @@ final class OpenClawAppState: ObservableObject {
     @Published private(set) var diagnosticEvents: [RuntimeDiagnosticEvent] = []
     @Published private(set) var usageSnapshot: RuntimeUsageSnapshot?
     @Published private(set) var activeRetryPolicy: ChannelSendRetryPolicy = ChannelSendRetryPolicy()
+    @Published private(set) var latestIntentGraph: IntentGraph?
+    @Published private(set) var liveActivityStatusText: String = "Idle"
 
     /// Returns whether runtime deployment is actively running.
     var isDeployed: Bool {
         self.deploymentState == .running
+    }
+
+    /// Returns whether there are staged media attachments waiting to be sent.
+    var hasPendingAttachments: Bool {
+        !self.pendingAttachments.isEmpty
     }
 
     /// All available provider selections rendered by deploy UI.
@@ -482,6 +516,7 @@ final class OpenClawAppState: ObservableObject {
     private let decoder = JSONDecoder()
     private let summaryScheduler = CronScheduler()
     private let memoryIndex = MemoryIndex()
+    private let liveActivityCoordinator = AgentRunLiveActivityCoordinator()
 
     private let stateRoot: URL
     private let workspaceURL: URL
@@ -491,20 +526,27 @@ final class OpenClawAppState: ObservableObject {
     private let settingsURL: URL
     private let credentialsFallbackURL: URL
     private let conversationMemoryURL: URL
+    private let automationRulesURL: URL
     private let credentialStore: any CredentialStore
     private let sharedConversationSessionKey = "shared"
+    private let maxPendingAttachmentBytes = 10 * 1024 * 1024
+    private let maxPendingAttachmentCount = 4
 
     private var webchatAdapter: InMemoryChannelAdapter?
     private var discordAdapter: DiscordChannelAdapter?
     private var telegramAdapter: TelegramChannelAdapter?
     private var channelRegistry: ChannelRegistry?
+    private var runtime: EmbeddedAgentRuntime?
     private var replyEngine: AutoReplyEngine?
     private var conversationMemoryStore: ConversationMemoryStore?
+    private var automationRuleStore: AutomationRuleStore?
+    private var automationRunner: AutomationRunner?
     private var diagnosticsPipeline: RuntimeDiagnosticsPipeline?
     private var summaryTask: Task<Void, Never>?
     private var observabilityTask: Task<Void, Never>?
     private var legacySecrets: SecretSnapshot = .empty
     private var secretsHydrated = false
+    private var lastLiveActivityProcessedAt = Date.distantPast
 
     /// Creates and initializes app state from persisted local storage.
     init() {
@@ -519,6 +561,7 @@ final class OpenClawAppState: ObservableObject {
         self.settingsURL = self.stateRoot.appendingPathComponent("deploy-settings.json")
         self.credentialsFallbackURL = self.stateRoot.appendingPathComponent("credentials.json")
         self.conversationMemoryURL = self.stateRoot.appendingPathComponent("conversation-memory.json")
+        self.automationRulesURL = self.stateRoot.appendingPathComponent("automation-rules.json")
         self.credentialStore = CredentialStoreFactory.makeDefault(
             fallbackFileURL: self.credentialsFallbackURL,
             keychainService: "io.marcodotio.openclawkit.examples.ios.credentials"
@@ -629,9 +672,14 @@ final class OpenClawAppState: ObservableObject {
 
             self.webchatAdapter = webchat
             self.channelRegistry = channelRegistry
+            self.runtime = runtime
             self.replyEngine = replyEngine
             self.conversationMemoryStore = conversationMemoryStore
             self.diagnosticsPipeline = diagnosticsPipeline
+            try await self.configureAutomationLayer(
+                runtime: runtime,
+                diagnosticsSink: diagnosticsSink
+            )
 
             await self.summaryScheduler.addOrUpdate(
                 CronJob(
@@ -670,6 +718,7 @@ final class OpenClawAppState: ObservableObject {
         self.summaryTask = nil
         self.observabilityTask?.cancel()
         self.observabilityTask = nil
+        await self.liveActivityCoordinator.stopAll()
 
         if let discordAdapter {
             await discordAdapter.stop()
@@ -685,14 +734,22 @@ final class OpenClawAppState: ObservableObject {
         self.telegramAdapter = nil
         self.webchatAdapter = nil
         self.channelRegistry = nil
+        self.runtime = nil
         self.replyEngine = nil
         self.conversationMemoryStore = nil
+        self.automationRuleStore = nil
+        self.automationRunner = nil
         self.diagnosticsPipeline = nil
+        BackgroundContinuationManager.shared.bindAutomationTickHandler(nil)
         self.skillItems = []
         self.channelHealthItems = []
         self.diagnosticEvents = []
         self.usageSnapshot = nil
         self.activeRetryPolicy = ChannelSendRetryPolicy()
+        self.latestIntentGraph = nil
+        self.liveActivityStatusText = "Idle"
+        self.lastLiveActivityProcessedAt = Date.distantPast
+        self.pendingAttachments = []
         self.deploymentState = .stopped
         self.statusText = "Deployment stopped."
     }
@@ -850,26 +907,232 @@ final class OpenClawAppState: ObservableObject {
         }
     }
 
+    /// Configures proactive automation rule storage and runtime runner.
+    private func configureAutomationLayer(
+        runtime: EmbeddedAgentRuntime,
+        diagnosticsSink: RuntimeDiagnosticSink?
+    ) async throws {
+        let store = AutomationRuleStore(fileURL: self.automationRulesURL)
+        try await store.load()
+        if (await store.allRules()).isEmpty {
+            await store.upsert(
+                AutomationRule(
+                    name: "Periodic planning pulse",
+                    sessionKey: self.sharedConversationSessionKey,
+                    prompt: "Summarize pending user tasks, identify blockers, and propose the next best action.",
+                    modelProviderID: self.selectedProvider.providerID,
+                    trigger: AutomationTrigger(intervalSeconds: 1_800)
+                )
+            )
+            try await store.save()
+        }
+
+        let runner = AutomationRunner(
+            runtime: runtime,
+            ruleStore: store,
+            diagnosticsSink: diagnosticsSink
+        )
+        self.automationRuleStore = store
+        self.automationRunner = runner
+        BackgroundContinuationManager.shared.bindAutomationTickHandler { [weak self] in
+            await self?.runProactiveAutomationTick()
+        }
+    }
+
+    /// Executes one proactive automation tick from app/background hooks.
+    private func runProactiveAutomationTick() async {
+        guard let automationRunner else {
+            return
+        }
+        let outcomes = await automationRunner.runDueAutomations()
+        guard !outcomes.isEmpty else {
+            return
+        }
+        let succeeded = outcomes.filter(\.succeeded).count
+        let failed = outcomes.count - succeeded
+        self.statusText = "Automation tick: \(succeeded) succeeded, \(failed) failed."
+    }
+
     /// Sends the currently drafted message if non-empty.
     func sendPendingMessage() async {
         let text = self.pendingMessage.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        let staged = self.pendingAttachments.map(\.mediaAttachment)
+        guard !text.isEmpty || !staged.isEmpty else { return }
         self.pendingMessage = ""
-        await self.sendMessage(self.composePrompt(text))
+        self.pendingAttachments = []
+        let normalizedText = text.isEmpty ? "Analyze the attached media and summarize the key details." : text
+        await self.sendMessage(self.composePrompt(normalizedText), attachments: staged)
+    }
+
+    /// Stages one attachment for the next chat request.
+    @discardableResult
+    func stageAttachment(data: Data, mimeType: String, fileName: String? = nil) -> Bool {
+        guard !data.isEmpty else {
+            self.statusText = "Attachment was empty."
+            return false
+        }
+        guard data.count <= self.maxPendingAttachmentBytes else {
+            self.statusText = "Attachment exceeds 10 MB limit."
+            return false
+        }
+        guard self.pendingAttachments.count < self.maxPendingAttachmentCount else {
+            self.statusText = "Maximum attachment count reached (4)."
+            return false
+        }
+
+        let trimmedName = fileName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let resolvedName: String
+        if trimmedName.isEmpty {
+            resolvedName = "attachment-\(self.pendingAttachments.count + 1)"
+        } else {
+            resolvedName = trimmedName
+        }
+        let trimmedMimeType = mimeType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let resolvedMimeType = trimmedMimeType.isEmpty ? "application/octet-stream" : trimmedMimeType
+        let attachment = PendingAttachment(
+            id: UUID(),
+            fileName: resolvedName,
+            mimeType: resolvedMimeType,
+            data: data
+        )
+        self.pendingAttachments.append(attachment)
+        self.statusText = "Attached \(resolvedName) (\(attachment.byteCountLabel))."
+        return true
+    }
+
+    /// Imports one attachment file URL and stages it for the next send.
+    @discardableResult
+    func importAttachment(from fileURL: URL) -> Bool {
+        let didAccess = fileURL.startAccessingSecurityScopedResource()
+        defer {
+            if didAccess {
+                fileURL.stopAccessingSecurityScopedResource()
+            }
+        }
+        do {
+            let data = try Data(contentsOf: fileURL)
+            let inferredMimeType = Self.mimeType(for: fileURL)
+            return self.stageAttachment(
+                data: data,
+                mimeType: inferredMimeType,
+                fileName: fileURL.lastPathComponent
+            )
+        } catch {
+            self.statusText = "Unable to import attachment."
+            return false
+        }
+    }
+
+    /// Removes one staged attachment by identifier.
+    func removePendingAttachment(id: UUID) {
+        self.pendingAttachments.removeAll(where: { $0.id == id })
+    }
+
+    /// Clears all staged attachments.
+    func clearPendingAttachments() {
+        self.pendingAttachments = []
+    }
+
+    /// Executes a quick ask through the SDK intent-graph run API.
+    /// - Parameters:
+    ///   - prompt: User input prompt.
+    ///   - focusNodeKind: Optional node-kind focus for graph summary.
+    /// - Returns: Assistant output text.
+    func quickAskUsingIntentGraph(
+        _ prompt: String,
+        focusNodeKind: IntentGraphNodeKind? = nil
+    ) async -> String {
+        guard self.deploymentState == .running else {
+            return "Deploy the agent before using Quick Ask."
+        }
+        guard let runtime else {
+            return "OpenClaw runtime is unavailable."
+        }
+
+        let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedPrompt.isEmpty else {
+            return "Prompt is empty."
+        }
+
+        self.appendMessage(.init(role: .user, text: trimmedPrompt))
+        do {
+            let request = AgentRunRequest(
+                sessionKey: self.sharedConversationSessionKey,
+                prompt: trimmedPrompt,
+                modelProviderID: self.selectedProvider.providerID,
+                workspaceRootPath: self.workspaceURL.path
+            )
+            let graphRun = try await self.sdk.runIntentGraph(
+                request,
+                runtime: runtime,
+                timeoutMs: max(1, self.localRequestTimeoutMs)
+            )
+            self.latestIntentGraph = graphRun.graph
+
+            let summary = Self.intentGraphSummary(
+                for: graphRun.graph,
+                focusNodeKind: focusNodeKind
+            )
+            let assistantText = summary.isEmpty ? graphRun.result.output : "\(graphRun.result.output)\n\n\(summary)"
+            self.appendMessage(.init(role: .assistant, text: assistantText))
+            await self.refreshObservabilityState()
+            return assistantText
+        } catch {
+            let failure = "Quick Ask failed: \(error.localizedDescription)"
+            self.appendMessage(.init(role: .system, text: failure))
+            return failure
+        }
+    }
+
+    /// Builds a graph summary without executing a model response.
+    /// - Parameters:
+    ///   - prompt: User input prompt.
+    ///   - focusNodeKind: Optional node-kind focus for graph summary.
+    /// - Returns: Graph summary text.
+    func previewIntentGraphSummary(
+        for prompt: String,
+        focusNodeKind: IntentGraphNodeKind? = nil
+    ) async -> String {
+        guard self.deploymentState == .running else {
+            return "Deploy the agent before previewing intent graph."
+        }
+        guard let runtime else {
+            return "OpenClaw runtime is unavailable."
+        }
+
+        let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedPrompt.isEmpty else {
+            return "Prompt is empty."
+        }
+
+        let request = AgentRunRequest(
+            sessionKey: self.sharedConversationSessionKey,
+            prompt: trimmedPrompt,
+            modelProviderID: self.selectedProvider.providerID,
+            workspaceRootPath: self.workspaceURL.path
+        )
+        let graph = await self.sdk.makeIntentGraph(for: request, runtime: runtime)
+        self.latestIntentGraph = graph
+        return Self.intentGraphSummary(for: graph, focusNodeKind: focusNodeKind)
     }
 
     /// Sends a chat message through the active auto-reply engine.
     /// - Parameter text: User input message text.
-    func sendMessage(_ text: String) async {
+    func sendMessage(_ text: String, attachments: [MediaAttachment] = []) async {
         guard let replyEngine, self.deploymentState == .running else {
             self.statusText = "Deploy the agent before sending messages."
             return
         }
 
-        self.appendMessage(.init(role: .user, text: text))
+        self.appendMessage(.init(role: .user, text: Self.composeUserTimelineText(text, attachments: attachments)))
         do {
             let outbound = try await replyEngine.process(
-                InboundMessage(channel: .webchat, peerID: "ios-local-user", text: text)
+                InboundMessage(
+                    channel: .webchat,
+                    peerID: "ios-local-user",
+                    text: text,
+                    attachments: attachments
+                )
             )
             self.appendMessage(.init(role: .assistant, text: outbound.text))
         } catch {
@@ -885,6 +1148,54 @@ final class OpenClawAppState: ObservableObject {
             return text
         }
         return "/\(selected) \(text)"
+    }
+
+    /// Builds user-visible timeline text with staged attachment summary.
+    private static func composeUserTimelineText(_ text: String, attachments: [MediaAttachment]) -> String {
+        guard !attachments.isEmpty else {
+            return text
+        }
+        let names = attachments
+            .compactMap { attachment in
+                let trimmed = attachment.fileName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                return trimmed.isEmpty ? nil : trimmed
+            }
+        let suffix: String
+        if names.isEmpty {
+            suffix = "[Attachments] \(attachments.count) item(s)"
+        } else {
+            suffix = "[Attachments] \(names.joined(separator: ", "))"
+        }
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return suffix
+        }
+        return "\(text)\n\(suffix)"
+    }
+
+    /// Resolves MIME type from URL extension/type metadata.
+    private static func mimeType(for fileURL: URL) -> String {
+        if let type = UTType(filenameExtension: fileURL.pathExtension),
+           let mimeType = type.preferredMIMEType,
+           !mimeType.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        {
+            return mimeType
+        }
+        return "application/octet-stream"
+    }
+
+    /// Builds a compact human-readable summary for an intent graph.
+    private static func intentGraphSummary(
+        for graph: IntentGraph,
+        focusNodeKind: IntentGraphNodeKind?
+    ) -> String {
+        var components: [String] = [
+            "Intent Graph: \(graph.nodes.count) nodes, \(graph.edges.count) edges",
+        ]
+        if let focusNodeKind {
+            let matchingCount = graph.nodes.filter { $0.kind == focusNodeKind }.count
+            components.append("focus '\(focusNodeKind.rawValue)' matches \(matchingCount)")
+        }
+        return components.joined(separator: " • ")
     }
 
     /// Starts background summary scheduler polling loop.
@@ -924,6 +1235,7 @@ final class OpenClawAppState: ObservableObject {
         if let diagnosticsPipeline = self.diagnosticsPipeline {
             self.usageSnapshot = await diagnosticsPipeline.usageSnapshot()
             self.diagnosticEvents = await diagnosticsPipeline.recentEvents(limit: 120)
+            await self.syncLiveActivities(with: self.diagnosticEvents)
         }
 
         if let channelRegistry = self.channelRegistry {
@@ -961,6 +1273,46 @@ final class OpenClawAppState: ObservableObject {
             {
                 self.selectedSkillName = ""
             }
+        }
+    }
+
+    /// Streams unprocessed runtime events into Live Activities updates.
+    private func syncLiveActivities(with events: [RuntimeDiagnosticEvent]) async {
+        let sorted = events.sorted { lhs, rhs in
+            lhs.occurredAt < rhs.occurredAt
+        }
+        var latestProcessed = self.lastLiveActivityProcessedAt
+
+        for event in sorted {
+            guard event.subsystem == "runtime" else {
+                continue
+            }
+            guard event.occurredAt > latestProcessed else {
+                continue
+            }
+            await self.liveActivityCoordinator.handle(event: event)
+            latestProcessed = event.occurredAt
+            self.updateLiveActivityStatus(from: event)
+        }
+
+        self.lastLiveActivityProcessedAt = latestProcessed
+    }
+
+    /// Updates status text mirrored in the Deploy tab for live activity lifecycle.
+    private func updateLiveActivityStatus(from event: RuntimeDiagnosticEvent) {
+        guard let runID = event.runID, !runID.isEmpty else {
+            return
+        }
+        let shortRunID = String(runID.prefix(8))
+        switch event.name {
+        case "run.started":
+            self.liveActivityStatusText = "Active run: \(shortRunID)"
+        case "run.completed":
+            self.liveActivityStatusText = "Completed run: \(shortRunID)"
+        case "run.failed":
+            self.liveActivityStatusText = "Failed run: \(shortRunID)"
+        default:
+            break
         }
     }
 

@@ -18,6 +18,15 @@ struct DeployView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                Section("Live Activity") {
+                    Text(appState.liveActivityStatusText)
+                        .font(.subheadline)
+                        .accessibilityIdentifier("live-activity-status-text")
+                    Text("Shows lock-screen progress state for long-running runs.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 Section("Credentials") {
                     SecureField("Discord Bot Token", text: $appState.discordBotToken)
                         .textInputAutocapitalization(.never)

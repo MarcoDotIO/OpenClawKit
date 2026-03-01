@@ -92,6 +92,25 @@ final class OpenClawiOSUITests: XCTestCase {
         XCTAssertTrue(picker.waitForExistence(timeout: 10))
     }
 
+    func testAttachmentImportButtonIsVisibleOnChatTab() throws {
+        let app = XCUIApplication()
+        app.launch()
+
+        app.tabBars.buttons["Chat"].tap()
+        let attachmentButton = app.buttons["chat-attach-file-button"]
+        XCTAssertTrue(attachmentButton.waitForExistence(timeout: 10))
+    }
+
+    func testLiveActivitySectionIsVisibleOnDeployTab() throws {
+        let app = XCUIApplication()
+        app.launch()
+
+        let sectionTitle = app.staticTexts["Live Activity"]
+        XCTAssertTrue(sectionTitle.waitForExistence(timeout: 10))
+        let liveStatus = app.staticTexts["live-activity-status-text"]
+        XCTAssertTrue(liveStatus.exists)
+    }
+
     private func waitForDisappearance(of element: XCUIElement, timeout: TimeInterval = 5) {
         let deadline = Date().addingTimeInterval(timeout)
         while element.exists, Date() < deadline {
