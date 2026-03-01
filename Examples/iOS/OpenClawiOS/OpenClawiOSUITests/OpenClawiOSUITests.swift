@@ -51,4 +51,43 @@ final class OpenClawiOSUITests: XCTestCase {
         XCTAssertTrue(telegramTokenVisible)
         XCTAssertTrue(telegramChatIDVisible)
     }
+
+    func testKeyboardDoneButtonDismissesOnModelsTab() throws {
+        let app = XCUIApplication()
+        app.launch()
+
+        app.tabBars.buttons["Models"].tap()
+        let modelField = app.textFields["Model ID"]
+        XCTAssertTrue(modelField.waitForExistence(timeout: 10))
+        modelField.tap()
+        modelField.typeText("kbd-test")
+
+        let doneButton = app.buttons["Done"]
+        XCTAssertTrue(doneButton.waitForExistence(timeout: 5))
+        doneButton.tap()
+        self.waitForDisappearance(of: doneButton)
+    }
+
+    func testInteractiveScrollDismissesKeyboardOnDeployTab() throws {
+        let app = XCUIApplication()
+        app.launch()
+
+        let channelField = app.textFields["Discord Channel ID"]
+        XCTAssertTrue(channelField.waitForExistence(timeout: 10))
+        channelField.tap()
+        channelField.typeText("12345")
+
+        let doneButton = app.buttons["Done"]
+        XCTAssertTrue(doneButton.waitForExistence(timeout: 5))
+        app.collectionViews.firstMatch.swipeDown()
+        self.waitForDisappearance(of: doneButton)
+    }
+
+    private func waitForDisappearance(of element: XCUIElement, timeout: TimeInterval = 5) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while element.exists, Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        XCTAssertFalse(element.exists)
+    }
 }

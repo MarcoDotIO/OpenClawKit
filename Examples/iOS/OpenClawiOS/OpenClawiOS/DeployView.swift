@@ -1,4 +1,7 @@
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// Deployment control panel for credentials, personality, and lifecycle actions.
 struct DeployView: View {
@@ -102,13 +105,28 @@ struct DeployView: View {
                     .disabled(appState.deploymentState == .stopped || appState.deploymentState == .stopping)
                 }
             }
+            .scrollDismissesKeyboard(.interactively)
             .navigationTitle("Deploy")
             .onChange(of: appState.selectedProvider) { _, newValue in
                 if appState.selectedModelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     appState.selectedModelID = newValue.defaultModelID
                 }
             }
+            .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") {
+                        self.dismissKeyboard()
+                    }
+                }
+            }
         }
+    }
+
+    private func dismissKeyboard() {
+        #if canImport(UIKit)
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        #endif
     }
 }
 

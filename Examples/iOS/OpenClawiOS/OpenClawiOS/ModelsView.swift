@@ -1,5 +1,8 @@
 import SwiftUI
 import OpenClawKit
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// Model/provider control panel including local runtime tuning options.
 struct ModelsView: View {
@@ -74,8 +77,23 @@ struct ModelsView: View {
                     }
                 }
             }
+            .scrollDismissesKeyboard(.interactively)
             .navigationTitle("Models")
+            .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") {
+                        self.dismissKeyboard()
+                    }
+                }
+            }
         }
+    }
+
+    private func dismissKeyboard() {
+        #if canImport(UIKit)
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        #endif
     }
 }
 
