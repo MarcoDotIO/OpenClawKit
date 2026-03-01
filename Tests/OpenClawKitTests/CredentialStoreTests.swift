@@ -95,6 +95,40 @@ struct CredentialStoreTests {
         #expect(result.valuesToPersist.isEmpty)
     }
 
+    @Test
+    func replayLedgerSignerUsesCredentialStoreSecret() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("openclawkit-replay-ledger-tests", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = FileCredentialStore(fileURL: directory.appendingPathComponent("credentials.json"))
+        try await store.saveSecret("ledger-secret", for: "replay-ledger")
+        let loadedSecret = try await store.loadSecret(for: "replay-ledger")
+        #expect(loadedSecret == "ledger-secret")
+
+        let signer = HMACReplayLedgerSigner(secret: Data((loadedSecret ?? "").utf8), keyID: "replay-ledger")
+        let event = ReplayEvent(
+            sequenceNumber: 0,
+            subsystem: "runtime",
+            name: "run.started",
+            runID: "cred-test-run",
+            sessionKey: "cred-test-session"
+        )
+        let envelope = try ReplayLedgerVerifier.signedEnvelope(
+            for: event,
+            previousEventHash: nil,
+            signer: signer
+        )
+        let verification = ReplayLedgerVerifier.verify(
+            envelopes: [envelope],
+            signer: signer,
+            requireSignatureVerification: true
+        )
+        #expect(verification.isValid == true)
+    }
+
     #if canImport(Security)
     @Test
     func keychainCredentialStoreRoundTripAndDelete() async throws {

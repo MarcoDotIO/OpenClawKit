@@ -46,11 +46,18 @@ public struct SecurityAuditReport: Codable, Sendable, Equatable {
     public let generatedAt: Date
     /// Ordered findings emitted by the auditor.
     public let findings: [SecurityAuditFinding]
+    /// Optional replay-ledger integrity verification details.
+    public let replayLedgerIntegrity: ReplayLedgerVerificationResult?
 
     /// Creates a security audit report.
-    public init(generatedAt: Date = Date(), findings: [SecurityAuditFinding]) {
+    public init(
+        generatedAt: Date = Date(),
+        findings: [SecurityAuditFinding],
+        replayLedgerIntegrity: ReplayLedgerVerificationResult? = nil
+    ) {
         self.generatedAt = generatedAt
         self.findings = findings
+        self.replayLedgerIntegrity = replayLedgerIntegrity
     }
 
     /// Returns number of findings for a specific severity.
@@ -85,28 +92,42 @@ public struct SecurityAuditOptions: Sendable, Equatable {
     public let statePaths: [URL]
     /// Extra files scanned for plaintext secret key patterns.
     public let plaintextSecretFiles: [URL]
+    /// Optional replay-ledger envelopes for integrity auditing.
+    public let replayLedgerEnvelopes: [ReplayEventEnvelope]
+    /// Requires detached signature verification for all replay-ledger events.
+    public let requireReplayLedgerSignatureVerification: Bool
 
     /// Creates security audit options.
     public init(
         config: OpenClawConfig? = nil,
         configFileURL: URL? = nil,
         statePaths: [URL] = [],
-        plaintextSecretFiles: [URL] = []
+        plaintextSecretFiles: [URL] = [],
+        replayLedgerEnvelopes: [ReplayEventEnvelope] = [],
+        requireReplayLedgerSignatureVerification: Bool = false
     ) {
         self.config = config
         self.configFileURL = configFileURL
         self.statePaths = statePaths
         self.plaintextSecretFiles = plaintextSecretFiles
+        self.replayLedgerEnvelopes = replayLedgerEnvelopes
+        self.requireReplayLedgerSignatureVerification = requireReplayLedgerSignatureVerification
     }
 }
 
 /// Lightweight security audit runner for host applications.
 public enum SecurityAuditRunner {
     /// Runs a security audit pass and returns the generated report.
-    /// - Parameter options: Audit options.
+    /// - Parameters:
+    ///   - options: Audit options.
+    ///   - replayLedgerSigner: Optional signer used for signature verification.
     /// - Returns: Structured audit report.
-    public static func run(options: SecurityAuditOptions = SecurityAuditOptions()) -> SecurityAuditReport {
+    public static func run(
+        options: SecurityAuditOptions = SecurityAuditOptions(),
+        replayLedgerSigner: (any ReplayLedgerSigner)? = nil
+    ) -> SecurityAuditReport {
         var findings: [SecurityAuditFinding] = []
+        var replayLedgerIntegrity: ReplayLedgerVerificationResult?
 
         if let config = options.config {
             findings.append(contentsOf: self.checkConfigSecrets(config))
@@ -125,6 +146,16 @@ public enum SecurityAuditRunner {
         }
         findings.append(contentsOf: self.checkPlaintextSecretFiles(plaintextFiles))
 
+        if !options.replayLedgerEnvelopes.isEmpty {
+            let integrity = self.checkReplayLedgerIntegrity(
+                options.replayLedgerEnvelopes,
+                signer: replayLedgerSigner,
+                requireSignatures: options.requireReplayLedgerSignatureVerification
+            )
+            replayLedgerIntegrity = integrity.result
+            findings.append(contentsOf: integrity.findings)
+        }
+
         let ordered = findings.sorted { lhs, rhs in
             let lhsRank = self.severityRank(lhs.severity)
             let rhsRank = self.severityRank(rhs.severity)
@@ -133,7 +164,10 @@ public enum SecurityAuditRunner {
             }
             return lhsRank > rhsRank
         }
-        return SecurityAuditReport(findings: ordered)
+        return SecurityAuditReport(
+            findings: ordered,
+            replayLedgerIntegrity: replayLedgerIntegrity
+        )
     }
 
     private static func checkConfigSecrets(_ config: OpenClawConfig) -> [SecurityAuditFinding] {
@@ -297,6 +331,34 @@ public enum SecurityAuditRunner {
             )
         }
         return findings
+    }
+
+    private static func checkReplayLedgerIntegrity(
+        _ envelopes: [ReplayEventEnvelope],
+        signer: (any ReplayLedgerSigner)?,
+        requireSignatures: Bool
+    ) -> (result: ReplayLedgerVerificationResult, findings: [SecurityAuditFinding]) {
+        let result = ReplayLedgerVerifier.verify(
+            envelopes: envelopes,
+            signer: signer,
+            requireSignatureVerification: requireSignatures
+        )
+        guard !result.isValid else {
+            return (result, [])
+        }
+
+        return (
+            result,
+            [
+                SecurityAuditFinding(
+                    id: "replay.ledger.integrity.invalid",
+                    severity: .error,
+                    summary: "Replay ledger integrity verification failed",
+                    detail: result.failureReason ?? "Replay ledger chain failed verification.",
+                    recommendation: "Regenerate replay ledger signatures and investigate tampering or storage corruption."
+                ),
+            ]
+        )
     }
 
     private static func containsPlaintextSecretPattern(in text: String) -> Bool {

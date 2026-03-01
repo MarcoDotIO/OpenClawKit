@@ -98,4 +98,56 @@ struct SecurityAuditTests {
         #expect(events.contains(where: { $0.subsystem == "security" && $0.name == "audit.completed" }))
         #expect(events.contains(where: { $0.subsystem == "security" && $0.name == "audit.finding" }))
     }
+
+    @Test
+    func auditFlagsReplayLedgerIntegrityTampering() throws {
+        let signer = HMACReplayLedgerSigner(secret: Data("test-ledger-secret".utf8))
+        let event1 = ReplayEvent(
+            sequenceNumber: 0,
+            subsystem: "runtime",
+            name: "run.started",
+            runID: "run-ledger",
+            sessionKey: "session-ledger"
+        )
+        let envelope1 = try ReplayLedgerVerifier.signedEnvelope(
+            for: event1,
+            previousEventHash: nil,
+            signer: signer
+        )
+        let event2 = ReplayEvent(
+            sequenceNumber: 1,
+            subsystem: "runtime",
+            name: "run.completed",
+            runID: "run-ledger",
+            sessionKey: "session-ledger"
+        )
+        var envelope2 = try ReplayLedgerVerifier.signedEnvelope(
+            for: event2,
+            previousEventHash: envelope1.eventHash,
+            signer: signer
+        )
+        envelope2.event = ReplayEvent(
+            schemaVersion: envelope2.event.schemaVersion,
+            eventID: envelope2.event.eventID,
+            sequenceNumber: envelope2.event.sequenceNumber,
+            subsystem: envelope2.event.subsystem,
+            name: "run.failed",
+            runID: envelope2.event.runID,
+            sessionKey: envelope2.event.sessionKey,
+            occurredAt: envelope2.event.occurredAt,
+            metadata: envelope2.event.metadata,
+            payload: envelope2.event.payload
+        )
+
+        let report = SecurityAuditRunner.run(
+            options: SecurityAuditOptions(
+                replayLedgerEnvelopes: [envelope1, envelope2],
+                requireReplayLedgerSignatureVerification: true
+            ),
+            replayLedgerSigner: signer
+        )
+        #expect(report.replayLedgerIntegrity?.isValid == false)
+        #expect(report.findings.contains(where: { $0.id == "replay.ledger.integrity.invalid" }))
+        #expect(report.hasBlockingFindings == true)
+    }
 }

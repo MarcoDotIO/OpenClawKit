@@ -195,12 +195,17 @@ public struct OpenClawSDK: Sendable {
     /// - Parameters:
     ///   - options: Security audit options.
     ///   - diagnosticsPipeline: Optional diagnostics pipeline for structured audit events.
+    ///   - replayLedgerSigner: Optional replay-ledger signer for signature verification.
     /// - Returns: Security audit report.
     public func runSecurityAudit(
         options: SecurityAuditOptions = SecurityAuditOptions(),
-        diagnosticsPipeline: RuntimeDiagnosticsPipeline? = nil
+        diagnosticsPipeline: RuntimeDiagnosticsPipeline? = nil,
+        replayLedgerSigner: (any ReplayLedgerSigner)? = nil
     ) async -> SecurityAuditReport {
-        let report = SecurityAuditRunner.run(options: options)
+        let report = SecurityAuditRunner.run(
+            options: options,
+            replayLedgerSigner: replayLedgerSigner
+        )
         if let diagnosticsPipeline {
             await diagnosticsPipeline.record(
                 RuntimeDiagnosticEvent(
@@ -211,6 +216,8 @@ public struct OpenClawSDK: Sendable {
                         "errors": String(report.count(for: .error)),
                         "warnings": String(report.count(for: .warning)),
                         "highestSeverity": report.highestSeverity.rawValue,
+                        "replayLedgerValid": String(report.replayLedgerIntegrity?.isValid ?? true),
+                        "replayLedgerEvents": String(report.replayLedgerIntegrity?.validatedEventCount ?? 0),
                     ]
                 )
             )
