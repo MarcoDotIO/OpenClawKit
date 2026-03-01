@@ -39,6 +39,14 @@ struct AgentRuntimeTests {
         }
     }
 
+    struct PromptEchoProvider: ModelProvider {
+        let id = "prompt-echo"
+
+        func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
+            ModelGenerationResponse(text: request.prompt, providerID: self.id, modelID: "echo")
+        }
+    }
+
     @Test
     func toolCallsExecuteInRunLifecycle() async throws {
         let runtime = EmbeddedAgentRuntime()
@@ -136,6 +144,67 @@ struct AgentRuntimeTests {
         #expect(chunks.last?.isFinal == true)
         #expect(chunks.last?.runID == "run-stream")
         #expect(chunks.last?.sessionKey == "session-stream")
+    }
+
+    @Test
+    func runNormalizesAttachmentsAndInjectsAttachmentContext() async throws {
+        let router = ModelRouter()
+        await router.register(PromptEchoProvider())
+        let runtime = EmbeddedAgentRuntime(
+            modelRouter: router,
+            mediaPipeline: MediaPipeline(maxBytes: 1_024 * 1_024)
+        )
+        try await runtime.setDefaultModelProviderID("prompt-echo")
+
+        let result = try await runtime.run(
+            AgentRunRequest(
+                runID: "run-attachments",
+                sessionKey: "session-attachments",
+                prompt: "describe this image",
+                attachments: [
+                    MediaAttachment(
+                        id: UUID(uuidString: "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB")!,
+                        mimeType: "image/png",
+                        data: Data([1, 2, 3, 4]),
+                        fileName: "photo.png"
+                    ),
+                ]
+            )
+        )
+
+        let normalized = try #require(result.attachments.first)
+        #expect(result.attachments.count == 1)
+        #expect(normalized.metadata["kind"] == "image")
+        #expect(normalized.metadata["bytes"] == "4")
+        #expect(result.output.contains("## Attachments"))
+        #expect(result.output.contains("photo.png"))
+        #expect(result.output.contains("image/png"))
+        #expect(result.output.contains("## User Request"))
+        #expect(result.output.contains("describe this image"))
+    }
+
+    @Test
+    func runFailsWhenAttachmentExceedsConfiguredMaxBytes() async throws {
+        let runtime = EmbeddedAgentRuntime(mediaPipeline: MediaPipeline(maxBytes: 2))
+
+        do {
+            _ = try await runtime.run(
+                AgentRunRequest(
+                    runID: "run-attachment-too-large",
+                    sessionKey: "session-attachments",
+                    prompt: "analyze attachment",
+                    attachments: [
+                        MediaAttachment(
+                            mimeType: "application/octet-stream",
+                            data: Data(repeating: 0x01, count: 2_048)
+                        )
+                    ]
+                )
+            )
+            Issue.record("Expected attachment size validation failure")
+        } catch {
+            #expect(String(describing: error).contains("maximum supported size"))
+        }
     }
 
 }

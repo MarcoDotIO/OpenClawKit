@@ -1,4 +1,8 @@
 import SwiftUI
+import UniformTypeIdentifiers
+#if canImport(PhotosUI)
+import PhotosUI
+#endif
 #if canImport(UIKit)
 import UIKit
 #endif
@@ -7,6 +11,10 @@ import UIKit
 struct ChatView: View {
     @EnvironmentObject private var appState: OpenClawAppState
     @FocusState private var composerFocused: Bool
+    @State private var showingFileImporter = false
+    #if canImport(PhotosUI)
+    @State private var selectedPhotoItem: PhotosPickerItem?
+    #endif
 
     var body: some View {
         NavigationStack {
@@ -73,7 +81,54 @@ struct ChatView: View {
                 }
                 .padding(.horizontal)
 
+                if !appState.pendingAttachments.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(appState.pendingAttachments) { attachment in
+                                HStack(spacing: 6) {
+                                    Text("\(attachment.fileName) • \(attachment.byteCountLabel)")
+                                        .font(.caption)
+                                        .lineLimit(1)
+                                    Button {
+                                        appState.removePendingAttachment(id: attachment.id)
+                                    } label: {
+                                        Image(systemName: "xmark.circle.fill")
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(.ultraThinMaterial, in: Capsule())
+                            }
+                        }
+                        .padding(.horizontal)
+                    }
+                }
+
                 HStack(spacing: 8) {
+                    Button {
+                        showingFileImporter = true
+                    } label: {
+                        Image(systemName: "paperclip.circle.fill")
+                            .font(.title3)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("chat-attach-file-button")
+                    .disabled(!appState.isDeployed)
+
+                    #if canImport(PhotosUI)
+                    if #available(iOS 16.0, *) {
+                        PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
+                            Image(systemName: "photo.circle.fill")
+                                .font(.title3)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("chat-attach-photo-button")
+                        .disabled(!appState.isDeployed)
+                    }
+                    #endif
+
                     TextField("Send a message...", text: $appState.pendingMessage, axis: .vertical)
                         .textFieldStyle(.roundedBorder)
                         .lineLimit(1...4)
@@ -86,12 +141,48 @@ struct ChatView: View {
                         }
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(!appState.isDeployed || appState.pendingMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(
+                        !appState.isDeployed ||
+                            (
+                                appState.pendingMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+                                    !appState.hasPendingAttachments
+                            )
+                    )
                 }
                 .padding(.horizontal)
                 .padding(.bottom, 8)
             }
             .navigationTitle("Chat")
+            .fileImporter(
+                isPresented: $showingFileImporter,
+                allowedContentTypes: [.data],
+                allowsMultipleSelection: false
+            ) { result in
+                guard case .success(let urls) = result, let fileURL = urls.first else {
+                    return
+                }
+                _ = appState.importAttachment(from: fileURL)
+            }
+            #if canImport(PhotosUI)
+            .onChange(of: selectedPhotoItem) { _, selected in
+                guard #available(iOS 16.0, *), let selected else {
+                    return
+                }
+                Task {
+                    defer { selectedPhotoItem = nil }
+                    guard let data = try? await selected.loadTransferable(type: Data.self) else {
+                        return
+                    }
+                    let mimeType = selected.supportedContentTypes.first?.preferredMIMEType ?? "image/jpeg"
+                    let fallbackName = "photo-\(UUID().uuidString.prefix(8)).jpg"
+                    _ = appState.stageAttachment(
+                        data: data,
+                        mimeType: mimeType,
+                        fileName: fallbackName
+                    )
+                }
+            }
+            #endif
             .toolbar {
                 ToolbarItemGroup(placement: .keyboard) {
                     Spacer()

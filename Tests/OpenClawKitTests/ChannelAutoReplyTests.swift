@@ -397,6 +397,55 @@ struct ChannelAutoReplyTests {
     }
 
     @Test
+    func autoReplyEngineForwardsAttachmentsIntoRuntimePromptContext() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("openclawkit-autoreply-attachment-tests", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let sessionsPath = root.appendingPathComponent("sessions.json", isDirectory: false)
+        let sessionStore = SessionStore(fileURL: sessionsPath)
+        let registry = ChannelRegistry()
+        let webchat = InMemoryChannelAdapter(id: .webchat)
+        await registry.register(webchat)
+        try await webchat.start()
+
+        let runtime = EmbeddedAgentRuntime()
+        await runtime.registerModelProvider(PromptEchoProvider())
+        try await runtime.setDefaultModelProviderID("prompt-echo")
+
+        let engine = AutoReplyEngine(
+            config: OpenClawConfig(),
+            sessionStore: sessionStore,
+            channelRegistry: registry,
+            runtime: runtime
+        )
+
+        let outbound = try await engine.process(
+            InboundMessage(
+                channel: .webchat,
+                accountID: "user-1",
+                peerID: "peer",
+                text: "Please inspect this",
+                attachments: [
+                    MediaAttachment(
+                        id: UUID(uuidString: "CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC")!,
+                        mimeType: "image/png",
+                        data: Data([0xAA, 0xBB, 0xCC]),
+                        fileName: "receipt.png"
+                    ),
+                ]
+            )
+        )
+
+        #expect(outbound.text.contains("## Attachments"))
+        #expect(outbound.text.contains("receipt.png"))
+        #expect(outbound.text.contains("image/png"))
+        #expect(outbound.text.contains("## User Request"))
+    }
+
+    @Test
     func autoReplyEngineUsesStreamingRuntimeWhenLocalStreamingEnabled() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("openclawkit-autoreply-streaming-tests", isDirectory: true)

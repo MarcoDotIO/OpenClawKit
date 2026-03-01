@@ -72,6 +72,7 @@ let package = Package(
                 "OpenClawProtocol",
                 "OpenClawModels",
                 "OpenClawSkills",
+                "OpenClawMedia",
             ],
             swiftSettings: [
                 .enableUpcomingFeature("StrictConcurrency"),

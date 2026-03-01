@@ -2,6 +2,7 @@ import Foundation
 import OpenClawAgents
 import OpenClawCore
 import OpenClawMemory
+import OpenClawProtocol
 import OpenClawSkills
 
 /// Stable channel identifiers supported by channel adapters.
@@ -22,6 +23,7 @@ public struct InboundMessage: Sendable, Equatable {
     public let accountID: String?
     public let peerID: String
     public let text: String
+    public let attachments: [MediaAttachment]
 
     /// Creates an inbound message envelope.
     /// - Parameters:
@@ -29,11 +31,19 @@ public struct InboundMessage: Sendable, Equatable {
     ///   - accountID: Optional account/user identifier.
     ///   - peerID: Conversation peer/channel identifier.
     ///   - text: Message content.
-    public init(channel: ChannelID, accountID: String? = nil, peerID: String, text: String) {
+    ///   - attachments: Optional multimodal attachments.
+    public init(
+        channel: ChannelID,
+        accountID: String? = nil,
+        peerID: String,
+        text: String,
+        attachments: [MediaAttachment] = []
+    ) {
         self.channel = channel
         self.accountID = accountID
         self.peerID = peerID
         self.text = text
+        self.attachments = attachments
     }
 }
 
@@ -43,6 +53,7 @@ public struct OutboundMessage: Sendable, Equatable {
     public let accountID: String?
     public let peerID: String
     public let text: String
+    public let attachments: [MediaAttachment]
 
     /// Creates an outbound message envelope.
     /// - Parameters:
@@ -50,11 +61,19 @@ public struct OutboundMessage: Sendable, Equatable {
     ///   - accountID: Optional account/user identifier.
     ///   - peerID: Conversation peer/channel identifier.
     ///   - text: Message content.
-    public init(channel: ChannelID, accountID: String? = nil, peerID: String, text: String) {
+    ///   - attachments: Optional multimodal attachments.
+    public init(
+        channel: ChannelID,
+        accountID: String? = nil,
+        peerID: String,
+        text: String,
+        attachments: [MediaAttachment] = []
+    ) {
         self.channel = channel
         self.accountID = accountID
         self.peerID = peerID
         self.text = text
+        self.attachments = attachments
     }
 }
 
@@ -605,6 +624,7 @@ public actor AutoReplyEngine {
                 "channel": message.channel.rawValue,
                 "accountID": message.accountID ?? "",
                 "peerID": message.peerID,
+                "attachmentCount": String(message.attachments.count),
             ]
         )
         let routingContext = SessionRoutingContext(
@@ -710,12 +730,16 @@ public actor AutoReplyEngine {
         await self.emitDiagnostic(
             name: "model.call.started",
             sessionKey: sessionKey,
-            metadata: ["providerID": self.config.models.defaultProviderID]
+            metadata: [
+                "providerID": self.config.models.defaultProviderID,
+                "attachmentCount": String(message.attachments.count),
+            ]
         )
         let runtimeRequest = AgentRunRequest(
             sessionKey: sessionKey,
             prompt: runtimePrompt,
-            workspaceRootPath: self.config.agents.workspaceRoot
+            workspaceRootPath: self.config.agents.workspaceRoot,
+            attachments: message.attachments
         )
         let runtimeOutput: String
         if self.shouldUseStreamingRuntime() {

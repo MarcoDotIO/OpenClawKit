@@ -87,5 +87,25 @@ struct ProtocolModelsTests {
         let decoded = try JSONDecoder().decode(ReplayEventEnvelope.self, from: encoded)
         #expect(decoded == envelope)
     }
+
+    @Test
+    func mediaAttachmentRoundTripPreservesBytesAndMetadata() throws {
+        let attachment = MediaAttachment(
+            id: UUID(uuidString: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA")!,
+            mimeType: "image/png",
+            data: Data([0, 17, 222, 255]),
+            fileName: "camera-shot.png",
+            metadata: [
+                "source": "camera",
+                "kind": "image",
+            ]
+        )
+
+        let encoded = try JSONEncoder().encode(attachment)
+        let decoded = try JSONDecoder().decode(MediaAttachment.self, from: encoded)
+
+        #expect(decoded == attachment)
+        #expect(decoded.byteCount == 4)
+    }
 }
 
