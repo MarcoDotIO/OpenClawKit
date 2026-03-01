@@ -39,7 +39,8 @@ enum SkillFrontmatterParser {
         SkillMetadata(
             always: parseBool(frontmatter["always"] ?? frontmatter["openclaw.always"]),
             skillKey: frontmatter["skillKey"] ?? frontmatter["openclaw.skillKey"],
-            primaryEnv: frontmatter["primaryEnv"] ?? frontmatter["openclaw.primaryEnv"]
+            primaryEnv: frontmatter["primaryEnv"] ?? frontmatter["openclaw.primaryEnv"],
+            connectors: self.parseConnectorPermissions(frontmatter)
         )
     }
 
@@ -66,6 +67,45 @@ enum SkillFrontmatterParser {
             return false
         default:
             return defaultValue
+        }
+    }
+
+    private static func parseConnectorPermissions(_ frontmatter: [String: String]) -> [SkillConnectorPermission] {
+        let connectorRaw = frontmatter["connectors"] ?? frontmatter["connector"] ?? ""
+        let connectors = connectorRaw
+            .split { $0 == "," || $0 == ";" || $0 == " " || $0 == "\n" || $0 == "\t" }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .compactMap { token in
+                SkillConnectorType.allCases.first { connector in
+                    connector.rawValue.caseInsensitiveCompare(token) == .orderedSame
+                }
+            }
+        guard !connectors.isEmpty else {
+            return []
+        }
+
+        let scopeRaw = frontmatter["connectorScopes"] ??
+            frontmatter["connector-scopes"] ??
+            frontmatter["scopes"] ??
+            ""
+        let scopes = scopeRaw
+            .split { $0 == "," || $0 == ";" }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let consentRaw = (frontmatter["connectorConsent"] ??
+            frontmatter["connector-consent"] ??
+            frontmatter["consent"] ??
+            "explicit")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let consent = ConnectorConsentRequirement(rawValue: consentRaw) ?? .explicit
+
+        return connectors.map { connector in
+            SkillConnectorPermission(
+                connector: connector,
+                scopes: scopes,
+                consent: consent
+            )
         }
     }
 }

@@ -10,6 +10,50 @@ public enum SkillSource: String, Codable, Sendable {
     case workspace
 }
 
+/// Connector types supported by permissioned personal-data skills.
+public enum SkillConnectorType: String, Codable, Sendable, CaseIterable, Equatable {
+    case eventKit = "eventkit"
+    case contacts = "contacts"
+    case reminders = "reminders"
+    case photos = "photos"
+    case speech = "speech"
+    case camera = "camera"
+    case microphone = "microphone"
+    case location = "location"
+    case healthKit = "healthkit"
+    case homeKit = "homekit"
+    case fileBookmarks = "filebookmarks"
+    case clipboard = "clipboard"
+    case keychain = "keychain"
+    case userDefaults = "userdefaults"
+    case appIntents = "appintents"
+}
+
+/// Consent requirement level for connector-backed skills.
+public enum ConnectorConsentRequirement: String, Codable, Sendable, Equatable {
+    case none
+    case session
+    case explicit
+}
+
+/// Connector permission requirements declared by a skill.
+public struct SkillConnectorPermission: Codable, Sendable, Equatable {
+    public let connector: SkillConnectorType
+    public let scopes: [String]
+    public let consent: ConnectorConsentRequirement
+
+    /// Creates connector permission requirements.
+    /// - Parameters:
+    ///   - connector: Connector type.
+    ///   - scopes: Required permission scopes.
+    ///   - consent: Consent requirement level.
+    public init(connector: SkillConnectorType, scopes: [String], consent: ConnectorConsentRequirement) {
+        self.connector = connector
+        self.scopes = scopes
+        self.consent = consent
+    }
+}
+
 /// Parsed skill metadata fields.
 public struct SkillMetadata: Codable, Sendable, Equatable {
     /// Marks skill as always-active in prompt assembly.
@@ -18,16 +62,24 @@ public struct SkillMetadata: Codable, Sendable, Equatable {
     public var skillKey: String?
     /// Optional primary environment hint.
     public var primaryEnv: String?
+    /// Optional connector permission requirements.
+    public var connectors: [SkillConnectorPermission]
 
     /// Creates skill metadata.
     /// - Parameters:
     ///   - always: Whether skill is always active.
     ///   - skillKey: Optional skill key.
     ///   - primaryEnv: Optional environment hint.
-    public init(always: Bool? = nil, skillKey: String? = nil, primaryEnv: String? = nil) {
+    public init(
+        always: Bool? = nil,
+        skillKey: String? = nil,
+        primaryEnv: String? = nil,
+        connectors: [SkillConnectorPermission] = []
+    ) {
         self.always = always
         self.skillKey = skillKey
         self.primaryEnv = primaryEnv
+        self.connectors = connectors
     }
 }
 

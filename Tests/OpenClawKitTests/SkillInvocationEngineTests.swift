@@ -182,6 +182,65 @@ struct SkillInvocationEngineTests {
         #expect(wasiResult?.executorID == "wasm-hint")
     }
 
+    @Test
+    func blocksInvocationWhenConnectorPermissionMissing() async throws {
+        let root = try self.makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        _ = try self.writeSkill(
+            root: root,
+            name: "contacts-skill",
+            entrypoint: "scripts/run.exec",
+            extraFrontmatter: [
+                "connectors": "contacts",
+                "connectorScopes": "read",
+                "connectorConsent": "explicit",
+            ]
+        )
+
+        let engine = SkillInvocationEngine(
+            workspaceRoot: root,
+            invocationTimeoutMs: 500,
+            executors: [ExtensionExecutor(outputPrefix: "blocked")]
+        )
+
+        do {
+            _ = try await engine.invokeIfRequested(message: "/contacts-skill ping")
+            Issue.record("Expected connector permission denial")
+        } catch {
+            #expect(String(describing: error).contains("Connector permission denied"))
+            #expect(String(describing: error).contains("contacts"))
+        }
+    }
+
+    @Test
+    func allowsInvocationWhenConnectorPermissionGranted() async throws {
+        let root = try self.makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        _ = try self.writeSkill(
+            root: root,
+            name: "contacts-skill",
+            entrypoint: "scripts/run.exec",
+            extraFrontmatter: [
+                "connectors": "contacts",
+                "connectorScopes": "read",
+                "connectorConsent": "explicit",
+            ]
+        )
+
+        let policy = ConnectorPermissionPolicy()
+        await policy.grant(connector: .contacts, scopes: ["read"], consentGranted: true)
+
+        let engine = SkillInvocationEngine(
+            workspaceRoot: root,
+            invocationTimeoutMs: 500,
+            connectorPermissionPolicy: policy,
+            executors: [ExtensionExecutor(outputPrefix: "allowed")]
+        )
+        let result = try await engine.invokeIfRequested(message: "/contacts-skill ping")
+
+        #expect(result?.output == "allowed:ping")
+    }
+
     private func makeWorkspace() throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("openclawkit-skill-invocation-tests", isDirectory: true)

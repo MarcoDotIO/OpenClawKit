@@ -178,22 +178,26 @@ public actor SkillInvocationEngine {
     private let registry: SkillRegistry
     private let executors: [any SkillExecutor]
     private let defaultInvocationTimeoutMs: Int
+    private let connectorPermissionPolicy: ConnectorPermissionPolicy
 
     /// Creates a skill invocation engine.
     /// - Parameters:
     ///   - workspaceRoot: Workspace root that contains skills.
     ///   - processRunner: Process execution runtime for non-JS entrypoints.
     ///   - invocationTimeoutMs: Default skill invocation timeout in milliseconds.
+    ///   - connectorPermissionPolicy: Permission policy for declared skill connectors.
     ///   - executors: Optional explicit executor chain override.
     public init(
         workspaceRoot: URL,
         processRunner: ProcessRunner = ProcessRunner(),
         invocationTimeoutMs: Int = 30_000,
+        connectorPermissionPolicy: ConnectorPermissionPolicy = ConnectorPermissionPolicy(),
         executors: [any SkillExecutor]? = nil
     ) {
         self.workspaceRoot = workspaceRoot.standardizedFileURL
         self.registry = SkillRegistry(workspaceRoot: self.workspaceRoot)
         self.defaultInvocationTimeoutMs = max(1, invocationTimeoutMs)
+        self.connectorPermissionPolicy = connectorPermissionPolicy
         if let executors, !executors.isEmpty {
             self.executors = executors
         } else {
@@ -339,6 +343,7 @@ public actor SkillInvocationEngine {
     }
 
     private func execute(match: InvocationMatch) async throws -> SkillInvocationResult {
+        try await self.connectorPermissionPolicy.enforce(skill: match.skill)
         guard let entrypoint = try await self.registry.resolveEntrypoint(for: match.skill) else {
             throw OpenClawCoreError.invalidConfiguration(
                 "Skill '\(match.skill.name)' is missing an entrypoint"

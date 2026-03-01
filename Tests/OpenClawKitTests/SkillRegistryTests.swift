@@ -200,6 +200,42 @@ struct SkillRegistryTests {
     }
 
     @Test
+    func parsesConnectorPermissionsFromFrontmatter() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let skillRoot = root.appendingPathComponent("skills").appendingPathComponent("contacts-helper")
+        let skillFile = skillRoot.appendingPathComponent("SKILL.md")
+        try FileManager.default.createDirectory(at: skillRoot, withIntermediateDirectories: true)
+        try """
+        ---
+        name: contacts-helper
+        description: Contacts helper
+        connectors: contacts, eventKit
+        connectorScopes: read,write
+        connectorConsent: session
+        ---
+
+        Use this skill to work with contacts.
+        """.write(to: skillFile, atomically: true, encoding: .utf8)
+
+        let registry = SkillRegistry(workspaceRoot: root)
+        let skills = try await registry.loadSkills()
+        let skill = try #require(skills.first(where: { $0.name == "contacts-helper" }))
+        let permissions = skill.metadata.connectors
+        let contactsPermission = permissions.first(where: { $0.connector == .contacts })
+        let calendarPermission = permissions.first(where: { $0.connector == .eventKit })
+
+        #expect(permissions.count == 2)
+        #expect(contactsPermission?.scopes == ["read", "write"])
+        #expect(contactsPermission?.consent == .session)
+        #expect(calendarPermission?.scopes == ["read", "write"])
+        #expect(calendarPermission?.consent == .session)
+    }
+
+    @Test
     func loadsWeatherSkillFromIOSExampleProjectDirectory() async throws {
         let repoRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
