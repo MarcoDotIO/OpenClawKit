@@ -112,6 +112,32 @@ struct ModelRoutingTests {
         }
     }
 
+    actor MockXAITransport: XAIHTTPTransport {
+        let statusCode: Int
+        let body: Data
+        private(set) var lastPath: String?
+        private(set) var lastAuthorization: String?
+
+        init(statusCode: Int = 200, body: Data) {
+            self.statusCode = statusCode
+            self.body = body
+        }
+
+        func data(for request: URLRequest) async throws -> HTTPResponseData {
+            self.lastPath = request.url?.path
+            self.lastAuthorization = request.value(forHTTPHeaderField: "Authorization")
+            return HTTPResponseData(statusCode: self.statusCode, headers: [:], body: self.body)
+        }
+
+        func path() -> String? {
+            self.lastPath
+        }
+
+        func authorization() -> String? {
+            self.lastAuthorization
+        }
+    }
+
     @Test
     func routerUsesDefaultProviderWhenRequestDoesNotSpecifyOne() async throws {
         let router = ModelRouter()
@@ -450,5 +476,69 @@ struct ModelRoutingTests {
         #expect(response.providerID == GeminiModelProvider.providerID)
         #expect(response.text == "gemini-output")
         #expect(await transport.query()?.contains("key=gem-key") == true)
+    }
+
+    @Test
+    func xaiProviderParsesChatCompletionsResponse() async throws {
+        let transport = MockXAITransport(
+            body: Data("""
+            {"model":"grok-3-mini","choices":[{"index":0,"message":{"role":"assistant","content":"grok-output"}}]}
+            """.utf8)
+        )
+        let provider = XAIModelProvider(
+            configuration: ProviderServiceConfig(
+                enabled: true,
+                apiStyle: .openAICompletions,
+                authMode: .apiKey,
+                modelID: "grok-3-mini",
+                apiKey: "xai-key",
+                baseURL: "https://api.x.ai/v1",
+                chatCompletionsPath: "chat/completions"
+            ),
+            transport: transport
+        )
+        let response = try await provider.generate(
+            ModelGenerationRequest(sessionKey: "s1", prompt: "hello")
+        )
+
+        #expect(response.providerID == XAIModelProvider.providerID)
+        #expect(response.text == "grok-output")
+        #expect(await transport.path()?.contains("/v1/chat/completions") == true)
+        #expect(await transport.authorization() == "Bearer xai-key")
+    }
+
+    @Test
+    func routerSupportsGrokAliasProviderID() async throws {
+        let transport = MockXAITransport(
+            body: Data("""
+            {"model":"grok-3-mini","choices":[{"index":0,"message":{"role":"assistant","content":"grok-alias-output"}}]}
+            """.utf8)
+        )
+        let router = ModelRouter()
+        await router.register(
+            XAIModelProvider(
+                id: XAIModelProvider.grokAliasProviderID,
+                configuration: ProviderServiceConfig(
+                    enabled: true,
+                    apiStyle: .openAICompletions,
+                    authMode: .apiKey,
+                    modelID: "grok-3-mini",
+                    apiKey: "xai-key",
+                    baseURL: "https://api.x.ai/v1",
+                    chatCompletionsPath: "chat/completions"
+                ),
+                transport: transport
+            )
+        )
+        let response = try await router.generate(
+            ModelGenerationRequest(
+                sessionKey: "s1",
+                prompt: "hello",
+                providerID: "grok"
+            )
+        )
+
+        #expect(response.providerID == "grok")
+        #expect(response.text == "grok-alias-output")
     }
 }
