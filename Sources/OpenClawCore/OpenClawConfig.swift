@@ -67,26 +67,31 @@ public struct RuntimeConfig: Codable, Sendable, Equatable {
     public var schemaVersion: Int
     public var replay: ReplayConfig
     public var adaptiveRouting: AdaptiveRoutingConfig
+    public var memoryGraph: MemoryGraphConfig
 
     /// Creates runtime behavior settings.
     /// - Parameters:
     ///   - schemaVersion: Runtime config schema version.
     ///   - replay: Replay event/capture settings.
     ///   - adaptiveRouting: Adaptive model routing settings.
+    ///   - memoryGraph: SwiftData+CloudKit memory graph settings.
     public init(
         schemaVersion: Int = ReplayEvent.currentSchemaVersion,
         replay: ReplayConfig = ReplayConfig(),
-        adaptiveRouting: AdaptiveRoutingConfig = AdaptiveRoutingConfig()
+        adaptiveRouting: AdaptiveRoutingConfig = AdaptiveRoutingConfig(),
+        memoryGraph: MemoryGraphConfig = MemoryGraphConfig()
     ) {
         self.schemaVersion = max(1, schemaVersion)
         self.replay = replay
         self.adaptiveRouting = adaptiveRouting
+        self.memoryGraph = memoryGraph
     }
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion
         case replay
         case adaptiveRouting
+        case memoryGraph
     }
 
     public init(from decoder: Decoder) throws {
@@ -100,6 +105,8 @@ public struct RuntimeConfig: Codable, Sendable, Equatable {
             AdaptiveRoutingConfig.self,
             forKey: .adaptiveRouting
         ) ?? AdaptiveRoutingConfig()
+        self.memoryGraph = try container.decodeIfPresent(MemoryGraphConfig.self, forKey: .memoryGraph)
+            ?? MemoryGraphConfig()
     }
 }
 
@@ -147,6 +154,53 @@ public struct ReplayConfig: Codable, Sendable, Equatable {
         self.maxInMemoryEvents = max(1, try container.decodeIfPresent(Int.self, forKey: .maxInMemoryEvents) ?? 10_000)
         self.storePath = try container.decodeIfPresent(String.self, forKey: .storePath)
         self.signEvents = try container.decodeIfPresent(Bool.self, forKey: .signEvents) ?? false
+    }
+}
+
+/// SwiftData + CloudKit memory graph controls.
+public struct MemoryGraphConfig: Codable, Sendable, Equatable {
+    public var enabled: Bool
+    public var swiftDataEnabled: Bool
+    public var cloudKitSyncEnabled: Bool
+    public var cloudKitContainerID: String?
+    public var legacyStorePath: String?
+
+    /// Creates memory graph settings.
+    /// - Parameters:
+    ///   - enabled: Enables memory graph storage.
+    ///   - swiftDataEnabled: Enables SwiftData backing where available.
+    ///   - cloudKitSyncEnabled: Enables CloudKit sync where available.
+    ///   - cloudKitContainerID: Optional CloudKit container identifier.
+    ///   - legacyStorePath: Optional legacy JSON store path used for migration.
+    public init(
+        enabled: Bool = false,
+        swiftDataEnabled: Bool = true,
+        cloudKitSyncEnabled: Bool = false,
+        cloudKitContainerID: String? = nil,
+        legacyStorePath: String? = nil
+    ) {
+        self.enabled = enabled
+        self.swiftDataEnabled = swiftDataEnabled
+        self.cloudKitSyncEnabled = cloudKitSyncEnabled
+        self.cloudKitContainerID = cloudKitContainerID
+        self.legacyStorePath = legacyStorePath
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled
+        case swiftDataEnabled
+        case cloudKitSyncEnabled
+        case cloudKitContainerID
+        case legacyStorePath
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+        self.swiftDataEnabled = try container.decodeIfPresent(Bool.self, forKey: .swiftDataEnabled) ?? true
+        self.cloudKitSyncEnabled = try container.decodeIfPresent(Bool.self, forKey: .cloudKitSyncEnabled) ?? false
+        self.cloudKitContainerID = try container.decodeIfPresent(String.self, forKey: .cloudKitContainerID)
+        self.legacyStorePath = try container.decodeIfPresent(String.self, forKey: .legacyStorePath)
     }
 }
 

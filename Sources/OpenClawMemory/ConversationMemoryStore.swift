@@ -57,7 +57,7 @@ public struct ConversationMemoryEntry: Codable, Sendable, Equatable {
 }
 
 /// File-backed conversation store for adapter-agnostic memory context.
-public actor ConversationMemoryStore {
+public actor ConversationMemoryStore: ConversationMemoryStoreProtocol {
     private let fileURL: URL
     private let maxEntriesPerSession: Int
     private var entriesBySession: [String: [ConversationMemoryEntry]] = [:]
@@ -177,6 +177,18 @@ public actor ConversationMemoryStore {
         }
         lines.append("</memory_entries>")
         return lines.joined(separator: "\n")
+    }
+
+    /// Returns all entries across sessions sorted by timestamp.
+    public func allEntries() -> [ConversationMemoryEntry] {
+        self.entriesBySession.values
+            .flatMap { $0 }
+            .sorted { lhs, rhs in
+                if lhs.createdAtMs == rhs.createdAtMs {
+                    return lhs.id < rhs.id
+                }
+                return lhs.createdAtMs < rhs.createdAtMs
+            }
     }
 
     private func append(_ entry: ConversationMemoryEntry) {

@@ -121,6 +121,9 @@ struct ConfigSessionRoutingTests {
         #expect(decoded.runtime.replay.persistToDisk == true)
         #expect(decoded.runtime.adaptiveRouting.enabled == false)
         #expect(decoded.runtime.adaptiveRouting.objective == .balanced)
+        #expect(decoded.runtime.memoryGraph.enabled == false)
+        #expect(decoded.runtime.memoryGraph.swiftDataEnabled == true)
+        #expect(decoded.runtime.memoryGraph.cloudKitSyncEnabled == false)
     }
 
     @Test
@@ -141,6 +144,13 @@ struct ConfigSessionRoutingTests {
                     explorationRate: 0.12,
                     decisionWindow: 750,
                     objective: .quality
+                ),
+                memoryGraph: MemoryGraphConfig(
+                    enabled: true,
+                    swiftDataEnabled: true,
+                    cloudKitSyncEnabled: true,
+                    cloudKitContainerID: "iCloud.io.marcodotio.openclaw",
+                    legacyStorePath: "/tmp/openclaw/conversation-memory.json"
                 )
             )
         )
