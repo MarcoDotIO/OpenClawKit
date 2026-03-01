@@ -289,6 +289,11 @@ public actor RuntimeDiagnosticsPipeline {
         )
     }
 
+    /// Returns per-provider telemetry aggregates for adaptive routing loops.
+    public func modelTelemetry() -> [ModelUsageMetrics] {
+        self.usageSnapshot().models
+    }
+
     /// Clears retained events and aggregate counters.
     public func reset() {
         self.events.removeAll(keepingCapacity: true)

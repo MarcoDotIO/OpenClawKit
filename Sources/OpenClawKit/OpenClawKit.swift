@@ -196,6 +196,23 @@ public struct OpenClawSDK: Sendable {
         return try await engine.events(in: window, limit: limit)
     }
 
+    /// Applies diagnostics feedback to adaptive model-router state.
+    /// - Parameters:
+    ///   - router: Model router to optimize.
+    ///   - diagnosticsPipeline: Diagnostics pipeline containing provider telemetry.
+    ///   - decayFactor: Historical retention factor (`0...1`).
+    /// - Returns: Updated adaptive routing snapshot.
+    public func optimizeModelRouter(
+        _ router: ModelRouter,
+        using diagnosticsPipeline: RuntimeDiagnosticsPipeline,
+        decayFactor: Double = 0.85
+    ) async -> AdaptiveRoutingSnapshot? {
+        await router.optimizeRouting(
+            using: diagnosticsPipeline,
+            decayFactor: decayFactor
+        )
+    }
+
     /// Returns timeline records derived from recent diagnostics events.
     /// - Parameters:
     ///   - pipeline: Runtime diagnostics pipeline.

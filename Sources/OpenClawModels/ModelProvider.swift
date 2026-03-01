@@ -309,6 +309,45 @@ public actor ModelRouter {
         return adaptivePolicy.snapshot(for: candidates)
     }
 
+    /// Updates adaptive routing state using aggregate diagnostics telemetry.
+    /// - Parameters:
+    ///   - diagnostics: Runtime diagnostics snapshot.
+    ///   - decayFactor: Historical retention factor (`0...1`).
+    /// - Returns: Updated adaptive snapshot.
+    public func optimizeRouting(
+        using diagnostics: RuntimeUsageSnapshot,
+        decayFactor: Double = 0.85
+    ) -> AdaptiveRoutingSnapshot? {
+        guard self.adaptivePolicy != nil else {
+            return nil
+        }
+        self.adaptivePolicy?.ingest(
+            modelMetrics: diagnostics.models,
+            decayFactor: decayFactor
+        )
+        return self.adaptivePolicy?.snapshot(for: self.providers.keys.sorted())
+    }
+
+    /// Updates adaptive routing state using a diagnostics pipeline.
+    /// - Parameters:
+    ///   - diagnosticsPipeline: Runtime diagnostics pipeline.
+    ///   - decayFactor: Historical retention factor (`0...1`).
+    /// - Returns: Updated adaptive snapshot.
+    public func optimizeRouting(
+        using diagnosticsPipeline: RuntimeDiagnosticsPipeline,
+        decayFactor: Double = 0.85
+    ) async -> AdaptiveRoutingSnapshot? {
+        guard self.adaptivePolicy != nil else {
+            return nil
+        }
+        let modelMetrics = await diagnosticsPipeline.modelTelemetry()
+        self.adaptivePolicy?.ingest(
+            modelMetrics: modelMetrics,
+            decayFactor: decayFactor
+        )
+        return self.adaptivePolicy?.snapshot(for: self.providers.keys.sorted())
+    }
+
     /// Returns configured provider identifiers sorted alphabetically.
     public func configuredProviderIDs() -> [String] {
         self.providers.keys.sorted()

@@ -105,6 +105,56 @@ public struct AdaptiveRoutingPolicy: Sendable {
         self.observationsByProvider[normalizedProvider] = observations
     }
 
+    /// Decays historical observations to avoid stale routing bias.
+    /// - Parameter factor: Fraction of observations to retain (`0...1`).
+    public mutating func decayHistory(by factor: Double) {
+        let clamped = min(max(0, factor), 1)
+        guard clamped < 1 else {
+            return
+        }
+        for providerID in self.observationsByProvider.keys {
+            guard var observations = self.observationsByProvider[providerID], !observations.isEmpty else {
+                continue
+            }
+            let keepCount = max(1, Int((Double(observations.count) * clamped).rounded(.toNearestOrAwayFromZero)))
+            if observations.count > keepCount {
+                observations.removeFirst(observations.count - keepCount)
+            }
+            self.observationsByProvider[providerID] = observations
+        }
+    }
+
+    /// Ingests aggregate diagnostics metrics into adaptive observations.
+    /// - Parameters:
+    ///   - modelMetrics: Aggregate provider metrics from diagnostics.
+    ///   - decayFactor: Retention factor applied before ingesting telemetry.
+    public mutating func ingest(modelMetrics: [ModelUsageMetrics], decayFactor: Double = 0.85) {
+        self.decayHistory(by: decayFactor)
+        for metric in modelMetrics {
+            let boundedCalls = max(1, min(metric.calls, self.config.decisionWindow))
+            let boundedFailures = min(boundedCalls, metric.failures)
+            let successes = max(0, boundedCalls - boundedFailures)
+            for _ in 0..<successes {
+                self.record(
+                    providerID: metric.providerID,
+                    succeeded: true,
+                    latencyMs: metric.averageLatencyMs,
+                    costUSD: nil,
+                    qualityScore: nil
+                )
+            }
+            for _ in 0..<boundedFailures {
+                self.record(
+                    providerID: metric.providerID,
+                    succeeded: false,
+                    latencyMs: metric.averageLatencyMs,
+                    costUSD: nil,
+                    qualityScore: nil
+                )
+            }
+        }
+    }
+
     /// Returns providers ranked by policy score.
     /// - Parameter providerIDs: Candidate providers.
     /// - Returns: Deterministically ranked provider identifiers.
@@ -183,6 +233,7 @@ public struct AdaptiveRoutingPolicy: Sendable {
         let explorationBoost = metrics.sampleCount < self.config.minSamplesPerProvider
             ? self.config.explorationRate
             : 0
-        return weightedScore + explorationBoost
+        // Maintain a non-zero score floor so fallback providers remain eligible.
+        return max(0.05, weightedScore + explorationBoost)
     }
 }
