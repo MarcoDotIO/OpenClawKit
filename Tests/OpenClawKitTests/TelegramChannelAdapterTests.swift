@@ -23,6 +23,7 @@ struct TelegramChannelAdapterTests {
         struct RequestRecord: Sendable {
             let method: String
             let path: String
+            let url: String
             let body: String
         }
 
@@ -51,6 +52,7 @@ struct TelegramChannelAdapterTests {
             let record = RequestRecord(
                 method: request.httpMethod ?? "GET",
                 path: request.url?.path ?? "",
+                url: request.url?.absoluteString ?? "",
                 body: String(decoding: request.httpBody ?? Data(), as: UTF8.self)
             )
             self.requestRecords.append(record)
@@ -94,6 +96,28 @@ struct TelegramChannelAdapterTests {
         }
     }
 
+    actor MockOffsetStore: TelegramUpdateOffsetStore {
+        private(set) var persistedUpdateID: Int64?
+        private(set) var writes: [Int64] = []
+
+        init(initial: Int64? = nil) {
+            self.persistedUpdateID = initial
+        }
+
+        func readLastUpdateID() async -> Int64? {
+            self.persistedUpdateID
+        }
+
+        func writeLastUpdateID(_ updateID: Int64) async {
+            self.persistedUpdateID = updateID
+            self.writes.append(updateID)
+        }
+
+        func snapshotWrites() async -> [Int64] {
+            self.writes
+        }
+    }
+
     @Test
     func pollsUpdatesAndDeliversInboundPrivateMessages() async throws {
         let updates = Data("""
@@ -108,7 +132,8 @@ struct TelegramChannelAdapterTests {
                 pollIntervalMs: 250
             ),
             transport: transport,
-            baseURL: URL(string: "https://telegram.example")!
+            baseURL: URL(string: "https://telegram.example")!,
+            offsetStore: MockOffsetStore()
         )
         await adapter.setInboundHandler { message in
             await collector.append(message)
@@ -144,7 +169,8 @@ struct TelegramChannelAdapterTests {
                 mentionOnly: true
             ),
             transport: transport,
-            baseURL: URL(string: "https://telegram.example")!
+            baseURL: URL(string: "https://telegram.example")!,
+            offsetStore: MockOffsetStore()
         )
         await adapter.setInboundHandler { message in
             await collector.append(message)
@@ -171,7 +197,8 @@ struct TelegramChannelAdapterTests {
                 pollIntervalMs: 250
             ),
             transport: transport,
-            baseURL: URL(string: "https://telegram.example")!
+            baseURL: URL(string: "https://telegram.example")!,
+            offsetStore: MockOffsetStore()
         )
 
         try await adapter.start()
@@ -193,7 +220,8 @@ struct TelegramChannelAdapterTests {
                 pollIntervalMs: 250
             ),
             transport: transport,
-            baseURL: URL(string: "https://telegram.example")!
+            baseURL: URL(string: "https://telegram.example")!,
+            offsetStore: MockOffsetStore()
         )
 
         do {
@@ -202,5 +230,80 @@ struct TelegramChannelAdapterTests {
         } catch {
             #expect(String(describing: error).lowercased().contains("status"))
         }
+    }
+
+    @Test
+    func restartUsesPersistedOffsetAndSkipsStaleUpdates() async throws {
+        let updates = Data("""
+        {"ok":true,"result":[
+          {"update_id":10,"message":{"message_id":1,"text":"stale","chat":{"id":111,"type":"private"},"from":{"id":42,"is_bot":false}}},
+          {"update_id":11,"message":{"message_id":2,"text":"fresh","chat":{"id":111,"type":"private"},"from":{"id":42,"is_bot":false}}}
+        ]}
+        """.utf8)
+        let transport = MockTelegramTransport(updateResponses: [updates, Data("{\"ok\":true,\"result\":[]}".utf8)])
+        let offsetStore = MockOffsetStore(initial: 10)
+        let collector = InboundCollector()
+        let adapter = TelegramChannelAdapter(
+            config: TelegramChannelConfig(
+                enabled: true,
+                botToken: "token",
+                pollIntervalMs: 250
+            ),
+            transport: transport,
+            baseURL: URL(string: "https://telegram.example")!,
+            offsetStore: offsetStore
+        )
+        await adapter.setInboundHandler { inbound in
+            await collector.append(inbound)
+        }
+
+        try await adapter.start()
+        try await Task.sleep(nanoseconds: 350_000_000)
+        await adapter.stop()
+
+        let messages = await collector.snapshot()
+        let writes = await offsetStore.snapshotWrites()
+        let requests = await transport.records()
+
+        #expect(messages.count == 1)
+        #expect(messages.first?.text == "fresh")
+        #expect(writes.contains(11))
+        #expect(requests.contains(where: { $0.path.contains("/getUpdates") && $0.url.contains("offset=11") }))
+    }
+
+    @Test
+    func duplicateUpdateIDsAreProcessedOnce() async throws {
+        let updates = Data("""
+        {"ok":true,"result":[
+          {"update_id":70,"message":{"message_id":1,"text":"hello once","chat":{"id":111,"type":"private"},"from":{"id":42,"is_bot":false}}},
+          {"update_id":70,"message":{"message_id":1,"text":"hello once","chat":{"id":111,"type":"private"},"from":{"id":42,"is_bot":false}}}
+        ]}
+        """.utf8)
+        let transport = MockTelegramTransport(updateResponses: [updates, Data("{\"ok\":true,\"result\":[]}".utf8)])
+        let offsetStore = MockOffsetStore()
+        let collector = InboundCollector()
+        let adapter = TelegramChannelAdapter(
+            config: TelegramChannelConfig(
+                enabled: true,
+                botToken: "token",
+                pollIntervalMs: 250
+            ),
+            transport: transport,
+            baseURL: URL(string: "https://telegram.example")!,
+            offsetStore: offsetStore
+        )
+        await adapter.setInboundHandler { inbound in
+            await collector.append(inbound)
+        }
+
+        try await adapter.start()
+        try await Task.sleep(nanoseconds: 350_000_000)
+        await adapter.stop()
+
+        let messages = await collector.snapshot()
+        let writes = await offsetStore.snapshotWrites()
+        #expect(messages.count == 1)
+        #expect(messages.first?.text == "hello once")
+        #expect(writes == [70])
     }
 }

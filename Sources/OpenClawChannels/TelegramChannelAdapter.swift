@@ -106,6 +106,7 @@ public actor TelegramChannelAdapter: InboundChannelAdapter {
     private let config: TelegramChannelConfig
     private let transport: any TelegramHTTPTransport
     private let explicitBaseURL: URL?
+    private let offsetStore: any TelegramUpdateOffsetStore
 
     private var started = false
     private var pollTask: Task<Void, Never>?
@@ -113,20 +114,26 @@ public actor TelegramChannelAdapter: InboundChannelAdapter {
     private var botID: Int64?
     private var botUsername: String?
     private var nextOffset: Int64?
+    private var recentUpdateIDs: [Int64] = []
+    private var recentUpdateIDSet: Set<Int64> = []
+    private let maxRecentUpdateCount = 512
 
     /// Creates a Telegram channel adapter.
     /// - Parameters:
     ///   - config: Telegram channel configuration.
     ///   - transport: HTTP transport implementation.
     ///   - baseURL: Optional Telegram API base URL override.
+    ///   - offsetStore: Persistent storage for latest processed update offset.
     public init(
         config: TelegramChannelConfig,
         transport: any TelegramHTTPTransport = HTTPClient(),
-        baseURL: URL? = nil
+        baseURL: URL? = nil,
+        offsetStore: any TelegramUpdateOffsetStore = FileTelegramUpdateOffsetStore()
     ) {
         self.config = config
         self.transport = transport
         self.explicitBaseURL = baseURL
+        self.offsetStore = offsetStore
     }
 
     /// Registers an inbound handler invoked for accepted user messages.
@@ -145,6 +152,11 @@ public actor TelegramChannelAdapter: InboundChannelAdapter {
         }
 
         self.nextOffset = nil
+        self.recentUpdateIDs.removeAll(keepingCapacity: true)
+        self.recentUpdateIDSet.removeAll(keepingCapacity: true)
+        if let persistedOffset = await self.offsetStore.readLastUpdateID() {
+            self.nextOffset = max(0, persistedOffset + 1)
+        }
         let token = try self.resolveToken()
         let me = try await self.fetchMe(token: token)
         self.botID = me.id
@@ -239,7 +251,11 @@ public actor TelegramChannelAdapter: InboundChannelAdapter {
         }
         let updates = (updatesPayload.result ?? []).sorted { $0.updateID < $1.updateID }
         for update in updates {
+            guard !self.shouldSkipUpdateID(update.updateID) else {
+                continue
+            }
             self.nextOffset = max(self.nextOffset ?? 0, update.updateID + 1)
+            await self.offsetStore.writeLastUpdateID(update.updateID)
             guard let message = update.message else {
                 continue
             }
@@ -263,6 +279,22 @@ public actor TelegramChannelAdapter: InboundChannelAdapter {
                 await inboundHandler(inbound)
             }
         }
+    }
+
+    private func shouldSkipUpdateID(_ updateID: Int64) -> Bool {
+        if let nextOffset, updateID < nextOffset {
+            return true
+        }
+        if self.recentUpdateIDSet.contains(updateID) {
+            return true
+        }
+        self.recentUpdateIDSet.insert(updateID)
+        self.recentUpdateIDs.append(updateID)
+        if self.recentUpdateIDs.count > self.maxRecentUpdateCount {
+            let evicted = self.recentUpdateIDs.removeFirst()
+            self.recentUpdateIDSet.remove(evicted)
+        }
+        return false
     }
 
     private func isMentioningBot(_ message: TelegramMessage) -> Bool {
