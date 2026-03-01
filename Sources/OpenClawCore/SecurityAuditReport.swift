@@ -178,6 +178,14 @@ public enum SecurityAuditRunner {
             ("channels.telegram.botToken", config.channels.telegram.botToken),
             ("channels.whatsappCloud.accessToken", config.channels.whatsappCloud.accessToken),
             ("channels.whatsappCloud.webhookVerifyToken", config.channels.whatsappCloud.webhookVerifyToken),
+            ("channels.slack.botToken", config.channels.slack.botToken),
+            ("channels.slack.appToken", config.channels.slack.appToken),
+            ("channels.slack.signingSecret", config.channels.slack.signingSecret),
+            ("channels.googleChat.bearerToken", config.channels.googleChat.bearerToken),
+            ("channels.googleChat.verificationToken", config.channels.googleChat.verificationToken),
+            ("channels.signal.authToken", config.channels.signal.authToken),
+            ("channels.msteams.botAppPassword", config.channels.msteams.botAppPassword),
+            ("channels.webchat.sharedSecret", config.channels.webchat.sharedSecret),
             ("models.openAI.apiKey", config.models.openAI.apiKey),
             ("models.openAICompatible.apiKey", config.models.openAICompatible.apiKey),
             ("models.anthropic.apiKey", config.models.anthropic.apiKey),
@@ -186,6 +194,20 @@ public enum SecurityAuditRunner {
         for (key, value) in secrets {
             if let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty {
                 exposedKeys.append(key)
+            }
+        }
+        for (providerID, provider) in config.models.providers {
+            let normalizedID = providerID.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalizedID.isEmpty else {
+                continue
+            }
+            if let apiKey = provider.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines), !apiKey.isEmpty {
+                exposedKeys.append("models.providers.\(normalizedID).apiKey")
+            }
+            if let accessToken = provider.accessToken?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !accessToken.isEmpty
+            {
+                exposedKeys.append("models.providers.\(normalizedID).accessToken")
             }
         }
 
@@ -241,6 +263,74 @@ public enum SecurityAuditRunner {
                 )
             )
         }
+        if config.channels.slack.enabled, !config.channels.slack.mentionOnly {
+            findings.append(
+                SecurityAuditFinding(
+                    id: "channels.slack.mention-only-disabled",
+                    severity: .warning,
+                    summary: "Slack adapter processes all channel messages",
+                    detail: "Slack `mentionOnly` is disabled while adapter is enabled.",
+                    recommendation: "Enable `mentionOnly` unless broad-channel auto-replies are explicitly required."
+                )
+            )
+        }
+        if config.channels.msteams.enabled, !config.channels.msteams.mentionOnly {
+            findings.append(
+                SecurityAuditFinding(
+                    id: "channels.msteams.mention-only-disabled",
+                    severity: .warning,
+                    summary: "Microsoft Teams adapter processes all conversation messages",
+                    detail: "Microsoft Teams `mentionOnly` is disabled while adapter is enabled.",
+                    recommendation: "Enable `mentionOnly` unless broad-channel auto-replies are explicitly required."
+                )
+            )
+        }
+        if config.channels.googleChat.enabled {
+            let verificationToken = config.channels.googleChat.verificationToken?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if verificationToken.isEmpty {
+                findings.append(
+                    SecurityAuditFinding(
+                        id: "channels.googlechat.verification-token-missing",
+                        severity: .warning,
+                        summary: "Google Chat webhook verification token is missing",
+                        detail: "Google Chat adapter is enabled without a verification token.",
+                        recommendation: "Set `channels.googlechat.verificationToken` to validate inbound webhook authenticity."
+                    )
+                )
+            }
+        }
+        if config.channels.webchat.enabled {
+            let sharedSecret = config.channels.webchat.sharedSecret?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if sharedSecret.isEmpty {
+                findings.append(
+                    SecurityAuditFinding(
+                        id: "channels.webchat.shared-secret-missing",
+                        severity: .warning,
+                        summary: "WebChat shared secret is missing",
+                        detail: "WebChat adapter is enabled without a shared secret.",
+                        recommendation: "Set `channels.webchat.sharedSecret` to prevent unauthorized webhook submissions."
+                    )
+                )
+            }
+        }
+        if config.channels.signal.enabled {
+            let signalURL = config.channels.signal.serviceURL
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            if signalURL.hasPrefix("http://"), !signalURL.contains("127.0.0.1"), !signalURL.contains("localhost") {
+                findings.append(
+                    SecurityAuditFinding(
+                        id: "channels.signal.insecure-service-url",
+                        severity: .warning,
+                        summary: "Signal bridge URL is configured without TLS",
+                        detail: "Signal adapter uses non-local insecure URL '\(config.channels.signal.serviceURL)'.",
+                        recommendation: "Use an HTTPS endpoint for non-local Signal bridge deployments."
+                    )
+                )
+            }
+        }
 
         let authMode = config.gateway.authMode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if authMode.isEmpty || authMode == "none" {
@@ -253,6 +343,46 @@ public enum SecurityAuditRunner {
                     recommendation: "Use token-based authentication for gateway access."
                 )
             )
+        }
+        for (providerID, provider) in config.models.providers {
+            let normalizedID = providerID.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalizedID.isEmpty, provider.enabled else {
+                continue
+            }
+            switch provider.authMode {
+            case .none:
+                let normalizedBaseURL = provider.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                let isLocalRuntime = normalizedID == "ollama"
+                    || normalizedID == "vllm"
+                    || normalizedBaseURL.hasPrefix("http://127.0.0.1")
+                    || normalizedBaseURL.hasPrefix("http://localhost")
+                if !isLocalRuntime {
+                    findings.append(
+                        SecurityAuditFinding(
+                            id: "models.providers.\(normalizedID).auth-none",
+                            severity: .warning,
+                            summary: "Provider service uses auth mode none",
+                            detail: "Provider '\(normalizedID)' is enabled with `authMode = none` and baseURL '\(provider.baseURL)'.",
+                            recommendation: "Use token-based auth for non-local providers."
+                        )
+                    )
+                }
+            case .awsSDK:
+                let region = provider.region?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                if region.isEmpty {
+                    findings.append(
+                        SecurityAuditFinding(
+                            id: "models.providers.\(normalizedID).region-missing",
+                            severity: .warning,
+                            summary: "AWS-backed provider is missing region",
+                            detail: "Provider '\(normalizedID)' is enabled with `authMode = awsSDK` but no region is configured.",
+                            recommendation: "Set `models.providers.\(normalizedID).region` to the intended AWS region."
+                        )
+                    )
+                }
+            case .apiKey, .bearerToken, .oauthToken:
+                break
+            }
         }
 
         if config.models.local.enabled,

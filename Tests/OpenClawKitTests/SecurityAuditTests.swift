@@ -27,7 +27,30 @@ struct SecurityAuditTests {
             gateway: GatewayConfig(authMode: "none"),
             channels: ChannelsConfig(
                 discord: DiscordChannelConfig(enabled: true, botToken: "token", mentionOnly: false),
-                telegram: TelegramChannelConfig(enabled: true, botToken: "token", mentionOnly: false)
+                telegram: TelegramChannelConfig(enabled: true, botToken: "token", mentionOnly: false),
+                slack: SlackChannelConfig(
+                    enabled: true,
+                    botToken: "slack-bot-token",
+                    appToken: "slack-app-token",
+                    signingSecret: "slack-signing-secret",
+                    mentionOnly: false
+                ),
+                googleChat: GoogleChatChannelConfig(
+                    enabled: true,
+                    bearerToken: "googlechat-bearer",
+                    verificationToken: nil
+                ),
+                signal: SignalChannelConfig(
+                    enabled: true,
+                    serviceURL: "http://signal.example.com",
+                    authToken: "signal-token"
+                ),
+                msteams: MicrosoftTeamsChannelConfig(
+                    enabled: true,
+                    botAppPassword: "teams-password",
+                    mentionOnly: false
+                ),
+                webchat: WebChatChannelConfig(enabled: true, sharedSecret: nil)
             ),
             routing: RoutingConfig(
                 defaultSessionKey: "shared",
@@ -35,7 +58,36 @@ struct SecurityAuditTests {
                 includeAccountID: false,
                 includePeerID: false
             ),
-            models: ModelsConfig(local: LocalModelConfig(enabled: true, modelPath: nil))
+            models: ModelsConfig(
+                local: LocalModelConfig(enabled: true, modelPath: nil),
+                providers: [
+                    "openrouter": ProviderServiceConfig(
+                        enabled: true,
+                        apiStyle: .openAICompletions,
+                        authMode: .none,
+                        modelID: "anthropic/claude-sonnet-4-5",
+                        baseURL: "https://openrouter.ai/api/v1",
+                        chatCompletionsPath: "chat/completions"
+                    ),
+                    "amazon-bedrock": ProviderServiceConfig(
+                        enabled: true,
+                        apiStyle: .bedrockConverse,
+                        authMode: .awsSDK,
+                        modelID: "anthropic.claude-3-5-sonnet",
+                        apiKey: "AWS_PROFILE",
+                        baseURL: "https://bedrock-runtime.us-east-1.amazonaws.com"
+                    ),
+                    "qwen-portal": ProviderServiceConfig(
+                        enabled: true,
+                        apiStyle: .openAICompletions,
+                        authMode: .oauthToken,
+                        modelID: "coder-model",
+                        accessToken: "qwen-oauth-token",
+                        baseURL: "https://portal.qwen.ai/v1",
+                        chatCompletionsPath: "chat/completions"
+                    ),
+                ]
+            )
         )
 
         let report = SecurityAuditRunner.run(
@@ -50,6 +102,18 @@ struct SecurityAuditTests {
         #expect(report.findings.contains(where: { $0.id == "gateway.auth-mode-unsafe" }))
         #expect(report.findings.contains(where: { $0.id == "routing.shared-session" }))
         #expect(report.findings.contains(where: { $0.id == "secrets.config.plaintext" }))
+        #expect(report.findings.contains(where: { $0.id == "channels.slack.mention-only-disabled" }))
+        #expect(report.findings.contains(where: { $0.id == "channels.msteams.mention-only-disabled" }))
+        #expect(report.findings.contains(where: { $0.id == "channels.googlechat.verification-token-missing" }))
+        #expect(report.findings.contains(where: { $0.id == "channels.webchat.shared-secret-missing" }))
+        #expect(report.findings.contains(where: { $0.id == "channels.signal.insecure-service-url" }))
+        #expect(report.findings.contains(where: { $0.id == "models.providers.openrouter.auth-none" }))
+        #expect(report.findings.contains(where: { $0.id == "models.providers.amazon-bedrock.region-missing" }))
+        #expect(
+            report.findings
+                .first(where: { $0.id == "secrets.config.plaintext" })?
+                .detail.contains("models.providers.qwen-portal.accessToken") == true
+        )
         #expect(report.findings.contains(where: { $0.id.starts(with: "plaintext.file.") }))
         #expect(report.count(for: SecurityAuditSeverity.warning) >= 1)
     }
