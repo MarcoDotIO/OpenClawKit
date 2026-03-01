@@ -4,6 +4,18 @@ import Testing
 
 @Suite("Runtime subsystems")
 struct RuntimeSubsystemTests {
+    private struct AutomationEchoProvider: ModelProvider {
+        let id = "automation-echo"
+
+        func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
+            ModelGenerationResponse(
+                text: "automation:\(request.prompt)",
+                providerID: self.id,
+                modelID: "automation-model"
+            )
+        }
+    }
+
     @Test
     func memorySearchReturnsScoredResults() async {
         let memory = MemoryIndex()
@@ -52,6 +64,68 @@ struct RuntimeSubsystemTests {
         let due = await scheduler.runDue()
         #expect(due.count == 1)
         #expect(due.first?.jobID == "job-a")
+    }
+
+    @Test
+    func automationRuleStoreReturnsDueIntervalRules() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("openclawkit-automation-tests", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let path = root.appendingPathComponent("rules.json", isDirectory: false)
+        let store = AutomationRuleStore(fileURL: path)
+
+        try await store.load()
+        let rule = AutomationRule(
+            name: "interval-rule",
+            sessionKey: "main",
+            prompt: "ping",
+            trigger: AutomationTrigger(intervalSeconds: 30)
+        )
+        await store.upsert(rule)
+        try await store.save()
+
+        let firstDue = await store.dueRules(at: Date(timeIntervalSince1970: 1000))
+        #expect(firstDue.count == 1)
+        #expect(firstDue.first?.id == rule.id)
+
+        await store.markAttempted(ruleIDs: [rule.id], at: Date(timeIntervalSince1970: 1010))
+        let secondDue = await store.dueRules(at: Date(timeIntervalSince1970: 1020))
+        #expect(secondDue.isEmpty)
+        let thirdDue = await store.dueRules(at: Date(timeIntervalSince1970: 1050))
+        #expect(thirdDue.count == 1)
+    }
+
+    @Test
+    func automationRunnerExecutesDueRules() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("openclawkit-automation-runner-tests", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let path = root.appendingPathComponent("rules.json", isDirectory: false)
+        let store = AutomationRuleStore(fileURL: path)
+        try await store.load()
+        let rule = AutomationRule(
+            name: "runner-rule",
+            sessionKey: "main",
+            prompt: "hello automation",
+            modelProviderID: "automation-echo",
+            trigger: AutomationTrigger(intervalSeconds: 60)
+        )
+        await store.upsert(rule)
+        try await store.save()
+
+        let runtime = EmbeddedAgentRuntime()
+        await runtime.registerModelProvider(AutomationEchoProvider())
+        let runner = AutomationRunner(runtime: runtime, ruleStore: store)
+
+        let outcomes = await runner.runDueAutomations(at: Date(timeIntervalSince1970: 2_000))
+        #expect(outcomes.count == 1)
+        #expect(outcomes.first?.ruleID == rule.id)
+        #expect(outcomes.first?.succeeded == true)
+
+        let nextOutcomes = await runner.runDueAutomations(at: Date(timeIntervalSince1970: 2_010))
+        #expect(nextOutcomes.isEmpty)
     }
 
     @Test

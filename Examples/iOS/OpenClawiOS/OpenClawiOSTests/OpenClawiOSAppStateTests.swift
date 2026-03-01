@@ -3,12 +3,18 @@ import XCTest
 
 @MainActor
 final class OpenClawiOSAppStateTests: XCTestCase {
+    actor TickProbe {
+        private(set) var count = 0
+        func increment() { self.count += 1 }
+    }
+
     func testInitialDeploymentStateIsStopped() {
         let state = OpenClawAppState()
 
         XCTAssertEqual(state.deploymentState, .stopped)
         XCTAssertEqual(state.statusText, "Not deployed")
         XCTAssertFalse(state.isDeployed)
+        XCTAssertEqual(state.liveActivityStatusText, "Idle")
     }
 
     func testDefaultProviderSelectionAndModelSuggestion() {
@@ -17,6 +23,40 @@ final class OpenClawiOSAppStateTests: XCTestCase {
         XCTAssertEqual(state.selectedProvider, .openAI)
         XCTAssertEqual(state.selectedModelID, OpenClawAppState.DeployProvider.openAI.defaultModelID)
         XCTAssertEqual(state.availableProviders.count, OpenClawAppState.DeployProvider.allCases.count)
+    }
+
+    func testAttachmentStagingAndRemovalLifecycle() {
+        let state = OpenClawAppState()
+
+        let staged = state.stageAttachment(
+            data: Data([1, 2, 3, 4]),
+            mimeType: "image/png",
+            fileName: "sample.png"
+        )
+        XCTAssertTrue(staged)
+        XCTAssertEqual(state.pendingAttachments.count, 1)
+        XCTAssertTrue(state.hasPendingAttachments)
+        XCTAssertEqual(state.pendingAttachments.first?.fileName, "sample.png")
+        XCTAssertEqual(state.pendingAttachments.first?.mimeType, "image/png")
+
+        if let id = state.pendingAttachments.first?.id {
+            state.removePendingAttachment(id: id)
+        }
+        XCTAssertEqual(state.pendingAttachments.count, 0)
+        XCTAssertFalse(state.hasPendingAttachments)
+    }
+
+    func testAttachmentStagingRejectsOversizedPayload() {
+        let state = OpenClawAppState()
+        let oversized = Data(repeating: 0x01, count: (10 * 1024 * 1024) + 1)
+
+        let staged = state.stageAttachment(
+            data: oversized,
+            mimeType: "application/octet-stream",
+            fileName: "oversized.bin"
+        )
+        XCTAssertFalse(staged)
+        XCTAssertTrue(state.pendingAttachments.isEmpty)
     }
 
     func testPersistedSettingsRoundTripTelegramChatIDWithoutPlaintextToken() throws {
@@ -86,5 +126,37 @@ final class OpenClawiOSAppStateTests: XCTestCase {
         XCTAssertEqual(status, "Prompt is empty.")
 
         bridge.unbindForTesting()
+    }
+
+    func testIntentBridgePreviewReturnsNotReadyWhenUnbound() async {
+        let bridge = OpenClawIntentBridge.shared
+        bridge.unbindForTesting()
+
+        let summary = await bridge.previewIntentGraphFromIntent("hello")
+        XCTAssertTrue(summary.contains("not ready"))
+    }
+
+    func testIntentGraphNodeKindQueryReturnsKnownEntities() async throws {
+        let query = IntentGraphNodeKindEntityQuery()
+        let entities = try await query.suggestedEntities()
+        let ids = Set(entities.map(\.id))
+
+        XCTAssertTrue(ids.contains("run"))
+        XCTAssertTrue(ids.contains("model"))
+        XCTAssertTrue(ids.contains("output"))
+    }
+
+    func testBackgroundManagerRunsAutomationTickHook() async {
+        let manager = BackgroundContinuationManager.shared
+        let probe = TickProbe()
+        manager.bindAutomationTickHandler {
+            await probe.increment()
+        }
+
+        await manager.runAutomationTickForTesting()
+        let count = await probe.count
+        XCTAssertEqual(count, 1)
+
+        manager.bindAutomationTickHandler(nil)
     }
 }

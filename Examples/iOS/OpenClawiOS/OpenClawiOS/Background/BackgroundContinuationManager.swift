@@ -20,6 +20,7 @@ final class BackgroundContinuationManager {
 
     private var hasRegisteredHandlers = false
     private var hasScheduledInitialTasks = false
+    private var automationTickHandler: (@Sendable () async -> Void)?
 
     private init() {}
 
@@ -54,6 +55,20 @@ final class BackgroundContinuationManager {
         if #available(iOS 26.0, *) {
             self.scheduleContinuedProcessing()
         }
+    }
+
+    /// Binds an optional automation tick callback executed by background handlers.
+    /// - Parameter handler: Async automation callback.
+    func bindAutomationTickHandler(_ handler: (@Sendable () async -> Void)?) {
+        self.automationTickHandler = handler
+    }
+
+    /// Executes bound automation hook for tests/debug validation.
+    func runAutomationTickForTesting() async {
+        guard let automationTickHandler = self.automationTickHandler else {
+            return
+        }
+        await automationTickHandler()
     }
 
     /// Schedules refresh and processing maintenance requests.
@@ -94,12 +109,22 @@ final class BackgroundContinuationManager {
     #if canImport(BackgroundTasks)
     private func handleRefreshTask(_ task: BGTask) {
         task.expirationHandler = {}
+        if let automationTickHandler = self.automationTickHandler {
+            Task {
+                await automationTickHandler()
+            }
+        }
         self.scheduleMaintenanceTasks()
         task.setTaskCompleted(success: true)
     }
 
     private func handleProcessingTask(_ task: BGTask) {
         task.expirationHandler = {}
+        if let automationTickHandler = self.automationTickHandler {
+            Task {
+                await automationTickHandler()
+            }
+        }
         self.scheduleMaintenanceTasks()
         task.setTaskCompleted(success: true)
     }
@@ -111,6 +136,11 @@ final class BackgroundContinuationManager {
             return
         }
         continuedTask.expirationHandler = {}
+        if let automationTickHandler = self.automationTickHandler {
+            Task {
+                await automationTickHandler()
+            }
+        }
         continuedTask.progress.totalUnitCount = 1
         continuedTask.progress.completedUnitCount = 1
         continuedTask.setTaskCompleted(success: true)
