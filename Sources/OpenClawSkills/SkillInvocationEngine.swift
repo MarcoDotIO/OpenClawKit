@@ -135,6 +135,37 @@ private struct ProcessSkillExecutorBackend: SkillExecutor {
     }
 }
 
+private struct WASMSkillExecutorBackend: SkillExecutor {
+    let id: String
+    let workspaceRoot: URL
+    let executor: WASMSkillExecutor
+
+    func canExecute(skill: SkillDefinition, entrypoint: URL) -> Bool {
+        let pathExtension = entrypoint.pathExtension.lowercased()
+        if pathExtension == "wasm" {
+            return true
+        }
+        let primaryEnv = (skill.metadata.primaryEnv ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        return primaryEnv == "wasm" || primaryEnv == "wasi"
+    }
+
+    func execute(skill _: SkillDefinition, entrypoint: URL, input: String) async throws -> String {
+        let rootPath = self.workspaceRoot.standardizedFileURL.path
+        let targetPath = entrypoint.standardizedFileURL.path
+        let prefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
+        guard targetPath.hasPrefix(prefix) else {
+            throw OpenClawCoreError.invalidConfiguration("Skill entrypoint must stay within workspace root")
+        }
+        let result = try await self.executor.executeModule(
+            modulePath: entrypoint,
+            input: input
+        )
+        return result.output
+    }
+}
+
 /// Resolves and executes workspace skills for inbound user messages.
 public actor SkillInvocationEngine {
     private struct InvocationMatch: Sendable {
@@ -176,6 +207,13 @@ public actor SkillInvocationEngine {
                     )
                 )
             }
+            defaults.append(
+                WASMSkillExecutorBackend(
+                    id: "wasm",
+                    workspaceRoot: self.workspaceRoot,
+                    executor: WASMSkillExecutor(processRunner: processRunner)
+                )
+            )
             defaults.append(
                 ProcessSkillExecutorBackend(
                     id: "process",

@@ -34,6 +34,24 @@ struct SkillInvocationEngineTests {
         }
     }
 
+    struct WASMHintExecutor: SkillExecutor {
+        let id = "wasm-hint"
+
+        func canExecute(skill: SkillDefinition, entrypoint: URL) -> Bool {
+            if entrypoint.pathExtension.lowercased() == "wasm" {
+                return true
+            }
+            let env = (skill.metadata.primaryEnv ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            return env == "wasm" || env == "wasi"
+        }
+
+        func execute(skill _: SkillDefinition, entrypoint _: URL, input: String) async throws -> String {
+            "wasm:\(input)"
+        }
+    }
+
     @Test
     func supportsCustomExecutorBackends() async throws {
         let root = try self.makeWorkspace()
@@ -128,6 +146,40 @@ struct SkillInvocationEngineTests {
 
         #expect(result?.output == "hyphen:{\"z\":1,\"a\":2}")
         #expect(result?.skillName == "json-pretty")
+    }
+
+    @Test
+    func supportsWASMEntrypointAndPrimaryEnvMatching() async throws {
+        let root = try self.makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        _ = try self.writeSkill(
+            root: root,
+            name: "wasm-module",
+            entrypoint: "scripts/run.wasm"
+        )
+        _ = try self.writeSkill(
+            root: root,
+            name: "wasi-module",
+            entrypoint: "scripts/run.exec",
+            extraFrontmatter: ["primaryEnv": "wasi"]
+        )
+
+        let engine = SkillInvocationEngine(
+            workspaceRoot: root,
+            invocationTimeoutMs: 500,
+            executors: [
+                WASMHintExecutor(),
+                ExtensionExecutor(id: "fallback", handledExtension: "exec", outputPrefix: "fallback"),
+            ]
+        )
+
+        let wasmResult = try await engine.invokeIfRequested(message: "/wasm-module first")
+        #expect(wasmResult?.output == "wasm:first")
+        #expect(wasmResult?.executorID == "wasm-hint")
+
+        let wasiResult = try await engine.invokeIfRequested(message: "/wasi-module second")
+        #expect(wasiResult?.output == "wasm:second")
+        #expect(wasiResult?.executorID == "wasm-hint")
     }
 
     private func makeWorkspace() throws -> URL {
