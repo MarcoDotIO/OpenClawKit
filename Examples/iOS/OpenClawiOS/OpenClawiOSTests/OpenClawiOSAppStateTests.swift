@@ -68,4 +68,23 @@ final class OpenClawiOSAppStateTests: XCTestCase {
         XCTAssertEqual(decoded.telegramBotToken, "legacy-token")
         XCTAssertEqual(decoded.telegramChatID, "42")
     }
+
+    func testIntentBridgeReturnsNotReadyWhenAppStateIsUnbound() async {
+        let bridge = OpenClawIntentBridge.shared
+        bridge.unbindForTesting()
+
+        let status = await bridge.deployFromIntent()
+        XCTAssertTrue(status.contains("not ready"))
+    }
+
+    func testIntentBridgeRejectsEmptyQuickAskPrompt() async {
+        let bridge = OpenClawIntentBridge.shared
+        let state = OpenClawAppState()
+        bridge.bind(state)
+
+        let status = await bridge.quickAskFromIntent("   ")
+        XCTAssertEqual(status, "Prompt is empty.")
+
+        bridge.unbindForTesting()
+    }
 }
