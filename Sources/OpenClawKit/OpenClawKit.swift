@@ -124,10 +124,71 @@ public struct OpenClawSDK: Sendable {
     }
 
     /// Creates a diagnostics pipeline for centralized usage/event aggregation.
-    /// - Parameter eventLimit: Number of recent events to retain in-memory.
+    /// - Parameters:
+    ///   - eventLimit: Number of recent events to retain in-memory.
+    ///   - replayStore: Optional replay store used for deterministic capture.
     /// - Returns: Diagnostics pipeline actor.
-    public func makeDiagnosticsPipeline(eventLimit: Int = 500) -> RuntimeDiagnosticsPipeline {
-        RuntimeDiagnosticsPipeline(eventLimit: eventLimit)
+    public func makeDiagnosticsPipeline(
+        eventLimit: Int = 500,
+        replayStore: (any ReplayStore)? = nil
+    ) -> RuntimeDiagnosticsPipeline {
+        RuntimeDiagnosticsPipeline(eventLimit: eventLimit, replayStore: replayStore)
+    }
+
+    /// Creates a default file-backed replay store.
+    /// - Parameter fileURL: Optional custom replay log location.
+    /// - Returns: Replay store actor.
+    public func makeReplayStore(fileURL: URL? = nil) -> FileReplayStore {
+        FileReplayStore(fileURL: fileURL)
+    }
+
+    /// Creates a replay engine over the provided store.
+    /// - Parameter store: Replay store implementation.
+    /// - Returns: Replay engine facade.
+    public func makeReplayEngine(store: any ReplayStore) -> ReplayEngine {
+        ReplayEngine(store: store)
+    }
+
+    /// Replays events for one run identifier.
+    /// - Parameters:
+    ///   - runID: Run identifier to replay.
+    ///   - store: Replay store implementation.
+    ///   - limit: Optional maximum number of returned events.
+    public func replayEvents(
+        forRunID runID: String,
+        from store: any ReplayStore,
+        limit: Int? = nil
+    ) async throws -> [ReplayEventEnvelope] {
+        let engine = ReplayEngine(store: store)
+        return try await engine.events(forRunID: runID, limit: limit)
+    }
+
+    /// Replays events for one session key.
+    /// - Parameters:
+    ///   - sessionKey: Session key to replay.
+    ///   - store: Replay store implementation.
+    ///   - limit: Optional maximum number of returned events.
+    public func replayEvents(
+        forSessionKey sessionKey: String,
+        from store: any ReplayStore,
+        limit: Int? = nil
+    ) async throws -> [ReplayEventEnvelope] {
+        let engine = ReplayEngine(store: store)
+        return try await engine.events(forSessionKey: sessionKey, limit: limit)
+    }
+
+    /// Replays events for an inclusive time window.
+    /// - Parameters:
+    ///   - window: Inclusive replay time window.
+    ///   - store: Replay store implementation.
+    ///   - limit: Optional maximum number of returned events.
+    public func replayEvents(
+        in window: ReplayTimeWindow,
+        from store: any ReplayStore,
+        limit: Int? = nil
+    ) async throws -> [ReplayEventEnvelope] {
+        let engine = ReplayEngine(store: store)
+        return try await engine.events(in: window, limit: limit)
     }
 
     /// Runs a lightweight security audit and optionally publishes findings to diagnostics.
