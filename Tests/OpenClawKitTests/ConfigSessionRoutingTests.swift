@@ -230,6 +230,51 @@ struct ConfigSessionRoutingTests {
     }
 
     @Test
+    func providerMatrixRoundTripsGatewayHeadersAndVersionOverrides() throws {
+        let config = OpenClawConfig(
+            models: ModelsConfig(
+                defaultProviderID: "synthetic",
+                providers: [
+                    "synthetic": ProviderServiceConfig(
+                        enabled: true,
+                        apiStyle: .anthropicMessages,
+                        authMode: .apiKey,
+                        modelID: "hf:MiniMaxAI/MiniMax-M2.1",
+                        apiKey: "synthetic-key",
+                        accessToken: nil,
+                        baseURL: "https://api.synthetic.new/anthropic",
+                        chatCompletionsPath: "chat/completions",
+                        messagesPath: "messages",
+                        apiVersion: "2023-06-01",
+                        organizationID: "org_openclaw",
+                        headers: [
+                            "x-gateway-route": "edge",
+                            "x-team": "runtime",
+                        ],
+                        region: nil,
+                        profile: nil,
+                        tenantID: nil,
+                        scope: "models.read",
+                        metadata: [
+                            "maxTokens": "4096",
+                        ]
+                    ),
+                ]
+            )
+        )
+
+        let encoded = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(OpenClawConfig.self, from: encoded)
+        let synthetic = decoded.models.providers["synthetic"]
+
+        #expect(synthetic?.apiVersion == "2023-06-01")
+        #expect(synthetic?.organizationID == "org_openclaw")
+        #expect(synthetic?.headers["x-gateway-route"] == "edge")
+        #expect(synthetic?.scope == "models.read")
+        #expect(synthetic?.metadata["maxTokens"] == "4096")
+    }
+
+    @Test
     func runtimeConfigDefaultsLoadWhenFieldsMissing() throws {
         let legacyJSON = """
         {

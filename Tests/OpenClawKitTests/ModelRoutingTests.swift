@@ -1073,6 +1073,32 @@ struct ModelRoutingTests {
     }
 
     @Test
+    func bedrockProviderAllowsNoneAuthModeWithoutAuthorizationHeader() async throws {
+        let transport = MockBedrockTransport(
+            body: Data("""
+            {"output":{"message":{"role":"assistant","content":[{"text":"bedrock-local-output"}]}}}
+            """.utf8)
+        )
+        let provider = BedrockConverseModelProvider(
+            configuration: ProviderServiceConfig(
+                enabled: true,
+                apiStyle: .bedrockConverse,
+                authMode: .none,
+                modelID: "anthropic.claude-3-5-sonnet",
+                baseURL: "http://127.0.0.1:9000"
+            ),
+            transport: transport
+        )
+        let response = try await provider.generate(
+            ModelGenerationRequest(sessionKey: "s1", prompt: "hello")
+        )
+
+        #expect(response.providerID == BedrockConverseModelProvider.providerID)
+        #expect(response.text == "bedrock-local-output")
+        #expect(await transport.authorization() == nil)
+    }
+
+    @Test
     func githubCopilotProviderParsesChatCompletionsResponse() async throws {
         let transport = MockOpenAICompatibleTransport(
             body: Data("""
@@ -1186,6 +1212,126 @@ struct ModelRoutingTests {
         #expect(response.providerID == QwenPortalModelProvider.providerID)
         #expect(response.text == "qwen-output")
         #expect(await transport.authorization() == "Bearer qwen-oauth")
+    }
+
+    @Test
+    func providerServiceOpenAIRejectsAWSSDKAuthMode() async throws {
+        let transport = MockOpenAICompatibleTransport(
+            body: Data("""
+            {"model":"gpt-4.1-mini","choices":[{"index":0,"message":{"role":"assistant","content":"unused"}}]}
+            """.utf8)
+        )
+        let provider = ProviderServiceOpenAIModelProvider(
+            id: "openrouter",
+            configuration: ProviderServiceConfig(
+                enabled: true,
+                apiStyle: .openAICompletions,
+                authMode: .awsSDK,
+                modelID: "gpt-4.1-mini",
+                baseURL: "https://openrouter.ai/api/v1",
+                chatCompletionsPath: "chat/completions"
+            ),
+            transport: transport
+        )
+
+        do {
+            _ = try await provider.generate(
+                ModelGenerationRequest(sessionKey: "s1", prompt: "hello")
+            )
+            Issue.record("Expected aws-sdk auth mode rejection for OpenAI-compatible provider")
+        } catch {
+            #expect(String(describing: error).contains("aws-sdk"))
+        }
+    }
+
+    @Test
+    func providerServiceAnthropicRejectsOpenAICompletionsAPIStyle() async throws {
+        let transport = MockAnthropicTransport(
+            body: Data("""
+            {"id":"msg_1","model":"claude-3-5-haiku-latest","content":[{"type":"text","text":"unused"}]}
+            """.utf8)
+        )
+        let provider = ProviderServiceAnthropicModelProvider(
+            id: "minimax",
+            configuration: ProviderServiceConfig(
+                enabled: true,
+                apiStyle: .openAICompletions,
+                authMode: .apiKey,
+                modelID: "MiniMax-M2.1",
+                apiKey: "minimax-key",
+                baseURL: "https://api.minimax.io/anthropic",
+                messagesPath: "messages"
+            ),
+            transport: transport
+        )
+
+        do {
+            _ = try await provider.generate(
+                ModelGenerationRequest(sessionKey: "s1", prompt: "hello")
+            )
+            Issue.record("Expected apiStyle validation error for Anthropic-compatible provider")
+        } catch {
+            #expect(String(describing: error).contains("Anthropic-messages compatible"))
+        }
+    }
+
+    @Test
+    func providerServiceAnthropicRejectsAWSSDKAuthMode() async throws {
+        let transport = MockAnthropicTransport(
+            body: Data("""
+            {"id":"msg_1","model":"claude-3-5-haiku-latest","content":[{"type":"text","text":"unused"}]}
+            """.utf8)
+        )
+        let provider = ProviderServiceAnthropicModelProvider(
+            id: "minimax",
+            configuration: ProviderServiceConfig(
+                enabled: true,
+                apiStyle: .anthropicMessages,
+                authMode: .awsSDK,
+                modelID: "MiniMax-M2.1",
+                baseURL: "https://api.minimax.io/anthropic",
+                messagesPath: "messages"
+            ),
+            transport: transport
+        )
+
+        do {
+            _ = try await provider.generate(
+                ModelGenerationRequest(sessionKey: "s1", prompt: "hello")
+            )
+            Issue.record("Expected aws-sdk auth mode rejection for Anthropic-compatible provider")
+        } catch {
+            #expect(String(describing: error).contains("aws-sdk"))
+        }
+    }
+
+    @Test
+    func xaiProviderRejectsNoneAuthMode() async throws {
+        let transport = MockXAITransport(
+            body: Data("""
+            {"model":"grok-3-mini","choices":[{"index":0,"message":{"role":"assistant","content":"unused"}}]}
+            """.utf8)
+        )
+        let provider = XAIModelProvider(
+            configuration: ProviderServiceConfig(
+                enabled: true,
+                apiStyle: .openAICompletions,
+                authMode: .none,
+                modelID: "grok-3-mini",
+                baseURL: "https://api.x.ai/v1",
+                chatCompletionsPath: "chat/completions"
+            ),
+            transport: transport
+        )
+
+        do {
+            _ = try await provider.generate(
+                ModelGenerationRequest(sessionKey: "s1", prompt: "hello")
+            )
+            Issue.record("Expected auth mode validation error for xAI provider")
+        } catch {
+            #expect(String(describing: error).contains("token-based authentication"))
+        }
     }
 
     @Test

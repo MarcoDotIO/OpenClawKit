@@ -178,4 +178,42 @@ struct MicrosoftTeamsChannelAdapterTests {
         let inbound = await collector.snapshot()
         #expect(inbound.isEmpty)
     }
+
+    @Test
+    func webhookProcessesNonMentionWhenMentionOnlyDisabled() async throws {
+        let collector = InboundCollector()
+        let adapter = MicrosoftTeamsChannelAdapter(
+            config: MicrosoftTeamsChannelConfig(
+                enabled: true,
+                botAppID: "bot-app-id",
+                botAppPassword: "bot-password",
+                defaultConversationID: "conversation-id",
+                mentionOnly: false
+            ),
+            transport: MockTeamsTransport(),
+            serviceURL: URL(string: "https://teams.example")!
+        )
+        await adapter.setInboundHandler { inbound in
+            await collector.append(inbound)
+        }
+        try await adapter.start()
+
+        let payload = Data("""
+        {
+          "type": "message",
+          "text": "hello teams without mention",
+          "from": { "id": "user-id" },
+          "conversation": { "id": "conversation-id" }
+        }
+        """.utf8)
+        try await adapter.handleWebhookEvent(payload)
+        await adapter.stop()
+
+        let inbound = await collector.snapshot()
+        #expect(inbound.count == 1)
+        #expect(inbound.first?.channel == .msteams)
+        #expect(inbound.first?.accountID == "user-id")
+        #expect(inbound.first?.peerID == "conversation-id")
+        #expect(inbound.first?.text == "hello teams without mention")
+    }
 }

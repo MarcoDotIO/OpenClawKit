@@ -258,4 +258,70 @@ struct SlackChannelAdapterTests {
         let inbound = await collector.snapshot()
         #expect(inbound.isEmpty)
     }
+
+    @Test
+    func pollProcessesNonMentionWhenMentionOnlyDisabled() async throws {
+        let transport = MockSlackTransport()
+        await transport.enqueue(
+            path: "/api/auth.test",
+            response: HTTPResponseData(
+                statusCode: 200,
+                headers: [:],
+                body: Data("{\"ok\":true,\"user_id\":\"U_BOT\"}".utf8)
+            )
+        )
+        await transport.enqueue(
+            path: "/api/conversations.history",
+            response: HTTPResponseData(
+                statusCode: 200,
+                headers: [:],
+                body: Data("{\"ok\":true,\"messages\":[]}".utf8)
+            )
+        )
+        await transport.enqueue(
+            path: "/api/conversations.history",
+            response: HTTPResponseData(
+                statusCode: 200,
+                headers: [:],
+                body: Data("""
+                {
+                  "ok": true,
+                  "messages": [
+                    {
+                      "type": "message",
+                      "user": "U123",
+                      "text": "hello without mention",
+                      "ts": "1001.000200"
+                    }
+                  ]
+                }
+                """.utf8)
+            )
+        )
+
+        let collector = InboundCollector()
+        let adapter = SlackChannelAdapter(
+            config: SlackChannelConfig(
+                enabled: true,
+                botToken: "xoxb-token",
+                defaultChannelID: "C123",
+                mentionOnly: false
+            ),
+            transport: transport,
+            baseURL: URL(string: "https://slack.example/api")!,
+            pollIntervalMs: 250
+        )
+        await adapter.setInboundHandler { inbound in
+            await collector.append(inbound)
+        }
+        try await adapter.start()
+        try await Task.sleep(nanoseconds: 700_000_000)
+        await adapter.stop()
+
+        let inbound = await collector.snapshot()
+        #expect(inbound.count == 1)
+        #expect(inbound.first?.accountID == "U123")
+        #expect(inbound.first?.peerID == "C123")
+        #expect(inbound.first?.text == "hello without mention")
+    }
 }

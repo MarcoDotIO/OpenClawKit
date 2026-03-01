@@ -119,6 +119,82 @@ struct SecurityAuditTests {
     }
 
     @Test
+    func auditTreatsLocalAuthNoneProviderServicesAsSafe() {
+        let config = OpenClawConfig(
+            models: ModelsConfig(
+                providers: [
+                    "ollama": ProviderServiceConfig(
+                        enabled: true,
+                        apiStyle: .ollama,
+                        authMode: .none,
+                        modelID: "llama3.3",
+                        baseURL: "http://127.0.0.1:11434/v1",
+                        chatCompletionsPath: "chat/completions"
+                    ),
+                    "litellm": ProviderServiceConfig(
+                        enabled: true,
+                        apiStyle: .openAICompletions,
+                        authMode: .none,
+                        modelID: "gpt-4.1-mini",
+                        baseURL: "http://localhost:4000/v1",
+                        chatCompletionsPath: "chat/completions"
+                    ),
+                    "vllm": ProviderServiceConfig(
+                        enabled: true,
+                        apiStyle: .openAICompletions,
+                        authMode: .none,
+                        modelID: "qwen2.5-coder-32b-instruct",
+                        baseURL: "http://127.0.0.1:8000/v1",
+                        chatCompletionsPath: "chat/completions"
+                    ),
+                ]
+            )
+        )
+        let report = SecurityAuditRunner.run(
+            options: SecurityAuditOptions(config: config)
+        )
+
+        #expect(report.findings.contains(where: { $0.id == "models.providers.ollama.auth-none" }) == false)
+        #expect(report.findings.contains(where: { $0.id == "models.providers.litellm.auth-none" }) == false)
+        #expect(report.findings.contains(where: { $0.id == "models.providers.vllm.auth-none" }) == false)
+    }
+
+    @Test
+    func auditDetectsProviderServiceAPIKeysAndAccessTokensInPlaintextConfig() {
+        let config = OpenClawConfig(
+            models: ModelsConfig(
+                providers: [
+                    "openrouter": ProviderServiceConfig(
+                        enabled: true,
+                        apiStyle: .openAICompletions,
+                        authMode: .apiKey,
+                        modelID: "anthropic/claude-sonnet-4-5",
+                        apiKey: "openrouter-key",
+                        baseURL: "https://openrouter.ai/api/v1",
+                        chatCompletionsPath: "chat/completions"
+                    ),
+                    "qwen-portal": ProviderServiceConfig(
+                        enabled: true,
+                        apiStyle: .openAICompletions,
+                        authMode: .oauthToken,
+                        modelID: "coder-model",
+                        accessToken: "qwen-token",
+                        baseURL: "https://portal.qwen.ai/v1",
+                        chatCompletionsPath: "chat/completions"
+                    ),
+                ]
+            )
+        )
+        let report = SecurityAuditRunner.run(
+            options: SecurityAuditOptions(config: config)
+        )
+        let plaintextDetail = report.findings.first(where: { $0.id == "secrets.config.plaintext" })?.detail ?? ""
+
+        #expect(plaintextDetail.contains("models.providers.openrouter.apiKey"))
+        #expect(plaintextDetail.contains("models.providers.qwen-portal.accessToken"))
+    }
+
+    @Test
     func auditIsCleanForHardenedConfig() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("openclawkit-security-audit-tests", isDirectory: true)
