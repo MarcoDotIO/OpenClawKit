@@ -32,6 +32,29 @@ final class OpenClawAppState: ObservableObject {
         case gemini
         case foundation
         case local
+        case xai
+        case openRouter
+        case groq
+        case mistral
+        case cerebras
+        case moonshot
+        case liteLLM
+        case together
+        case huggingFace
+        case qianfan
+        case nvidia
+        case zai
+        case minimax
+        case minimaxPortal
+        case synthetic
+        case xiaomi
+        case cloudflareAIGateway
+        case vercelAIGateway
+        case amazonBedrock
+        case githubCopilot
+        case ollama
+        case vllm
+        case qwenPortal
 
         var id: String { self.rawValue }
 
@@ -51,6 +74,52 @@ final class OpenClawAppState: ObservableObject {
                 return FoundationModelsProvider.providerID
             case .local:
                 return LocalModelProvider.providerID
+            case .xai:
+                return XAIModelProvider.providerID
+            case .openRouter:
+                return OpenRouterModelProvider.providerID
+            case .groq:
+                return GroqModelProvider.providerID
+            case .mistral:
+                return MistralModelProvider.providerID
+            case .cerebras:
+                return CerebrasModelProvider.providerID
+            case .moonshot:
+                return MoonshotModelProvider.providerID
+            case .liteLLM:
+                return LiteLLMModelProvider.providerID
+            case .together:
+                return TogetherModelProvider.providerID
+            case .huggingFace:
+                return HuggingFaceModelProvider.providerID
+            case .qianfan:
+                return QianfanModelProvider.providerID
+            case .nvidia:
+                return NVIDIAModelProvider.providerID
+            case .zai:
+                return ZAIModelProvider.providerID
+            case .minimax:
+                return MinimaxModelProvider.providerID
+            case .minimaxPortal:
+                return MinimaxPortalModelProvider.providerID
+            case .synthetic:
+                return SyntheticModelProvider.providerID
+            case .xiaomi:
+                return XiaomiModelProvider.providerID
+            case .cloudflareAIGateway:
+                return CloudflareAIGatewayModelProvider.providerID
+            case .vercelAIGateway:
+                return VercelAIGatewayModelProvider.providerID
+            case .amazonBedrock:
+                return BedrockConverseModelProvider.providerID
+            case .githubCopilot:
+                return GitHubCopilotModelProvider.providerID
+            case .ollama:
+                return OllamaModelProvider.providerID
+            case .vllm:
+                return VLLMModelProvider.providerID
+            case .qwenPortal:
+                return QwenPortalModelProvider.providerID
             }
         }
 
@@ -70,6 +139,52 @@ final class OpenClawAppState: ObservableObject {
                 return "Apple Foundation Models"
             case .local:
                 return "Local (LLMFarm runtime)"
+            case .xai:
+                return "xAI (Grok)"
+            case .openRouter:
+                return "OpenRouter"
+            case .groq:
+                return "Groq"
+            case .mistral:
+                return "Mistral"
+            case .cerebras:
+                return "Cerebras"
+            case .moonshot:
+                return "Moonshot"
+            case .liteLLM:
+                return "LiteLLM"
+            case .together:
+                return "Together AI"
+            case .huggingFace:
+                return "Hugging Face Inference"
+            case .qianfan:
+                return "Qianfan"
+            case .nvidia:
+                return "NVIDIA"
+            case .zai:
+                return "Z.AI"
+            case .minimax:
+                return "MiniMax"
+            case .minimaxPortal:
+                return "MiniMax Portal"
+            case .synthetic:
+                return "Synthetic"
+            case .xiaomi:
+                return "Xiaomi"
+            case .cloudflareAIGateway:
+                return "Cloudflare AI Gateway"
+            case .vercelAIGateway:
+                return "Vercel AI Gateway"
+            case .amazonBedrock:
+                return "Amazon Bedrock"
+            case .githubCopilot:
+                return "GitHub Copilot"
+            case .ollama:
+                return "Ollama"
+            case .vllm:
+                return "vLLM"
+            case .qwenPortal:
+                return "Qwen Portal"
             }
         }
 
@@ -87,6 +202,50 @@ final class OpenClawAppState: ObservableObject {
                 return "apple-foundation-default"
             case .local:
                 return "local-default"
+            case .xai:
+                return "grok-3-mini"
+            case .openRouter:
+                return "anthropic/claude-sonnet-4-5"
+            case .groq:
+                return "llama-3.3-70b-versatile"
+            case .mistral:
+                return "mistral-large-latest"
+            case .cerebras:
+                return "zai-glm-4.7"
+            case .moonshot:
+                return "kimi-k2.5"
+            case .liteLLM:
+                return "gpt-4.1-mini"
+            case .together:
+                return "meta-llama/Llama-3.3-70B-Instruct-Turbo"
+            case .huggingFace:
+                return "deepseek-ai/DeepSeek-R1"
+            case .qianfan:
+                return "deepseek-v3.2"
+            case .nvidia:
+                return "nvidia/llama-3.1-nemotron-70b-instruct"
+            case .zai:
+                return "glm-4.7"
+            case .minimax, .minimaxPortal:
+                return "MiniMax-M2.1"
+            case .synthetic:
+                return "hf:MiniMaxAI/MiniMax-M2.1"
+            case .xiaomi:
+                return "mimo-v2-flash"
+            case .cloudflareAIGateway:
+                return "claude-3-5-sonnet-latest"
+            case .vercelAIGateway:
+                return "anthropic/claude-opus-4.6"
+            case .amazonBedrock:
+                return "anthropic.claude-3-5-sonnet"
+            case .githubCopilot:
+                return "gpt-5"
+            case .ollama:
+                return "llama3.3"
+            case .vllm:
+                return "qwen2.5-coder-32b-instruct"
+            case .qwenPortal:
+                return "coder-model"
             }
         }
     }
@@ -172,11 +331,33 @@ final class OpenClawAppState: ObservableObject {
         var discordChannelID: String
         var telegramBotToken: String
         var telegramChatID: String
+        var slackBotToken: String
+        var slackAppToken: String
+        var slackSigningSecret: String
+        var slackChannelID: String
+        var googleChatBearerToken: String
+        var googleChatVerificationToken: String
+        var googleChatSpaceID: String
+        var signalServiceURL: String
+        var signalAccountID: String
+        var signalAuthToken: String
+        var signalRecipient: String
+        var msteamsBotAppID: String
+        var msteamsBotAppPassword: String
+        var msteamsTenantID: String
+        var msteamsConversationID: String
+        var msteamsServiceURL: String
+        var webchatSharedSecret: String
         var openAIAPIKey: String
         var openAICompatibleAPIKey: String
         var openAICompatibleBaseURL: String
         var anthropicAPIKey: String
         var geminiAPIKey: String
+        var providerServiceAPIKey: String
+        var providerServiceAccessToken: String
+        var providerServiceBaseURL: String
+        var providerServiceRegion: String
+        var providerServiceProfile: String
         var selectedProvider: DeployProvider
         var selectedModelID: String
         var localRuntime: String
@@ -198,7 +379,19 @@ final class OpenClawAppState: ObservableObject {
 
         init(
             discordChannelID: String,
+            slackChannelID: String,
+            googleChatSpaceID: String,
+            signalServiceURL: String,
+            signalAccountID: String,
+            signalRecipient: String,
+            msteamsBotAppID: String,
+            msteamsTenantID: String,
+            msteamsConversationID: String,
+            msteamsServiceURL: String,
             openAICompatibleBaseURL: String,
+            providerServiceBaseURL: String,
+            providerServiceRegion: String,
+            providerServiceProfile: String,
             selectedProvider: DeployProvider,
             selectedModelID: String,
             localRuntime: String,
@@ -220,20 +413,52 @@ final class OpenClawAppState: ObservableObject {
             discordBotToken: String = "",
             telegramBotToken: String = "",
             telegramChatID: String = "",
+            slackBotToken: String = "",
+            slackAppToken: String = "",
+            slackSigningSecret: String = "",
+            googleChatBearerToken: String = "",
+            googleChatVerificationToken: String = "",
+            signalAuthToken: String = "",
+            msteamsBotAppPassword: String = "",
+            webchatSharedSecret: String = "",
             openAIAPIKey: String = "",
             openAICompatibleAPIKey: String = "",
             anthropicAPIKey: String = "",
-            geminiAPIKey: String = ""
+            geminiAPIKey: String = "",
+            providerServiceAPIKey: String = "",
+            providerServiceAccessToken: String = ""
         ) {
             self.discordBotToken = discordBotToken
             self.discordChannelID = discordChannelID
             self.telegramBotToken = telegramBotToken
             self.telegramChatID = telegramChatID
+            self.slackBotToken = slackBotToken
+            self.slackAppToken = slackAppToken
+            self.slackSigningSecret = slackSigningSecret
+            self.slackChannelID = slackChannelID
+            self.googleChatBearerToken = googleChatBearerToken
+            self.googleChatVerificationToken = googleChatVerificationToken
+            self.googleChatSpaceID = googleChatSpaceID
+            self.signalServiceURL = signalServiceURL
+            self.signalAccountID = signalAccountID
+            self.signalAuthToken = signalAuthToken
+            self.signalRecipient = signalRecipient
+            self.msteamsBotAppID = msteamsBotAppID
+            self.msteamsBotAppPassword = msteamsBotAppPassword
+            self.msteamsTenantID = msteamsTenantID
+            self.msteamsConversationID = msteamsConversationID
+            self.msteamsServiceURL = msteamsServiceURL
+            self.webchatSharedSecret = webchatSharedSecret
             self.openAIAPIKey = openAIAPIKey
             self.openAICompatibleAPIKey = openAICompatibleAPIKey
             self.openAICompatibleBaseURL = openAICompatibleBaseURL
             self.anthropicAPIKey = anthropicAPIKey
             self.geminiAPIKey = geminiAPIKey
+            self.providerServiceAPIKey = providerServiceAPIKey
+            self.providerServiceAccessToken = providerServiceAccessToken
+            self.providerServiceBaseURL = providerServiceBaseURL
+            self.providerServiceRegion = providerServiceRegion
+            self.providerServiceProfile = providerServiceProfile
             self.selectedProvider = selectedProvider
             self.selectedModelID = selectedModelID
             self.localRuntime = localRuntime
@@ -257,7 +482,19 @@ final class OpenClawAppState: ObservableObject {
         private enum CodingKeys: String, CodingKey {
             case discordChannelID
             case telegramChatID
+            case slackChannelID
+            case googleChatSpaceID
+            case signalServiceURL
+            case signalAccountID
+            case signalRecipient
+            case msteamsBotAppID
+            case msteamsTenantID
+            case msteamsConversationID
+            case msteamsServiceURL
             case openAICompatibleBaseURL
+            case providerServiceBaseURL
+            case providerServiceRegion
+            case providerServiceProfile
             case selectedProvider
             case selectedModelID
             case localRuntime
@@ -281,17 +518,40 @@ final class OpenClawAppState: ObservableObject {
         private enum LegacySecretCodingKeys: String, CodingKey {
             case discordBotToken
             case telegramBotToken
+            case slackBotToken
+            case slackAppToken
+            case slackSigningSecret
+            case googleChatBearerToken
+            case googleChatVerificationToken
+            case signalAuthToken
+            case msteamsBotAppPassword
+            case webchatSharedSecret
             case openAIAPIKey
             case openAICompatibleAPIKey
             case anthropicAPIKey
             case geminiAPIKey
+            case providerServiceAPIKey
+            case providerServiceAccessToken
         }
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             self.discordChannelID = try container.decodeIfPresent(String.self, forKey: .discordChannelID) ?? ""
             self.telegramChatID = try container.decodeIfPresent(String.self, forKey: .telegramChatID) ?? ""
+            self.slackChannelID = try container.decodeIfPresent(String.self, forKey: .slackChannelID) ?? ""
+            self.googleChatSpaceID = try container.decodeIfPresent(String.self, forKey: .googleChatSpaceID) ?? ""
+            self.signalServiceURL = try container.decodeIfPresent(String.self, forKey: .signalServiceURL) ?? "http://127.0.0.1:8080"
+            self.signalAccountID = try container.decodeIfPresent(String.self, forKey: .signalAccountID) ?? ""
+            self.signalRecipient = try container.decodeIfPresent(String.self, forKey: .signalRecipient) ?? ""
+            self.msteamsBotAppID = try container.decodeIfPresent(String.self, forKey: .msteamsBotAppID) ?? ""
+            self.msteamsTenantID = try container.decodeIfPresent(String.self, forKey: .msteamsTenantID) ?? ""
+            self.msteamsConversationID = try container.decodeIfPresent(String.self, forKey: .msteamsConversationID) ?? ""
+            self.msteamsServiceURL = try container.decodeIfPresent(String.self, forKey: .msteamsServiceURL)
+                ?? "https://smba.trafficmanager.net/teams/"
             self.openAICompatibleBaseURL = try container.decodeIfPresent(String.self, forKey: .openAICompatibleBaseURL) ?? "https://api.openai.com/v1"
+            self.providerServiceBaseURL = try container.decodeIfPresent(String.self, forKey: .providerServiceBaseURL) ?? ""
+            self.providerServiceRegion = try container.decodeIfPresent(String.self, forKey: .providerServiceRegion) ?? "us-east-1"
+            self.providerServiceProfile = try container.decodeIfPresent(String.self, forKey: .providerServiceProfile) ?? "default"
             self.selectedProvider = try container.decodeIfPresent(DeployProvider.self, forKey: .selectedProvider) ?? .openAI
             self.selectedModelID = try container.decodeIfPresent(String.self, forKey: .selectedModelID) ?? self.selectedProvider.defaultModelID
             self.localRuntime = try container.decodeIfPresent(String.self, forKey: .localRuntime) ?? "llmfarm"
@@ -314,17 +574,39 @@ final class OpenClawAppState: ObservableObject {
             let legacy = try decoder.container(keyedBy: LegacySecretCodingKeys.self)
             self.discordBotToken = try legacy.decodeIfPresent(String.self, forKey: .discordBotToken) ?? ""
             self.telegramBotToken = try legacy.decodeIfPresent(String.self, forKey: .telegramBotToken) ?? ""
+            self.slackBotToken = try legacy.decodeIfPresent(String.self, forKey: .slackBotToken) ?? ""
+            self.slackAppToken = try legacy.decodeIfPresent(String.self, forKey: .slackAppToken) ?? ""
+            self.slackSigningSecret = try legacy.decodeIfPresent(String.self, forKey: .slackSigningSecret) ?? ""
+            self.googleChatBearerToken = try legacy.decodeIfPresent(String.self, forKey: .googleChatBearerToken) ?? ""
+            self.googleChatVerificationToken = try legacy.decodeIfPresent(String.self, forKey: .googleChatVerificationToken) ?? ""
+            self.signalAuthToken = try legacy.decodeIfPresent(String.self, forKey: .signalAuthToken) ?? ""
+            self.msteamsBotAppPassword = try legacy.decodeIfPresent(String.self, forKey: .msteamsBotAppPassword) ?? ""
+            self.webchatSharedSecret = try legacy.decodeIfPresent(String.self, forKey: .webchatSharedSecret) ?? ""
             self.openAIAPIKey = try legacy.decodeIfPresent(String.self, forKey: .openAIAPIKey) ?? ""
             self.openAICompatibleAPIKey = try legacy.decodeIfPresent(String.self, forKey: .openAICompatibleAPIKey) ?? ""
             self.anthropicAPIKey = try legacy.decodeIfPresent(String.self, forKey: .anthropicAPIKey) ?? ""
             self.geminiAPIKey = try legacy.decodeIfPresent(String.self, forKey: .geminiAPIKey) ?? ""
+            self.providerServiceAPIKey = try legacy.decodeIfPresent(String.self, forKey: .providerServiceAPIKey) ?? ""
+            self.providerServiceAccessToken = try legacy.decodeIfPresent(String.self, forKey: .providerServiceAccessToken) ?? ""
         }
 
         func encode(to encoder: Encoder) throws {
             var container = encoder.container(keyedBy: CodingKeys.self)
             try container.encode(self.discordChannelID, forKey: .discordChannelID)
             try container.encode(self.telegramChatID, forKey: .telegramChatID)
+            try container.encode(self.slackChannelID, forKey: .slackChannelID)
+            try container.encode(self.googleChatSpaceID, forKey: .googleChatSpaceID)
+            try container.encode(self.signalServiceURL, forKey: .signalServiceURL)
+            try container.encode(self.signalAccountID, forKey: .signalAccountID)
+            try container.encode(self.signalRecipient, forKey: .signalRecipient)
+            try container.encode(self.msteamsBotAppID, forKey: .msteamsBotAppID)
+            try container.encode(self.msteamsTenantID, forKey: .msteamsTenantID)
+            try container.encode(self.msteamsConversationID, forKey: .msteamsConversationID)
+            try container.encode(self.msteamsServiceURL, forKey: .msteamsServiceURL)
             try container.encode(self.openAICompatibleBaseURL, forKey: .openAICompatibleBaseURL)
+            try container.encode(self.providerServiceBaseURL, forKey: .providerServiceBaseURL)
+            try container.encode(self.providerServiceRegion, forKey: .providerServiceRegion)
+            try container.encode(self.providerServiceProfile, forKey: .providerServiceProfile)
             try container.encode(self.selectedProvider, forKey: .selectedProvider)
             try container.encode(self.selectedModelID, forKey: .selectedModelID)
             try container.encode(self.localRuntime, forKey: .localRuntime)
@@ -350,38 +632,78 @@ final class OpenClawAppState: ObservableObject {
     private struct SecretSnapshot: Sendable, Equatable {
         var discordBotToken: String
         var telegramBotToken: String
+        var slackBotToken: String
+        var slackAppToken: String
+        var slackSigningSecret: String
+        var googleChatBearerToken: String
+        var googleChatVerificationToken: String
+        var signalAuthToken: String
+        var msteamsBotAppPassword: String
+        var webchatSharedSecret: String
         var openAIAPIKey: String
         var openAICompatibleAPIKey: String
         var anthropicAPIKey: String
         var geminiAPIKey: String
+        var providerServiceAPIKey: String
+        var providerServiceAccessToken: String
 
         static let empty = SecretSnapshot(
             discordBotToken: "",
             telegramBotToken: "",
+            slackBotToken: "",
+            slackAppToken: "",
+            slackSigningSecret: "",
+            googleChatBearerToken: "",
+            googleChatVerificationToken: "",
+            signalAuthToken: "",
+            msteamsBotAppPassword: "",
+            webchatSharedSecret: "",
             openAIAPIKey: "",
             openAICompatibleAPIKey: "",
             anthropicAPIKey: "",
-            geminiAPIKey: ""
+            geminiAPIKey: "",
+            providerServiceAPIKey: "",
+            providerServiceAccessToken: ""
         )
 
         var legacySecretsByStoreKey: [String: String] {
             [
                 SecretStoreKey.discordBotToken: self.discordBotToken,
                 SecretStoreKey.telegramBotToken: self.telegramBotToken,
+                SecretStoreKey.slackBotToken: self.slackBotToken,
+                SecretStoreKey.slackAppToken: self.slackAppToken,
+                SecretStoreKey.slackSigningSecret: self.slackSigningSecret,
+                SecretStoreKey.googleChatBearerToken: self.googleChatBearerToken,
+                SecretStoreKey.googleChatVerificationToken: self.googleChatVerificationToken,
+                SecretStoreKey.signalAuthToken: self.signalAuthToken,
+                SecretStoreKey.msteamsBotAppPassword: self.msteamsBotAppPassword,
+                SecretStoreKey.webchatSharedSecret: self.webchatSharedSecret,
                 SecretStoreKey.openAIAPIKey: self.openAIAPIKey,
                 SecretStoreKey.openAICompatibleAPIKey: self.openAICompatibleAPIKey,
                 SecretStoreKey.anthropicAPIKey: self.anthropicAPIKey,
                 SecretStoreKey.geminiAPIKey: self.geminiAPIKey,
+                SecretStoreKey.providerServiceAPIKey: self.providerServiceAPIKey,
+                SecretStoreKey.providerServiceAccessToken: self.providerServiceAccessToken,
             ]
         }
 
         var containsAnySecret: Bool {
             !self.discordBotToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
                 !self.telegramBotToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                !self.slackBotToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                !self.slackAppToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                !self.slackSigningSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                !self.googleChatBearerToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                !self.googleChatVerificationToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                !self.signalAuthToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                !self.msteamsBotAppPassword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                !self.webchatSharedSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
                 !self.openAIAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
                 !self.openAICompatibleAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
                 !self.anthropicAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-                !self.geminiAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                !self.geminiAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                !self.providerServiceAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                !self.providerServiceAccessToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
     }
 
@@ -389,18 +711,38 @@ final class OpenClawAppState: ObservableObject {
     private enum SecretStoreKey {
         static let discordBotToken = "channels.discord.botToken"
         static let telegramBotToken = "channels.telegram.botToken"
+        static let slackBotToken = "channels.slack.botToken"
+        static let slackAppToken = "channels.slack.appToken"
+        static let slackSigningSecret = "channels.slack.signingSecret"
+        static let googleChatBearerToken = "channels.googlechat.bearerToken"
+        static let googleChatVerificationToken = "channels.googlechat.verificationToken"
+        static let signalAuthToken = "channels.signal.authToken"
+        static let msteamsBotAppPassword = "channels.msteams.botAppPassword"
+        static let webchatSharedSecret = "channels.webchat.sharedSecret"
         static let openAIAPIKey = "models.openai.apiKey"
         static let openAICompatibleAPIKey = "models.openaiCompatible.apiKey"
         static let anthropicAPIKey = "models.anthropic.apiKey"
         static let geminiAPIKey = "models.gemini.apiKey"
+        static let providerServiceAPIKey = "models.providers.apiKey"
+        static let providerServiceAccessToken = "models.providers.accessToken"
 
         static let ordered: [String] = [
             discordBotToken,
             telegramBotToken,
+            slackBotToken,
+            slackAppToken,
+            slackSigningSecret,
+            googleChatBearerToken,
+            googleChatVerificationToken,
+            signalAuthToken,
+            msteamsBotAppPassword,
+            webchatSharedSecret,
             openAIAPIKey,
             openAICompatibleAPIKey,
             anthropicAPIKey,
             geminiAPIKey,
+            providerServiceAPIKey,
+            providerServiceAccessToken,
         ]
     }
 
@@ -408,11 +750,33 @@ final class OpenClawAppState: ObservableObject {
     @Published var discordChannelID: String = ""
     @Published var telegramBotToken: String = ""
     @Published var telegramChatID: String = ""
+    @Published var slackBotToken: String = ""
+    @Published var slackAppToken: String = ""
+    @Published var slackSigningSecret: String = ""
+    @Published var slackChannelID: String = ""
+    @Published var googleChatBearerToken: String = ""
+    @Published var googleChatVerificationToken: String = ""
+    @Published var googleChatSpaceID: String = ""
+    @Published var signalServiceURL: String = "http://127.0.0.1:8080"
+    @Published var signalAccountID: String = ""
+    @Published var signalAuthToken: String = ""
+    @Published var signalRecipient: String = ""
+    @Published var msteamsBotAppID: String = ""
+    @Published var msteamsBotAppPassword: String = ""
+    @Published var msteamsTenantID: String = ""
+    @Published var msteamsConversationID: String = ""
+    @Published var msteamsServiceURL: String = "https://smba.trafficmanager.net/teams/"
+    @Published var webchatSharedSecret: String = ""
     @Published var openAIAPIKey: String = ""
     @Published var openAICompatibleAPIKey: String = ""
     @Published var openAICompatibleBaseURL: String = "https://api.openai.com/v1"
     @Published var anthropicAPIKey: String = ""
     @Published var geminiAPIKey: String = ""
+    @Published var providerServiceAPIKey: String = ""
+    @Published var providerServiceAccessToken: String = ""
+    @Published var providerServiceBaseURL: String = ""
+    @Published var providerServiceRegion: String = "us-east-1"
+    @Published var providerServiceProfile: String = "default"
     @Published var selectedProvider: DeployProvider = .openAI
     @Published var selectedModelID: String = DeployProvider.openAI.defaultModelID
     @Published var localRuntime: String = "llmfarm"
@@ -605,12 +969,55 @@ final class OpenClawAppState: ObservableObject {
                 pollIntervalMs: 2_000,
                 mentionOnly: true
             )
+            let slackConfig = SlackChannelConfig(
+                enabled: !self.slackBotToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                botToken: normalized(self.slackBotToken),
+                appToken: normalized(self.slackAppToken),
+                signingSecret: normalized(self.slackSigningSecret),
+                defaultChannelID: normalized(self.slackChannelID),
+                mentionOnly: true
+            )
+            let googleChatConfig = GoogleChatChannelConfig(
+                enabled: !self.googleChatBearerToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                bearerToken: normalized(self.googleChatBearerToken),
+                verificationToken: normalized(self.googleChatVerificationToken),
+                defaultSpaceID: normalized(self.googleChatSpaceID)
+            )
+            let signalConfig = SignalChannelConfig(
+                enabled: !self.signalAuthToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                serviceURL: normalized(self.signalServiceURL) ?? "http://127.0.0.1:8080",
+                accountID: normalized(self.signalAccountID),
+                authToken: normalized(self.signalAuthToken),
+                defaultRecipient: normalized(self.signalRecipient)
+            )
+            let msteamsConfig = MicrosoftTeamsChannelConfig(
+                enabled: !self.msteamsBotAppID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+                    !self.msteamsBotAppPassword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                botAppID: normalized(self.msteamsBotAppID),
+                botAppPassword: normalized(self.msteamsBotAppPassword),
+                tenantID: normalized(self.msteamsTenantID),
+                defaultConversationID: normalized(self.msteamsConversationID),
+                serviceURL: normalized(self.msteamsServiceURL) ?? "https://smba.trafficmanager.net/teams/",
+                mentionOnly: true
+            )
+            let webchatConfig = WebChatChannelConfig(
+                enabled: false,
+                sharedSecret: normalized(self.webchatSharedSecret)
+            )
             let modelsConfig = try self.makeModelsConfig()
             let agentsConfig = self.makeAgentsConfig()
 
             let config = OpenClawConfig(
                 agents: agentsConfig,
-                channels: ChannelsConfig(discord: discordConfig, telegram: telegramConfig),
+                channels: ChannelsConfig(
+                    discord: discordConfig,
+                    telegram: telegramConfig,
+                    slack: slackConfig,
+                    googleChat: googleChatConfig,
+                    signal: signalConfig,
+                    msteams: msteamsConfig,
+                    webchat: webchatConfig
+                ),
                 routing: RoutingConfig(
                     defaultSessionKey: self.sharedConversationSessionKey,
                     includeChannelID: false,
@@ -786,6 +1193,71 @@ final class OpenClawAppState: ObservableObject {
     private func makeModelsConfig() throws -> ModelsConfig {
         let selectedModelID = normalized(self.selectedModelID) ?? self.selectedProvider.defaultModelID
 
+        func resolveProviderServiceBaseURL(_ fallback: String) -> String {
+            normalized(self.providerServiceBaseURL) ?? fallback
+        }
+
+        func requireProviderServiceAPIKey(providerName: String) throws -> String {
+            guard let apiKey = normalized(self.providerServiceAPIKey) else {
+                throw OpenClawCoreError.invalidConfiguration("API key is required for \(providerName) provider")
+            }
+            return apiKey
+        }
+
+        func requireProviderServiceAccessToken(providerName: String) throws -> String {
+            guard let token = normalized(self.providerServiceAccessToken) else {
+                throw OpenClawCoreError.invalidConfiguration("Access token is required for \(providerName) provider")
+            }
+            return token
+        }
+
+        func makeOpenAIServiceConfig(
+            defaultBaseURL: String,
+            authMode: ProviderServiceAuthMode = .apiKey,
+            apiStyle: ProviderServiceAPIStyle = .openAICompletions
+        ) throws -> ProviderServiceConfig {
+            var config = ProviderServiceConfig(
+                enabled: true,
+                apiStyle: apiStyle,
+                authMode: authMode,
+                modelID: selectedModelID,
+                baseURL: resolveProviderServiceBaseURL(defaultBaseURL),
+                chatCompletionsPath: "chat/completions"
+            )
+            switch authMode {
+            case .apiKey:
+                config.apiKey = try requireProviderServiceAPIKey(providerName: self.selectedProvider.displayName)
+            case .bearerToken, .oauthToken:
+                config.accessToken = try requireProviderServiceAccessToken(providerName: self.selectedProvider.displayName)
+            case .none, .awsSDK:
+                break
+            }
+            return config
+        }
+
+        func makeAnthropicServiceConfig(
+            defaultBaseURL: String,
+            authMode: ProviderServiceAuthMode = .apiKey
+        ) throws -> ProviderServiceConfig {
+            var config = ProviderServiceConfig(
+                enabled: true,
+                apiStyle: .anthropicMessages,
+                authMode: authMode,
+                modelID: selectedModelID,
+                baseURL: resolveProviderServiceBaseURL(defaultBaseURL),
+                messagesPath: "messages"
+            )
+            switch authMode {
+            case .apiKey:
+                config.apiKey = try requireProviderServiceAPIKey(providerName: self.selectedProvider.displayName)
+            case .bearerToken, .oauthToken:
+                config.accessToken = try requireProviderServiceAccessToken(providerName: self.selectedProvider.displayName)
+            case .none, .awsSDK:
+                break
+            }
+            return config
+        }
+
         switch self.selectedProvider {
         case .echo:
             return ModelsConfig(
@@ -870,6 +1342,170 @@ final class OpenClawAppState: ObservableObject {
                     maxTokens: max(1, self.localMaxTokens)
                 )
             )
+        case .xai:
+            let config = try makeOpenAIServiceConfig(defaultBaseURL: "https://api.x.ai/v1")
+            return ModelsConfig(
+                defaultProviderID: XAIModelProvider.providerID,
+                providers: [XAIModelProvider.providerID: config]
+            )
+        case .openRouter:
+            let config = try makeOpenAIServiceConfig(defaultBaseURL: "https://openrouter.ai/api/v1")
+            return ModelsConfig(
+                defaultProviderID: OpenRouterModelProvider.providerID,
+                providers: [OpenRouterModelProvider.providerID: config]
+            )
+        case .groq:
+            let config = try makeOpenAIServiceConfig(defaultBaseURL: "https://api.groq.com/openai/v1")
+            return ModelsConfig(
+                defaultProviderID: GroqModelProvider.providerID,
+                providers: [GroqModelProvider.providerID: config]
+            )
+        case .mistral:
+            let config = try makeOpenAIServiceConfig(defaultBaseURL: "https://api.mistral.ai/v1")
+            return ModelsConfig(
+                defaultProviderID: MistralModelProvider.providerID,
+                providers: [MistralModelProvider.providerID: config]
+            )
+        case .cerebras:
+            let config = try makeOpenAIServiceConfig(defaultBaseURL: "https://api.cerebras.ai/v1")
+            return ModelsConfig(
+                defaultProviderID: CerebrasModelProvider.providerID,
+                providers: [CerebrasModelProvider.providerID: config]
+            )
+        case .moonshot:
+            let config = try makeOpenAIServiceConfig(defaultBaseURL: "https://api.moonshot.ai/v1")
+            return ModelsConfig(
+                defaultProviderID: MoonshotModelProvider.providerID,
+                providers: [MoonshotModelProvider.providerID: config]
+            )
+        case .liteLLM:
+            let config = try makeOpenAIServiceConfig(defaultBaseURL: "http://127.0.0.1:4000/v1")
+            return ModelsConfig(
+                defaultProviderID: LiteLLMModelProvider.providerID,
+                providers: [LiteLLMModelProvider.providerID: config]
+            )
+        case .together:
+            let config = try makeOpenAIServiceConfig(defaultBaseURL: "https://api.together.xyz/v1")
+            return ModelsConfig(
+                defaultProviderID: TogetherModelProvider.providerID,
+                providers: [TogetherModelProvider.providerID: config]
+            )
+        case .huggingFace:
+            let config = try makeOpenAIServiceConfig(defaultBaseURL: "https://router.huggingface.co/v1")
+            return ModelsConfig(
+                defaultProviderID: HuggingFaceModelProvider.providerID,
+                providers: [HuggingFaceModelProvider.providerID: config]
+            )
+        case .qianfan:
+            let config = try makeOpenAIServiceConfig(defaultBaseURL: "https://qianfan.baidubce.com/v2")
+            return ModelsConfig(
+                defaultProviderID: QianfanModelProvider.providerID,
+                providers: [QianfanModelProvider.providerID: config]
+            )
+        case .nvidia:
+            let config = try makeOpenAIServiceConfig(defaultBaseURL: "https://integrate.api.nvidia.com/v1")
+            return ModelsConfig(
+                defaultProviderID: NVIDIAModelProvider.providerID,
+                providers: [NVIDIAModelProvider.providerID: config]
+            )
+        case .zai:
+            let config = try makeOpenAIServiceConfig(defaultBaseURL: "https://api.z.ai/api/paas/v4")
+            return ModelsConfig(
+                defaultProviderID: ZAIModelProvider.providerID,
+                providers: [ZAIModelProvider.providerID: config]
+            )
+        case .minimax:
+            let config = try makeAnthropicServiceConfig(defaultBaseURL: "https://api.minimax.io/anthropic")
+            return ModelsConfig(
+                defaultProviderID: MinimaxModelProvider.providerID,
+                providers: [MinimaxModelProvider.providerID: config]
+            )
+        case .minimaxPortal:
+            let config = try makeAnthropicServiceConfig(
+                defaultBaseURL: "https://api.minimax.io/anthropic",
+                authMode: .oauthToken
+            )
+            return ModelsConfig(
+                defaultProviderID: MinimaxPortalModelProvider.providerID,
+                providers: [MinimaxPortalModelProvider.providerID: config]
+            )
+        case .synthetic:
+            let config = try makeAnthropicServiceConfig(defaultBaseURL: "https://api.synthetic.new/anthropic")
+            return ModelsConfig(
+                defaultProviderID: SyntheticModelProvider.providerID,
+                providers: [SyntheticModelProvider.providerID: config]
+            )
+        case .xiaomi:
+            let config = try makeAnthropicServiceConfig(defaultBaseURL: "https://api.xiaomimimo.com/anthropic")
+            return ModelsConfig(
+                defaultProviderID: XiaomiModelProvider.providerID,
+                providers: [XiaomiModelProvider.providerID: config]
+            )
+        case .cloudflareAIGateway:
+            let config = try makeAnthropicServiceConfig(defaultBaseURL: "https://gateway.ai.cloudflare.com/v1")
+            return ModelsConfig(
+                defaultProviderID: CloudflareAIGatewayModelProvider.providerID,
+                providers: [CloudflareAIGatewayModelProvider.providerID: config]
+            )
+        case .vercelAIGateway:
+            let config = try makeAnthropicServiceConfig(defaultBaseURL: "https://ai-gateway.vercel.sh/v1")
+            return ModelsConfig(
+                defaultProviderID: VercelAIGatewayModelProvider.providerID,
+                providers: [VercelAIGatewayModelProvider.providerID: config]
+            )
+        case .amazonBedrock:
+            let region = normalized(self.providerServiceRegion) ?? "us-east-1"
+            let profile = normalized(self.providerServiceProfile) ?? "default"
+            let config = ProviderServiceConfig(
+                enabled: true,
+                apiStyle: .bedrockConverse,
+                authMode: .awsSDK,
+                modelID: selectedModelID,
+                baseURL: resolveProviderServiceBaseURL("https://bedrock-runtime.\(region).amazonaws.com"),
+                region: region,
+                profile: profile
+            )
+            return ModelsConfig(
+                defaultProviderID: BedrockConverseModelProvider.providerID,
+                providers: [BedrockConverseModelProvider.providerID: config]
+            )
+        case .githubCopilot:
+            let config = try makeOpenAIServiceConfig(
+                defaultBaseURL: "https://api.githubcopilot.com",
+                authMode: .bearerToken
+            )
+            return ModelsConfig(
+                defaultProviderID: GitHubCopilotModelProvider.providerID,
+                providers: [GitHubCopilotModelProvider.providerID: config]
+            )
+        case .ollama:
+            let config = try makeOpenAIServiceConfig(
+                defaultBaseURL: "http://127.0.0.1:11434/v1",
+                authMode: .none,
+                apiStyle: .ollama
+            )
+            return ModelsConfig(
+                defaultProviderID: OllamaModelProvider.providerID,
+                providers: [OllamaModelProvider.providerID: config]
+            )
+        case .vllm:
+            let config = try makeOpenAIServiceConfig(
+                defaultBaseURL: "http://127.0.0.1:8000/v1",
+                authMode: .none
+            )
+            return ModelsConfig(
+                defaultProviderID: VLLMModelProvider.providerID,
+                providers: [VLLMModelProvider.providerID: config]
+            )
+        case .qwenPortal:
+            let config = try makeOpenAIServiceConfig(
+                defaultBaseURL: "https://portal.qwen.ai/v1",
+                authMode: .oauthToken
+            )
+            return ModelsConfig(
+                defaultProviderID: QwenPortalModelProvider.providerID,
+                providers: [QwenPortalModelProvider.providerID: config]
+            )
         }
     }
 
@@ -878,6 +1514,15 @@ final class OpenClawAppState: ObservableObject {
         on runtime: EmbeddedAgentRuntime,
         using models: ModelsConfig
     ) async throws {
+        func providerServiceConfig(for providerID: String) throws -> ProviderServiceConfig {
+            guard let config = models.providers[providerID] else {
+                throw OpenClawCoreError.invalidConfiguration(
+                    "Missing provider service config for '\(providerID)'"
+                )
+            }
+            return config
+        }
+
         switch self.selectedProvider {
         case .echo:
             try await runtime.setDefaultModelProviderID(EchoModelProvider.defaultID)
@@ -904,6 +1549,129 @@ final class OpenClawAppState: ObservableObject {
                 )
             )
             try await runtime.setDefaultModelProviderID(LocalModelProvider.providerID)
+        case .xai:
+            await runtime.registerModelProvider(
+                XAIModelProvider(configuration: try providerServiceConfig(for: XAIModelProvider.providerID))
+            )
+            try await runtime.setDefaultModelProviderID(XAIModelProvider.providerID)
+        case .openRouter:
+            await runtime.registerModelProvider(
+                OpenRouterModelProvider(configuration: try providerServiceConfig(for: OpenRouterModelProvider.providerID))
+            )
+            try await runtime.setDefaultModelProviderID(OpenRouterModelProvider.providerID)
+        case .groq:
+            await runtime.registerModelProvider(
+                GroqModelProvider(configuration: try providerServiceConfig(for: GroqModelProvider.providerID))
+            )
+            try await runtime.setDefaultModelProviderID(GroqModelProvider.providerID)
+        case .mistral:
+            await runtime.registerModelProvider(
+                MistralModelProvider(configuration: try providerServiceConfig(for: MistralModelProvider.providerID))
+            )
+            try await runtime.setDefaultModelProviderID(MistralModelProvider.providerID)
+        case .cerebras:
+            await runtime.registerModelProvider(
+                CerebrasModelProvider(configuration: try providerServiceConfig(for: CerebrasModelProvider.providerID))
+            )
+            try await runtime.setDefaultModelProviderID(CerebrasModelProvider.providerID)
+        case .moonshot:
+            await runtime.registerModelProvider(
+                MoonshotModelProvider(configuration: try providerServiceConfig(for: MoonshotModelProvider.providerID))
+            )
+            try await runtime.setDefaultModelProviderID(MoonshotModelProvider.providerID)
+        case .liteLLM:
+            await runtime.registerModelProvider(
+                LiteLLMModelProvider(configuration: try providerServiceConfig(for: LiteLLMModelProvider.providerID))
+            )
+            try await runtime.setDefaultModelProviderID(LiteLLMModelProvider.providerID)
+        case .together:
+            await runtime.registerModelProvider(
+                TogetherModelProvider(configuration: try providerServiceConfig(for: TogetherModelProvider.providerID))
+            )
+            try await runtime.setDefaultModelProviderID(TogetherModelProvider.providerID)
+        case .huggingFace:
+            await runtime.registerModelProvider(
+                HuggingFaceModelProvider(configuration: try providerServiceConfig(for: HuggingFaceModelProvider.providerID))
+            )
+            try await runtime.setDefaultModelProviderID(HuggingFaceModelProvider.providerID)
+        case .qianfan:
+            await runtime.registerModelProvider(
+                QianfanModelProvider(configuration: try providerServiceConfig(for: QianfanModelProvider.providerID))
+            )
+            try await runtime.setDefaultModelProviderID(QianfanModelProvider.providerID)
+        case .nvidia:
+            await runtime.registerModelProvider(
+                NVIDIAModelProvider(configuration: try providerServiceConfig(for: NVIDIAModelProvider.providerID))
+            )
+            try await runtime.setDefaultModelProviderID(NVIDIAModelProvider.providerID)
+        case .zai:
+            await runtime.registerModelProvider(
+                ZAIModelProvider(configuration: try providerServiceConfig(for: ZAIModelProvider.providerID))
+            )
+            try await runtime.setDefaultModelProviderID(ZAIModelProvider.providerID)
+        case .minimax:
+            await runtime.registerModelProvider(
+                MinimaxModelProvider(configuration: try providerServiceConfig(for: MinimaxModelProvider.providerID))
+            )
+            try await runtime.setDefaultModelProviderID(MinimaxModelProvider.providerID)
+        case .minimaxPortal:
+            await runtime.registerModelProvider(
+                MinimaxPortalModelProvider(configuration: try providerServiceConfig(for: MinimaxPortalModelProvider.providerID))
+            )
+            try await runtime.setDefaultModelProviderID(MinimaxPortalModelProvider.providerID)
+        case .synthetic:
+            await runtime.registerModelProvider(
+                SyntheticModelProvider(configuration: try providerServiceConfig(for: SyntheticModelProvider.providerID))
+            )
+            try await runtime.setDefaultModelProviderID(SyntheticModelProvider.providerID)
+        case .xiaomi:
+            await runtime.registerModelProvider(
+                XiaomiModelProvider(configuration: try providerServiceConfig(for: XiaomiModelProvider.providerID))
+            )
+            try await runtime.setDefaultModelProviderID(XiaomiModelProvider.providerID)
+        case .cloudflareAIGateway:
+            await runtime.registerModelProvider(
+                CloudflareAIGatewayModelProvider(
+                    configuration: try providerServiceConfig(for: CloudflareAIGatewayModelProvider.providerID)
+                )
+            )
+            try await runtime.setDefaultModelProviderID(CloudflareAIGatewayModelProvider.providerID)
+        case .vercelAIGateway:
+            await runtime.registerModelProvider(
+                VercelAIGatewayModelProvider(
+                    configuration: try providerServiceConfig(for: VercelAIGatewayModelProvider.providerID)
+                )
+            )
+            try await runtime.setDefaultModelProviderID(VercelAIGatewayModelProvider.providerID)
+        case .amazonBedrock:
+            await runtime.registerModelProvider(
+                BedrockConverseModelProvider(
+                    configuration: try providerServiceConfig(for: BedrockConverseModelProvider.providerID)
+                )
+            )
+            try await runtime.setDefaultModelProviderID(BedrockConverseModelProvider.providerID)
+        case .githubCopilot:
+            await runtime.registerModelProvider(
+                GitHubCopilotModelProvider(
+                    configuration: try providerServiceConfig(for: GitHubCopilotModelProvider.providerID)
+                )
+            )
+            try await runtime.setDefaultModelProviderID(GitHubCopilotModelProvider.providerID)
+        case .ollama:
+            await runtime.registerModelProvider(
+                OllamaModelProvider(configuration: try providerServiceConfig(for: OllamaModelProvider.providerID))
+            )
+            try await runtime.setDefaultModelProviderID(OllamaModelProvider.providerID)
+        case .vllm:
+            await runtime.registerModelProvider(
+                VLLMModelProvider(configuration: try providerServiceConfig(for: VLLMModelProvider.providerID))
+            )
+            try await runtime.setDefaultModelProviderID(VLLMModelProvider.providerID)
+        case .qwenPortal:
+            await runtime.registerModelProvider(
+                QwenPortalModelProvider(configuration: try providerServiceConfig(for: QwenPortalModelProvider.providerID))
+            )
+            try await runtime.setDefaultModelProviderID(QwenPortalModelProvider.providerID)
         }
     }
 
@@ -1390,15 +2158,37 @@ final class OpenClawAppState: ObservableObject {
         self.legacySecrets = SecretSnapshot(
             discordBotToken: settings.discordBotToken,
             telegramBotToken: settings.telegramBotToken,
+            slackBotToken: settings.slackBotToken,
+            slackAppToken: settings.slackAppToken,
+            slackSigningSecret: settings.slackSigningSecret,
+            googleChatBearerToken: settings.googleChatBearerToken,
+            googleChatVerificationToken: settings.googleChatVerificationToken,
+            signalAuthToken: settings.signalAuthToken,
+            msteamsBotAppPassword: settings.msteamsBotAppPassword,
+            webchatSharedSecret: settings.webchatSharedSecret,
             openAIAPIKey: settings.openAIAPIKey,
             openAICompatibleAPIKey: settings.openAICompatibleAPIKey,
             anthropicAPIKey: settings.anthropicAPIKey,
-            geminiAPIKey: settings.geminiAPIKey
+            geminiAPIKey: settings.geminiAPIKey,
+            providerServiceAPIKey: settings.providerServiceAPIKey,
+            providerServiceAccessToken: settings.providerServiceAccessToken
         )
         self.applySecretSnapshot(self.legacySecrets)
         self.discordChannelID = settings.discordChannelID
         self.telegramChatID = settings.telegramChatID
+        self.slackChannelID = settings.slackChannelID
+        self.googleChatSpaceID = settings.googleChatSpaceID
+        self.signalServiceURL = settings.signalServiceURL
+        self.signalAccountID = settings.signalAccountID
+        self.signalRecipient = settings.signalRecipient
+        self.msteamsBotAppID = settings.msteamsBotAppID
+        self.msteamsTenantID = settings.msteamsTenantID
+        self.msteamsConversationID = settings.msteamsConversationID
+        self.msteamsServiceURL = settings.msteamsServiceURL
         self.openAICompatibleBaseURL = settings.openAICompatibleBaseURL
+        self.providerServiceBaseURL = settings.providerServiceBaseURL
+        self.providerServiceRegion = settings.providerServiceRegion
+        self.providerServiceProfile = settings.providerServiceProfile
         self.selectedProvider = settings.selectedProvider
         self.selectedModelID = settings.selectedModelID
         self.localRuntime = settings.localRuntime
@@ -1429,7 +2219,19 @@ final class OpenClawAppState: ObservableObject {
     private func persistSettings() throws {
         let settings = PersistedSettings(
             discordChannelID: self.discordChannelID,
+            slackChannelID: self.slackChannelID,
+            googleChatSpaceID: self.googleChatSpaceID,
+            signalServiceURL: self.signalServiceURL,
+            signalAccountID: self.signalAccountID,
+            signalRecipient: self.signalRecipient,
+            msteamsBotAppID: self.msteamsBotAppID,
+            msteamsTenantID: self.msteamsTenantID,
+            msteamsConversationID: self.msteamsConversationID,
+            msteamsServiceURL: self.msteamsServiceURL,
             openAICompatibleBaseURL: self.openAICompatibleBaseURL,
+            providerServiceBaseURL: self.providerServiceBaseURL,
+            providerServiceRegion: self.providerServiceRegion,
+            providerServiceProfile: self.providerServiceProfile,
             selectedProvider: self.selectedProvider,
             selectedModelID: self.selectedModelID,
             localRuntime: self.localRuntime,
@@ -1449,7 +2251,17 @@ final class OpenClawAppState: ObservableObject {
             webchatAgentID: self.webchatAgentID,
             personality: self.personality,
             telegramBotToken: self.telegramBotToken,
-            telegramChatID: self.telegramChatID
+            telegramChatID: self.telegramChatID,
+            slackBotToken: self.slackBotToken,
+            slackAppToken: self.slackAppToken,
+            slackSigningSecret: self.slackSigningSecret,
+            googleChatBearerToken: self.googleChatBearerToken,
+            googleChatVerificationToken: self.googleChatVerificationToken,
+            signalAuthToken: self.signalAuthToken,
+            msteamsBotAppPassword: self.msteamsBotAppPassword,
+            webchatSharedSecret: self.webchatSharedSecret,
+            providerServiceAPIKey: self.providerServiceAPIKey,
+            providerServiceAccessToken: self.providerServiceAccessToken
         )
         try FileManager.default.createDirectory(at: self.stateRoot, withIntermediateDirectories: true)
         let data = try self.encoder.encode(settings)
@@ -1490,10 +2302,20 @@ final class OpenClawAppState: ObservableObject {
     private func persistSecretsToSecureStore() async throws {
         try await self.writeSecret(self.discordBotToken, for: SecretStoreKey.discordBotToken)
         try await self.writeSecret(self.telegramBotToken, for: SecretStoreKey.telegramBotToken)
+        try await self.writeSecret(self.slackBotToken, for: SecretStoreKey.slackBotToken)
+        try await self.writeSecret(self.slackAppToken, for: SecretStoreKey.slackAppToken)
+        try await self.writeSecret(self.slackSigningSecret, for: SecretStoreKey.slackSigningSecret)
+        try await self.writeSecret(self.googleChatBearerToken, for: SecretStoreKey.googleChatBearerToken)
+        try await self.writeSecret(self.googleChatVerificationToken, for: SecretStoreKey.googleChatVerificationToken)
+        try await self.writeSecret(self.signalAuthToken, for: SecretStoreKey.signalAuthToken)
+        try await self.writeSecret(self.msteamsBotAppPassword, for: SecretStoreKey.msteamsBotAppPassword)
+        try await self.writeSecret(self.webchatSharedSecret, for: SecretStoreKey.webchatSharedSecret)
         try await self.writeSecret(self.openAIAPIKey, for: SecretStoreKey.openAIAPIKey)
         try await self.writeSecret(self.openAICompatibleAPIKey, for: SecretStoreKey.openAICompatibleAPIKey)
         try await self.writeSecret(self.anthropicAPIKey, for: SecretStoreKey.anthropicAPIKey)
         try await self.writeSecret(self.geminiAPIKey, for: SecretStoreKey.geminiAPIKey)
+        try await self.writeSecret(self.providerServiceAPIKey, for: SecretStoreKey.providerServiceAPIKey)
+        try await self.writeSecret(self.providerServiceAccessToken, for: SecretStoreKey.providerServiceAccessToken)
     }
 
     /// Writes or deletes one secret in the secure store based on current value.
@@ -1524,10 +2346,20 @@ final class OpenClawAppState: ObservableObject {
         let snapshot = SecretSnapshot(
             discordBotToken: map[SecretStoreKey.discordBotToken] ?? "",
             telegramBotToken: map[SecretStoreKey.telegramBotToken] ?? "",
+            slackBotToken: map[SecretStoreKey.slackBotToken] ?? "",
+            slackAppToken: map[SecretStoreKey.slackAppToken] ?? "",
+            slackSigningSecret: map[SecretStoreKey.slackSigningSecret] ?? "",
+            googleChatBearerToken: map[SecretStoreKey.googleChatBearerToken] ?? "",
+            googleChatVerificationToken: map[SecretStoreKey.googleChatVerificationToken] ?? "",
+            signalAuthToken: map[SecretStoreKey.signalAuthToken] ?? "",
+            msteamsBotAppPassword: map[SecretStoreKey.msteamsBotAppPassword] ?? "",
+            webchatSharedSecret: map[SecretStoreKey.webchatSharedSecret] ?? "",
             openAIAPIKey: map[SecretStoreKey.openAIAPIKey] ?? "",
             openAICompatibleAPIKey: map[SecretStoreKey.openAICompatibleAPIKey] ?? "",
             anthropicAPIKey: map[SecretStoreKey.anthropicAPIKey] ?? "",
-            geminiAPIKey: map[SecretStoreKey.geminiAPIKey] ?? ""
+            geminiAPIKey: map[SecretStoreKey.geminiAPIKey] ?? "",
+            providerServiceAPIKey: map[SecretStoreKey.providerServiceAPIKey] ?? "",
+            providerServiceAccessToken: map[SecretStoreKey.providerServiceAccessToken] ?? ""
         )
         self.applySecretSnapshot(snapshot)
     }
@@ -1536,10 +2368,20 @@ final class OpenClawAppState: ObservableObject {
     private func applySecretSnapshot(_ snapshot: SecretSnapshot) {
         self.discordBotToken = snapshot.discordBotToken
         self.telegramBotToken = snapshot.telegramBotToken
+        self.slackBotToken = snapshot.slackBotToken
+        self.slackAppToken = snapshot.slackAppToken
+        self.slackSigningSecret = snapshot.slackSigningSecret
+        self.googleChatBearerToken = snapshot.googleChatBearerToken
+        self.googleChatVerificationToken = snapshot.googleChatVerificationToken
+        self.signalAuthToken = snapshot.signalAuthToken
+        self.msteamsBotAppPassword = snapshot.msteamsBotAppPassword
+        self.webchatSharedSecret = snapshot.webchatSharedSecret
         self.openAIAPIKey = snapshot.openAIAPIKey
         self.openAICompatibleAPIKey = snapshot.openAICompatibleAPIKey
         self.anthropicAPIKey = snapshot.anthropicAPIKey
         self.geminiAPIKey = snapshot.geminiAPIKey
+        self.providerServiceAPIKey = snapshot.providerServiceAPIKey
+        self.providerServiceAccessToken = snapshot.providerServiceAccessToken
     }
 
     /// Persists personality text as workspace bootstrap context.
