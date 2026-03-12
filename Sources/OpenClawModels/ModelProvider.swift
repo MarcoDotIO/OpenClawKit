@@ -53,6 +53,16 @@ public struct ModelGenerationPolicy: Sendable, Equatable {
     public let storeResponse: Bool?
     /// Preferred transport for Codex response APIs.
     public let codexTransport: CodexTransportPreference
+    /// Raw thinking-level override resolved from session state.
+    public let thinkingLevel: ThinkLevel?
+    /// Raw reasoning visibility override resolved from session state.
+    public let reasoningLevel: ReasoningLevel?
+    /// Raw verbosity override resolved from session state.
+    public let verboseLevel: VerboseLevel?
+    /// Raw response-usage override resolved from session state.
+    public let responseUsage: UsageDisplayLevel?
+    /// Raw elevated-execution override resolved from session state.
+    public let elevatedLevel: ElevatedLevel?
 
     /// Creates generation policy values.
     /// - Parameters:
@@ -80,7 +90,12 @@ public struct ModelGenerationPolicy: Sendable, Equatable {
         reasoningEffort: ModelReasoningEffort? = nil,
         serviceTier: ModelServiceTier? = nil,
         storeResponse: Bool? = nil,
-        codexTransport: CodexTransportPreference = .auto
+        codexTransport: CodexTransportPreference = .auto,
+        thinkingLevel: ThinkLevel? = nil,
+        reasoningLevel: ReasoningLevel? = nil,
+        verboseLevel: VerboseLevel? = nil,
+        responseUsage: UsageDisplayLevel? = nil,
+        elevatedLevel: ElevatedLevel? = nil
     ) {
         self.streamTokens = streamTokens
         self.allowCancellation = allowCancellation
@@ -96,6 +111,11 @@ public struct ModelGenerationPolicy: Sendable, Equatable {
         self.serviceTier = serviceTier
         self.storeResponse = storeResponse
         self.codexTransport = codexTransport
+        self.thinkingLevel = thinkingLevel
+        self.reasoningLevel = reasoningLevel
+        self.verboseLevel = verboseLevel
+        self.responseUsage = responseUsage
+        self.elevatedLevel = elevatedLevel
     }
 }
 

@@ -31,6 +31,32 @@ public struct SessionRecord: Codable, Sendable, Equatable {
     public var updatedAtMs: Int
     /// Last observed route metadata.
     public var lastRoute: SessionRoute?
+    /// Optional user-facing session label.
+    public var label: String?
+    /// Optional model override.
+    public var modelOverride: String?
+    /// Optional session thinking override.
+    public var thinkingLevel: ThinkLevel?
+    /// Optional session verbosity override.
+    public var verboseLevel: VerboseLevel?
+    /// Optional session reasoning visibility override.
+    public var reasoningLevel: ReasoningLevel?
+    /// Optional response-usage display override.
+    public var responseUsage: UsageDisplayLevel?
+    /// Optional elevated execution override.
+    public var elevatedLevel: ElevatedLevel?
+    /// Optional group activation override.
+    public var groupActivation: GroupActivation?
+    /// Optional outbound send policy override.
+    public var sendPolicy: SendPolicy?
+    /// Optional execution host override.
+    public var execHost: ExecHost?
+    /// Optional execution security override.
+    public var execSecurity: ExecSecurity?
+    /// Optional execution approval override.
+    public var execAsk: ExecAsk?
+    /// Optional execution-node override.
+    public var execNode: String?
 
     /// Creates a session record.
     /// - Parameters:
@@ -38,11 +64,42 @@ public struct SessionRecord: Codable, Sendable, Equatable {
     ///   - agentID: Bound agent identifier.
     ///   - updatedAtMs: Last update timestamp in milliseconds.
     ///   - lastRoute: Optional route metadata.
-    public init(key: String, agentID: String, updatedAtMs: Int, lastRoute: SessionRoute? = nil) {
+    public init(
+        key: String,
+        agentID: String,
+        updatedAtMs: Int,
+        lastRoute: SessionRoute? = nil,
+        label: String? = nil,
+        modelOverride: String? = nil,
+        thinkingLevel: ThinkLevel? = nil,
+        verboseLevel: VerboseLevel? = nil,
+        reasoningLevel: ReasoningLevel? = nil,
+        responseUsage: UsageDisplayLevel? = nil,
+        elevatedLevel: ElevatedLevel? = nil,
+        groupActivation: GroupActivation? = nil,
+        sendPolicy: SendPolicy? = nil,
+        execHost: ExecHost? = nil,
+        execSecurity: ExecSecurity? = nil,
+        execAsk: ExecAsk? = nil,
+        execNode: String? = nil
+    ) {
         self.key = key
         self.agentID = agentID
         self.updatedAtMs = updatedAtMs
         self.lastRoute = lastRoute
+        self.label = label?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.modelOverride = modelOverride?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.thinkingLevel = thinkingLevel
+        self.verboseLevel = verboseLevel
+        self.reasoningLevel = reasoningLevel
+        self.responseUsage = responseUsage
+        self.elevatedLevel = elevatedLevel
+        self.groupActivation = groupActivation
+        self.sendPolicy = sendPolicy
+        self.execHost = execHost
+        self.execSecurity = execSecurity
+        self.execAsk = execAsk
+        self.execNode = execNode?.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
@@ -178,11 +235,11 @@ public actor SessionStore {
     public func resolveOrCreate(
         sessionKey: String,
         defaultAgentID: String,
-        route: SessionRoute?
+        route: SessionRoute?,
+        defaults: AgentsConfig? = nil
     ) -> SessionRecord {
         if var existing = self.records[sessionKey] {
             existing.updatedAtMs = nowMs()
-            existing.agentID = defaultAgentID
             if let route {
                 existing.lastRoute = route
             }
@@ -196,12 +253,15 @@ public actor SessionStore {
             updatedAtMs: nowMs(),
             lastRoute: route
         )
-        self.records[sessionKey] = created
-        return created
+        var seeded = created
+        if let defaults {
+            seeded.applyDefaults(from: defaults)
+        }
+        self.records[sessionKey] = seeded
+        return seeded
     }
 }
 
 private func nowMs() -> Int {
     Int(Date().timeIntervalSince1970 * 1000)
 }
-

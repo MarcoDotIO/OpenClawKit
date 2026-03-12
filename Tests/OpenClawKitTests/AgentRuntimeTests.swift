@@ -47,6 +47,20 @@ struct AgentRuntimeTests {
         }
     }
 
+    actor InspectingProvider: ModelProvider {
+        let id = "inspecting-provider"
+        private(set) var lastRequest: ModelGenerationRequest?
+
+        func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
+            self.lastRequest = request
+            return ModelGenerationResponse(text: "ok", providerID: self.id, modelID: request.modelID ?? "default")
+        }
+
+        func snapshot() -> ModelGenerationRequest? {
+            self.lastRequest
+        }
+    }
+
     @Test
     func toolCallsExecuteInRunLifecycle() async throws {
         let runtime = EmbeddedAgentRuntime()
@@ -207,5 +221,82 @@ struct AgentRuntimeTests {
         }
     }
 
-}
+    @Test
+    func runThreadsSessionThinkingAndModelOverridesIntoGenerationRequest() async throws {
+        let router = ModelRouter()
+        let provider = InspectingProvider()
+        await router.register(provider)
+        let runtime = EmbeddedAgentRuntime(modelRouter: router)
+        try await runtime.setDefaultModelProviderID("inspecting-provider")
 
+        _ = try await runtime.run(
+            AgentRunRequest(
+                runID: "run-controls",
+                sessionKey: "session-controls",
+                prompt: "hello",
+                modelProviderID: "openai-codex",
+                modelID: "gpt-5.3-codex",
+                thinkingLevel: .xhigh,
+                reasoningLevel: .stream,
+                verboseLevel: .full,
+                responseUsage: .full,
+                elevatedLevel: .ask
+            )
+        )
+
+        let request = try #require(await provider.snapshot())
+        #expect(request.providerID == "openai-codex")
+        #expect(request.modelID == "gpt-5.3-codex")
+        #expect(request.policy.thinkingLevel == .xhigh)
+        #expect(request.policy.reasoningLevel == .stream)
+        #expect(request.policy.verboseLevel == .full)
+        #expect(request.policy.responseUsage == .full)
+        #expect(request.policy.elevatedLevel == .ask)
+        #expect(request.policy.reasoningEffort == .high)
+        #expect(request.metadata["thinkingLevel"] == "xhigh")
+        #expect(request.metadata["reasoningLevel"] == "stream")
+        #expect(request.metadata["verboseLevel"] == "full")
+    }
+
+    @Test
+    func runMapsReasoningEffortAcrossThinkingLevels() async throws {
+        let router = ModelRouter()
+        let provider = InspectingProvider()
+        await router.register(provider)
+        let runtime = EmbeddedAgentRuntime(modelRouter: router)
+        try await runtime.setDefaultModelProviderID("inspecting-provider")
+
+        func capturedRequest(
+            thinkingLevel: ThinkLevel?,
+            reasoningLevel: ReasoningLevel?
+        ) async throws -> ModelGenerationRequest {
+            _ = try await runtime.run(
+                AgentRunRequest(
+                    runID: UUID().uuidString,
+                    sessionKey: "session-controls",
+                    prompt: "hello",
+                    modelProviderID: "openai-codex",
+                    thinkingLevel: thinkingLevel,
+                    reasoningLevel: reasoningLevel
+                )
+            )
+            return try #require(await provider.snapshot())
+        }
+
+        let low = try await capturedRequest(thinkingLevel: .minimal, reasoningLevel: .stream)
+        #expect(low.policy.reasoningEffort == .low)
+
+        let medium = try await capturedRequest(thinkingLevel: .medium, reasoningLevel: .on)
+        #expect(medium.policy.reasoningEffort == .medium)
+
+        let disabled = try await capturedRequest(thinkingLevel: .xhigh, reasoningLevel: .off)
+        #expect(disabled.policy.reasoningEffort == nil)
+        #expect(disabled.metadata["thinkingLevel"] == "xhigh")
+        #expect(disabled.metadata["reasoningLevel"] == "off")
+
+        let implicit = try await capturedRequest(thinkingLevel: nil, reasoningLevel: nil)
+        #expect(implicit.policy.reasoningEffort == nil)
+        #expect(implicit.metadata.isEmpty)
+    }
+
+}

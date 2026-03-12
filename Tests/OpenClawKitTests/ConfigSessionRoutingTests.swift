@@ -467,33 +467,228 @@ struct ConfigSessionRoutingTests {
     }
 
     @Test
-    func sessionStoreResolveOrCreateTracksRoute() async throws {
+    func agentsConfigRoundTripsSessionControlDefaults() throws {
+        let config = OpenClawConfig(
+            agents: AgentsConfig(
+                defaultAgentID: "ops",
+                workspaceRoot: "./workspace",
+                thinkingLevel: .adaptive,
+                verboseLevel: .on,
+                reasoningLevel: .stream,
+                responseUsage: .tokens,
+                elevatedLevel: .ask,
+                groupActivation: .mention,
+                groupActivationNeedsSystemIntro: true,
+                sendPolicy: .allow,
+                modelOverride: "openai/gpt-5.4",
+                execHost: .gateway,
+                execSecurity: .allowlist,
+                execAsk: .onMiss,
+                execNode: "worker-1"
+            )
+        )
+
+        let encoded = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(OpenClawConfig.self, from: encoded)
+
+        #expect(decoded.agents.thinkingLevel == .adaptive)
+        #expect(decoded.agents.verboseLevel == .on)
+        #expect(decoded.agents.reasoningLevel == .stream)
+        #expect(decoded.agents.responseUsage == .tokens)
+        #expect(decoded.agents.elevatedLevel == .ask)
+        #expect(decoded.agents.groupActivation == .mention)
+        #expect(decoded.agents.groupActivationNeedsSystemIntro == true)
+        #expect(decoded.agents.sendPolicy == .allow)
+        #expect(decoded.agents.modelOverride == "openai/gpt-5.4")
+        #expect(decoded.agents.execHost == .gateway)
+        #expect(decoded.agents.execSecurity == .allowlist)
+        #expect(decoded.agents.execAsk == .onMiss)
+        #expect(decoded.agents.execNode == "worker-1")
+    }
+
+    @Test
+    func thinkLevelNormalizationHandlesAliasesAndXHighSupport() {
+        #expect(ThinkLevel.normalize("adaptive") == .adaptive)
+        #expect(ThinkLevel.normalize("auto") == .adaptive)
+        #expect(ThinkLevel.normalize("think") == .minimal)
+        #expect(ThinkLevel.normalize("x-high") == .xhigh)
+        #expect(ThinkLevel.normalize("think-harder") == .medium)
+        #expect(ThinkLevel.normalize("max") == .high)
+        #expect(ThinkLevel.supportsXHighThinking(providerID: "openai-codex", modelID: "gpt-5.3-codex") == true)
+        #expect(ThinkLevel.supportsXHighThinking(providerID: "openai", modelID: "gpt-4.1-mini") == false)
+    }
+
+    @Test
+    func sessionControlNormalizersCoverAliasesAndDecodeFailures() throws {
+        #expect(ThinkLevel.normalize("off") == .off)
+        #expect(ThinkLevel.normalize("enabled") == .low)
+        #expect(ThinkLevel.normalize("think-hard") == .low)
+        #expect(ThinkLevel.normalize("   ") == nil)
+        #expect(ThinkLevel.normalize("mystery") == nil)
+        #expect(ThinkLevel.supportsXHighThinking(providerID: nil, modelID: "gpt-5.3-codex") == true)
+        #expect(ThinkLevel.supportedLevels(providerID: nil, modelID: "gpt-5.3-codex").contains(.xhigh))
+        #expect(ThinkLevel.supportedLevels(providerID: "openai", modelID: "gpt-4.1-mini").contains(.adaptive))
+
+        #expect(VerboseLevel.normalize("0") == .off)
+        #expect(VerboseLevel.normalize("everything") == .full)
+        #expect(ReasoningLevel.normalize("hidden") == .off)
+        #expect(ReasoningLevel.normalize("enabled") == .on)
+        #expect(UsageDisplayLevel.normalize("disabled") == .off)
+        #expect(UsageDisplayLevel.normalize("token") == .tokens)
+        #expect(ElevatedLevel.normalize("0") == .off)
+        #expect(ElevatedLevel.normalize("1") == .on)
+        #expect(ElevatedLevel.normalize("auto-approve") == .full)
+
+        func expectDecodeFailure<T: Decodable>(_ type: T.Type, value: String) {
+            do {
+                _ = try JSONDecoder().decode(type, from: Data(#""\#(value)""#.utf8))
+                Issue.record("Expected decode failure for \(type) value \(value)")
+            } catch is DecodingError {
+            } catch {
+                Issue.record("Expected DecodingError for \(type), got \(error)")
+            }
+        }
+
+        expectDecodeFailure(ThinkLevel.self, value: "bogus")
+        expectDecodeFailure(VerboseLevel.self, value: "bogus")
+        expectDecodeFailure(ReasoningLevel.self, value: "bogus")
+        expectDecodeFailure(UsageDisplayLevel.self, value: "bogus")
+        expectDecodeFailure(ElevatedLevel.self, value: "bogus")
+    }
+
+    @Test
+    func sessionResolutionPreservesExplicitOffOverrides() {
+        let defaults = AgentsConfig(
+            defaultAgentID: "main",
+            workspaceRoot: "./workspace",
+            thinkingLevel: .adaptive,
+            verboseLevel: .on,
+            reasoningLevel: .stream,
+            responseUsage: .full,
+            elevatedLevel: .ask
+        )
+        let record = SessionRecord(
+            key: "main",
+            agentID: "main",
+            updatedAtMs: 1,
+            thinkingLevel: .off,
+            verboseLevel: .off,
+            reasoningLevel: .off,
+            responseUsage: .off,
+            elevatedLevel: .off
+        )
+
+        let resolved = record.resolved(using: defaults)
+        #expect(resolved.thinkingLevel == .off)
+        #expect(resolved.verboseLevel == .off)
+        #expect(resolved.reasoningLevel == .off)
+        #expect(resolved.responseUsage == .off)
+        #expect(resolved.elevatedLevel == .off)
+    }
+
+    @Test
+    func sessionResolutionSupportsModelOnlyOverrideFallback() {
+        let defaults = AgentsConfig(
+            defaultAgentID: "main",
+            workspaceRoot: "./workspace",
+            modelOverride: "openai/gpt-5.4"
+        )
+        let record = SessionRecord(
+            key: "main",
+            agentID: "main",
+            updatedAtMs: 1,
+            modelOverride: "gpt-5.4-mini"
+        )
+
+        let resolved = record.resolved(using: defaults)
+        #expect(resolved.providerOverrideID == nil)
+        #expect(resolved.modelOverrideID == "gpt-5.4-mini")
+    }
+
+    @Test
+    func sessionStoreResolveOrCreateTracksRouteAndPreservesExistingOverrides() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("openclawkit-session-tests", isDirectory: true)
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let path = root.appendingPathComponent("sessions.json", isDirectory: false)
         let store = SessionStore(fileURL: path)
+        let defaults = AgentsConfig(
+            defaultAgentID: "main",
+            workspaceRoot: "./workspace",
+            thinkingLevel: .adaptive,
+            verboseLevel: .on,
+            reasoningLevel: .stream,
+            responseUsage: .tokens,
+            elevatedLevel: .ask,
+            groupActivation: .mention,
+            sendPolicy: .allow,
+            modelOverride: "openai/gpt-5.4",
+            execHost: .gateway,
+            execSecurity: .allowlist,
+            execAsk: .onMiss,
+            execNode: "worker-1"
+        )
 
         let created = await store.resolveOrCreate(
             sessionKey: "telegram:default:1234",
             defaultAgentID: "main",
-            route: SessionRoute(channel: "telegram", accountID: "default", peerID: "1234")
+            route: SessionRoute(channel: "telegram", accountID: "default", peerID: "1234"),
+            defaults: defaults
         )
         #expect(created.agentID == "main")
         #expect(created.lastRoute?.channel == "telegram")
+        #expect(created.modelOverride == "openai/gpt-5.4")
+        #expect(created.thinkingLevel == .adaptive)
+        #expect(created.execNode == "worker-1")
+
+        await store.upsert(
+            SessionRecord(
+                key: "telegram:default:1234",
+                agentID: "support",
+                updatedAtMs: created.updatedAtMs,
+                lastRoute: created.lastRoute,
+                label: "ops",
+                modelOverride: "openai-codex/gpt-5.3-codex",
+                thinkingLevel: .xhigh,
+                verboseLevel: .full,
+                reasoningLevel: .stream,
+                responseUsage: .full,
+                elevatedLevel: .full,
+                groupActivation: .always,
+                sendPolicy: .deny,
+                execHost: .node,
+                execSecurity: .full,
+                execAsk: .always,
+                execNode: "worker-2"
+            )
+        )
 
         let updated = await store.resolveOrCreate(
             sessionKey: "telegram:default:1234",
             defaultAgentID: "support",
-            route: SessionRoute(channel: "telegram", accountID: "default", peerID: "1234")
+            route: SessionRoute(channel: "telegram", accountID: "default", peerID: "1234"),
+            defaults: defaults
         )
         #expect(updated.agentID == "support")
+        #expect(updated.label == "ops")
+        #expect(updated.modelOverride == "openai-codex/gpt-5.3-codex")
+        #expect(updated.thinkingLevel == .xhigh)
+        #expect(updated.verboseLevel == .full)
+        #expect(updated.sendPolicy == .deny)
+        #expect(updated.execHost == .node)
+        #expect(updated.execNode == "worker-2")
 
         try await store.save()
         let reloaded = SessionStore(fileURL: path)
         try await reloaded.load()
         let fetched = await reloaded.recordForKey("telegram:default:1234")
         #expect(fetched?.key == "telegram:default:1234")
+        let resolved = try #require(fetched?.resolved(using: defaults))
+        #expect(resolved.agentID == "support")
+        #expect(resolved.modelOverride == "openai-codex/gpt-5.3-codex")
+        #expect(resolved.providerOverrideID == "openai-codex")
+        #expect(resolved.modelOverrideID == "gpt-5.3-codex")
+        #expect(resolved.groupActivationNeedsSystemIntro == false)
     }
 }

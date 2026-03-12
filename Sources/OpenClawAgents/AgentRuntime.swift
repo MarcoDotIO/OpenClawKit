@@ -56,6 +56,12 @@ public struct AgentRunRequest: Sendable {
     public let prompt: String
     public let toolCalls: [AgentToolCall]
     public let modelProviderID: String?
+    public let modelID: String?
+    public let thinkingLevel: ThinkLevel?
+    public let reasoningLevel: ReasoningLevel?
+    public let verboseLevel: VerboseLevel?
+    public let responseUsage: UsageDisplayLevel?
+    public let elevatedLevel: ElevatedLevel?
     public let workspaceRootPath: String?
     public let attachments: [MediaAttachment]
 
@@ -74,6 +80,12 @@ public struct AgentRunRequest: Sendable {
         prompt: String,
         toolCalls: [AgentToolCall] = [],
         modelProviderID: String? = nil,
+        modelID: String? = nil,
+        thinkingLevel: ThinkLevel? = nil,
+        reasoningLevel: ReasoningLevel? = nil,
+        verboseLevel: VerboseLevel? = nil,
+        responseUsage: UsageDisplayLevel? = nil,
+        elevatedLevel: ElevatedLevel? = nil,
         workspaceRootPath: String? = nil,
         attachments: [MediaAttachment] = []
     ) {
@@ -82,6 +94,12 @@ public struct AgentRunRequest: Sendable {
         self.prompt = prompt
         self.toolCalls = toolCalls
         self.modelProviderID = modelProviderID
+        self.modelID = modelID?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.thinkingLevel = thinkingLevel
+        self.reasoningLevel = reasoningLevel
+        self.verboseLevel = verboseLevel
+        self.responseUsage = responseUsage
+        self.elevatedLevel = elevatedLevel
         self.workspaceRootPath = workspaceRootPath
         self.attachments = attachments
     }
@@ -284,10 +302,9 @@ public actor EmbeddedAgentRuntime {
 
                     let modelStartedAt = Date()
                     let modelResponse = try await modelRouter.generate(
-                        ModelGenerationRequest(
-                            sessionKey: request.sessionKey,
-                            prompt: composedPrompt,
-                            providerID: request.modelProviderID
+                        Self.makeModelGenerationRequest(
+                            from: request,
+                            prompt: composedPrompt
                         )
                     )
                     let modelLatencyMs = max(0, Int(Date().timeIntervalSince(modelStartedAt) * 1000))
@@ -575,14 +592,11 @@ public actor EmbeddedAgentRuntime {
 
                     let modelStartedAt = Date()
                     let modelStream = await self.modelRouter.generateStream(
-                        ModelGenerationRequest(
-                            sessionKey: request.sessionKey,
+                        Self.makeModelGenerationRequest(
+                            from: request,
                             prompt: composedPrompt,
-                            providerID: request.modelProviderID,
-                            policy: ModelGenerationPolicy(
-                                streamTokens: true,
-                                requestTimeoutMs: timeoutMs
-                            )
+                            streamTokens: true,
+                            timeoutMs: timeoutMs
                         )
                     )
 
@@ -751,6 +765,73 @@ public actor EmbeddedAgentRuntime {
         return normalized
     }
 
+    private static func makeModelGenerationRequest(
+        from request: AgentRunRequest,
+        prompt: String,
+        streamTokens: Bool = false,
+        timeoutMs: Int? = nil
+    ) -> ModelGenerationRequest {
+        ModelGenerationRequest(
+            sessionKey: request.sessionKey,
+            prompt: prompt,
+            providerID: request.modelProviderID,
+            modelID: request.modelID,
+            metadata: Self.modelControlMetadata(from: request),
+            policy: ModelGenerationPolicy(
+                streamTokens: streamTokens,
+                requestTimeoutMs: timeoutMs,
+                reasoningEffort: Self.reasoningEffort(
+                    from: request.thinkingLevel,
+                    reasoningLevel: request.reasoningLevel
+                ),
+                thinkingLevel: request.thinkingLevel,
+                reasoningLevel: request.reasoningLevel,
+                verboseLevel: request.verboseLevel,
+                responseUsage: request.responseUsage,
+                elevatedLevel: request.elevatedLevel
+            )
+        )
+    }
+
+    private static func reasoningEffort(
+        from thinkingLevel: ThinkLevel?,
+        reasoningLevel: ReasoningLevel?
+    ) -> ModelReasoningEffort? {
+        if reasoningLevel == .off {
+            return nil
+        }
+        switch thinkingLevel {
+        case .minimal, .low:
+            return .low
+        case .medium:
+            return .medium
+        case .high, .xhigh:
+            return .high
+        case .off, .adaptive, nil:
+            return nil
+        }
+    }
+
+    private static func modelControlMetadata(from request: AgentRunRequest) -> [String: String] {
+        var metadata: [String: String] = [:]
+        if let thinkingLevel = request.thinkingLevel {
+            metadata["thinkingLevel"] = thinkingLevel.rawValue
+        }
+        if let reasoningLevel = request.reasoningLevel {
+            metadata["reasoningLevel"] = reasoningLevel.rawValue
+        }
+        if let verboseLevel = request.verboseLevel {
+            metadata["verboseLevel"] = verboseLevel.rawValue
+        }
+        if let responseUsage = request.responseUsage {
+            metadata["responseUsage"] = responseUsage.rawValue
+        }
+        if let elevatedLevel = request.elevatedLevel {
+            metadata["elevatedLevel"] = elevatedLevel.rawValue
+        }
+        return metadata
+    }
+
     private static func composeAttachmentSection(_ attachments: [MediaAttachment]) -> String {
         var lines: [String] = ["## Attachments"]
         lines.reserveCapacity(attachments.count + 1)
@@ -788,4 +869,3 @@ public actor EmbeddedAgentRuntime {
         )
     }
 }
-

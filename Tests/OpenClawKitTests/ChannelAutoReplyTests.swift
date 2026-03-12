@@ -12,6 +12,20 @@ struct ChannelAutoReplyTests {
         }
     }
 
+    actor InspectingProvider: ModelProvider {
+        let id = "openai-codex"
+        private(set) var lastRequest: ModelGenerationRequest?
+
+        func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
+            self.lastRequest = request
+            return ModelGenerationResponse(text: "captured", providerID: self.id, modelID: request.modelID)
+        }
+
+        func snapshot() -> ModelGenerationRequest? {
+            self.lastRequest
+        }
+    }
+
     struct StreamingLocalProvider: ModelProvider {
         let id = LocalModelProvider.providerID
 
@@ -348,6 +362,58 @@ struct ChannelAutoReplyTests {
         )
         let record = await sessionStore.recordForKey(key)
         #expect(record?.agentID == "support")
+    }
+
+    @Test
+    func autoReplyEngineAppliesSessionDefaultsToModelRequest() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("openclawkit-autoreply-session-controls-tests", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let sessionsPath = root.appendingPathComponent("sessions.json", isDirectory: false)
+
+        let config = OpenClawConfig(
+            agents: AgentsConfig(
+                defaultAgentID: "main",
+                workspaceRoot: "./workspace",
+                thinkingLevel: .xhigh,
+                verboseLevel: .full,
+                reasoningLevel: .stream,
+                responseUsage: .full,
+                elevatedLevel: .ask,
+                modelOverride: "openai-codex/gpt-5.3-codex"
+            )
+        )
+        let sessionStore = SessionStore(fileURL: sessionsPath)
+        let registry = ChannelRegistry()
+        let webchat = InMemoryChannelAdapter(id: .webchat)
+        await registry.register(webchat)
+        try await webchat.start()
+
+        let router = ModelRouter()
+        let provider = InspectingProvider()
+        await router.register(provider)
+        let runtime = EmbeddedAgentRuntime(modelRouter: router)
+        try await runtime.setDefaultModelProviderID("openai-codex")
+
+        let engine = AutoReplyEngine(
+            config: config,
+            sessionStore: sessionStore,
+            channelRegistry: registry,
+            runtime: runtime
+        )
+        _ = try await engine.process(
+            InboundMessage(channel: .webchat, accountID: "user-1", peerID: "peer-1", text: "hi")
+        )
+
+        let request = try #require(await provider.snapshot())
+        #expect(request.providerID == "openai-codex")
+        #expect(request.modelID == "gpt-5.3-codex")
+        #expect(request.policy.thinkingLevel == .xhigh)
+        #expect(request.policy.reasoningLevel == .stream)
+        #expect(request.policy.verboseLevel == .full)
+        #expect(request.policy.responseUsage == .full)
+        #expect(request.policy.elevatedLevel == .ask)
     }
 
     @Test
@@ -809,4 +875,3 @@ struct ChannelAutoReplyTests {
         #expect(outbound.text.contains("RetryPolicy:"))
     }
 }
-

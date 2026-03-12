@@ -38,7 +38,10 @@ struct AuthProfileStoreTests {
         )
         #expect(persisted.profiles["openai-codex:work"]?.provider == "openai-codex")
         #expect(persisted.profiles["openai-codex:work"]?.clientID == "codex-client")
-        let persistedString = try String(contentsOf: root.appendingPathComponent("auth-profiles.json"))
+        let persistedString = try String(
+            contentsOf: root.appendingPathComponent("auth-profiles.json"),
+            encoding: .utf8
+        )
         #expect(persistedString.contains("access-123") == false)
         #expect(persistedString.contains("refresh-456") == false)
 

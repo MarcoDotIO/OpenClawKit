@@ -640,23 +640,25 @@ public actor AutoReplyEngine {
             config: self.config
         )
         let resolvedAgentID = self.config.agents.resolvedAgentID(for: routingContext)
-        await self.emitDiagnostic(
-            name: "routing.session_resolved",
-            sessionKey: sessionKey,
-            metadata: [
-                "agentID": resolvedAgentID,
-                "channel": message.channel.rawValue,
-            ]
-        )
-
-        _ = await self.sessionStore.resolveOrCreate(
+        let session = await self.sessionStore.resolveOrCreate(
             sessionKey: sessionKey,
             defaultAgentID: resolvedAgentID,
             route: SessionRoute(
                 channel: message.channel.rawValue,
                 accountID: message.accountID,
                 peerID: message.peerID
-            )
+            ),
+            defaults: self.config.agents
+        )
+        let resolvedSession = session.resolved(using: self.config.agents)
+        await self.emitDiagnostic(
+            name: "routing.session_resolved",
+            sessionKey: sessionKey,
+            metadata: [
+                "agentID": resolvedSession.agentID,
+                "channel": message.channel.rawValue,
+                "modelOverride": resolvedSession.modelOverride ?? "",
+            ]
         )
         try await self.sessionStore.save()
 
@@ -740,6 +742,13 @@ public actor AutoReplyEngine {
         let runtimeRequest = AgentRunRequest(
             sessionKey: sessionKey,
             prompt: runtimePrompt,
+            modelProviderID: resolvedSession.providerOverrideID,
+            modelID: resolvedSession.modelOverrideID,
+            thinkingLevel: resolvedSession.thinkingLevel,
+            reasoningLevel: resolvedSession.reasoningLevel,
+            verboseLevel: resolvedSession.verboseLevel,
+            responseUsage: resolvedSession.responseUsage,
+            elevatedLevel: resolvedSession.elevatedLevel,
             workspaceRootPath: self.config.agents.workspaceRoot,
             attachments: message.attachments
         )
@@ -1010,4 +1019,3 @@ public actor AutoReplyEngine {
         )
     }
 }
-
