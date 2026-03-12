@@ -23,3 +23,5 @@ jobs:
 
       - name: Run gitleaks
         uses: gitleaks/gitleaks-action@v2
+        env:
+          GITLEAKS_CONFIG: .github/.gitleaks.toml

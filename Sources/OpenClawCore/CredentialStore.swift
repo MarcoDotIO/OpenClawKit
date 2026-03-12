@@ -257,7 +257,7 @@ public actor KeychainCredentialStore: CredentialStore {
     }
 }
 #else
-/// Non-Apple placeholder that preserves API shape when Security is unavailable.
+/// Non-Apple placeholder when Security is unavailable.
 public actor KeychainCredentialStore: CredentialStore {
     /// Creates a placeholder keychain store.
     /// - Parameters:
@@ -267,7 +267,7 @@ public actor KeychainCredentialStore: CredentialStore {
     public init(
         service _: String = "io.marcodotio.openclawkit.credentials",
         accessGroup _: String? = nil,
-        accessibility _: CFString = "kSecAttrAccessibleWhenUnlockedThisDeviceOnly" as CFString
+        accessibility _: String = "kSecAttrAccessibleWhenUnlockedThisDeviceOnly"
     ) {}
 
     public func saveSecret(_: String, for _: String) async throws {
