@@ -21,11 +21,11 @@ Before creating that commit, all of the following must be true:
 1. `swift build -Xswiftc -warnings-as-errors` passes without project warnings.
 2. All previously passing tests still pass.
 3. Any tests added or updated for the step pass.
-4. The tests added for the step fully cover the new codepaths introduced in the
-   step.
+4. The step includes targeted regression coverage for the new codepaths it
+   introduces, with broader path coverage added where the change warrants it.
 
-No required coverage, validation, or warning cleanup may be deferred to a later
-commit.
+No required validation, warning cleanup, or critical regression test may be
+deferred to a later commit.
 
 ## 2026.2.3 Parity Workstreams
 
@@ -37,6 +37,18 @@ commit.
 - Media fetch/store/handle parity.
 - Channel hardening parity, including BlueBubbles/iMessage and Telegram restart
   scoping.
+
+## Checked-In Swift Fixtures
+
+Parity verification for this train stays inside the Swift repo:
+
+- `Tests/OpenClawKitTests/ProviderCatalogReferenceFixture.swift` keeps the
+  provider/auth snapshot assertions local to the package tests.
+- `Tests/OpenClawKitTests/ControlPlaneParityFixtures.swift` captures the
+  session-control, gateway payload, `llm-task`, thinking-alias, and channel-edge
+  fixture data used by the parity regression suites.
+
+The runtime and test gate must not read `.cursor/**` directly.
 
 ## Release Finish
 

@@ -20,8 +20,11 @@ skills, memory, observability, security, iOS app integrations, and release-grade
   `docs/parity-2026.3.11.md`.
 - This train is commit-gated: each step must land as one logical commit, build
   cleanly with `swift build -Xswiftc -warnings-as-errors`, keep all previously
-  passing tests green, and include tests that fully cover the new codepaths
-  added in that step.
+  passing tests green, and include targeted regression tests for the new
+  codepaths added in that step.
+- Checked-in Swift-side parity fixtures under `Tests/OpenClawKitTests` back the
+  provider, session, gateway, `llm-task`, and channel assertions so the test
+  suite does not read `.cursor/**` at runtime.
 - The final `2026.2.3` release will be cut from the latest validated parity
   commit, tagged, released, and pushed from that exact revision.
 
@@ -154,13 +157,18 @@ print(await diagnostics.usageSnapshot().runsCompleted)
 ## Runtime Features
 
 - Actor-isolated embedded runtime orchestration (`EmbeddedAgentRuntime`)
+- In-process gateway control plane with typed agent, session, model, skill,
+  secret, and `browser.request` handlers
 - Multi-provider model routing with fallback and adaptive optimization across
   OpenAI-compatible, Anthropic-compatible, Gemini, xAI, Bedrock, and local runtimes
 - Provider-aware auth profile routing with OAuth refresh/token exchange support
   for TS parity providers such as GitHub Copilot and Qwen Portal
+- Built-in `llm-task` structured-generation tool for JSON-first agent workflows
 - Channel adapters (Discord, Telegram, WhatsApp Cloud, Slack, Google Chat, Signal,
-  iMessage, Microsoft Teams, and production WebChat)
+  BlueBubbles, iMessage, Microsoft Teams, and production WebChat)
 - Skill discovery/invocation (`SKILL.md`, JS/WASM executors with embedded WasmKit fallback)
+- Exec allowlist enforcement shared by process, skill, and gateway browser helpers
+- Shared media pipeline for URL/file/blob attachment fetch, storage, and provider-ready handles
 - Prompt bootstrap context loading (`AGENTS.md`, identity/personality files)
 - Persistent session routing and conversation memory
 - Streaming output support and typing heartbeat semantics
