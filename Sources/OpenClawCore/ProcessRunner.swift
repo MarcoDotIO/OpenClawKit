@@ -126,18 +126,18 @@ private final class PipeCapture: @unchecked Sendable {
     private let completion = DispatchGroup()
     private let buffer = LockedDataBuffer()
     private let handle: FileHandle
+    private let queue: DispatchQueue
 
     init(pipe: Pipe) {
         self.handle = pipe.fileHandleForReading
+        self.queue = DispatchQueue(label: "io.marcodotio.openclawkit.process-runner.pipe-capture.\(UUID().uuidString)")
         self.completion.enter()
-        self.handle.readabilityHandler = { [buffer, completion] handle in
-            let chunk = handle.availableData
-            if chunk.isEmpty {
-                handle.readabilityHandler = nil
-                completion.leave()
-                return
+        self.queue.async { [buffer, completion, handle] in
+            let chunk = handle.readDataToEndOfFile()
+            if !chunk.isEmpty {
+                buffer.append(chunk)
             }
-            buffer.append(chunk)
+            completion.leave()
         }
     }
 

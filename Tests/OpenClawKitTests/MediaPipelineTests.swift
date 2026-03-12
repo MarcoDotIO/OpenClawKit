@@ -398,12 +398,18 @@ struct MediaPipelineTests {
             "--directory",
             directory.path,
         ]
-        process.standardOutput = Pipe()
-        process.standardError = Pipe()
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
         try process.run()
         defer {
             if process.isRunning {
                 process.terminate()
+                for _ in 0..<20 where process.isRunning {
+                    usleep(50_000)
+                }
+                if process.isRunning {
+                    kill(process.processIdentifier, SIGKILL)
+                }
                 process.waitUntilExit()
             }
         }

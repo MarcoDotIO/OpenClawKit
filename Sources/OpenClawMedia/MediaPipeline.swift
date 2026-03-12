@@ -241,7 +241,12 @@ public actor MediaPipeline {
             )
             return try await self.prepareNormalized(
                 blob: blob,
-                fileName: fetched.fileName ?? fileNameHint ?? url.lastPathComponent,
+                fileName: Self.preferredRemoteFileName(
+                    fetched.fileName,
+                    finalURL: fetched.finalURL,
+                    fallbackURL: url,
+                    fileNameHint: fileNameHint
+                ),
                 metadata: [:],
                 source: .remote,
                 originalURL: fetched.finalURL ?? url
@@ -450,6 +455,43 @@ public actor MediaPipeline {
             return normalized
         }
         return nil
+    }
+
+    private static func preferredRemoteFileName(
+        _ suggestedFileName: String?,
+        finalURL: URL?,
+        fallbackURL: URL,
+        fileNameHint: String?
+    ) -> String? {
+        if let suggestedFileName = Self.trimmedRemoteFileName(suggestedFileName),
+           !Self.isPlaceholderRemoteFileName(suggestedFileName)
+        {
+            return suggestedFileName
+        }
+        if let finalURL, let resolvedFileName = Self.nonEmptyLastPathComponent(of: finalURL) {
+            return resolvedFileName
+        }
+        if let hintedFileName = Self.trimmedRemoteFileName(fileNameHint) {
+            return hintedFileName
+        }
+        return Self.nonEmptyLastPathComponent(of: fallbackURL)
+    }
+
+    private static func trimmedRemoteFileName(_ fileName: String?) -> String? {
+        guard let fileName = fileName?.trimmingCharacters(in: .whitespacesAndNewlines), !fileName.isEmpty else {
+            return nil
+        }
+        return fileName
+    }
+
+    private static func nonEmptyLastPathComponent(of url: URL) -> String? {
+        let candidate = url.lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
+        return candidate.isEmpty ? nil : candidate
+    }
+
+    private static func isPlaceholderRemoteFileName(_ fileName: String) -> Bool {
+        let normalized = fileName.lowercased()
+        return normalized == "unknown" || normalized.hasPrefix("unknown.")
     }
 
     private static func kind(for mimeType: String) -> MediaKind {

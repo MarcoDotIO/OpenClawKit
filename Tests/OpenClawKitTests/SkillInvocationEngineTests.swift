@@ -405,7 +405,15 @@ struct SkillInvocationEngineTests {
         try FileManager.default.copyItem(at: fixture, to: entrypoint)
 
         let engine = SkillInvocationEngine(workspaceRoot: root, invocationTimeoutMs: 1_000)
-        let result = try await engine.invokeIfRequested(message: "/wasm-real hi")
+        let result: SkillInvocationResult?
+        do {
+            result = try await engine.invokeIfRequested(message: "/wasm-real hi")
+        } catch {
+            if self.isUnavailableWASMRuntime(error) {
+                return
+            }
+            throw error
+        }
 
         #expect(result?.executorID == "wasm")
         #expect(result?.output.contains("Hello") == true)
@@ -445,7 +453,15 @@ struct SkillInvocationEngineTests {
         )
 
         let engine = SkillInvocationEngine(workspaceRoot: root, invocationTimeoutMs: 2_000)
-        let wasmResult = try await engine.invokeIfRequested(message: "/wasm-real hi")
+        let wasmResult: SkillInvocationResult?
+        do {
+            wasmResult = try await engine.invokeIfRequested(message: "/wasm-real hi")
+        } catch {
+            if self.isUnavailableWASMRuntime(error) {
+                return
+            }
+            throw error
+        }
         let shellResult = try await engine.invokeIfRequested(message: "/shell-after-wasm later")
 
         #expect(wasmResult?.executorID == "wasm")
@@ -501,5 +517,9 @@ struct SkillInvocationEngineTests {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try body.write(to: url, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+    }
+
+    private func isUnavailableWASMRuntime(_ error: Error) -> Bool {
+        String(describing: error).contains("No WASM runtime available")
     }
 }
