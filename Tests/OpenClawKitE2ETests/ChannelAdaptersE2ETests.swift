@@ -74,6 +74,7 @@ struct ChannelAdaptersE2ETests {
         #expect(ids.contains("googlechat"))
         #expect(ids.contains("discord"))
         #expect(ids.contains("signal"))
+        #expect(ids.contains("bluebubbles"))
         #expect(ids.contains("imessage"))
         #expect(ids.contains("msteams"))
         #expect(ids.contains("line"))
@@ -206,4 +207,3 @@ struct ChannelAdaptersE2ETests {
         #expect(transcript.last?.direction == .outbound)
     }
 }
-

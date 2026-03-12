@@ -545,6 +545,7 @@ public struct ChannelsConfig: Codable, Sendable, Equatable {
     public var slack: SlackChannelConfig
     public var googleChat: GoogleChatChannelConfig
     public var signal: SignalChannelConfig
+    public var bluebubbles: BlueBubblesChannelConfig
     public var imessage: IMessageChannelConfig
     public var msteams: MicrosoftTeamsChannelConfig
     public var webchat: WebChatChannelConfig
@@ -556,6 +557,7 @@ public struct ChannelsConfig: Codable, Sendable, Equatable {
     /// - Parameter slack: Slack channel settings.
     /// - Parameter googleChat: Google Chat channel settings.
     /// - Parameter signal: Signal channel settings.
+    /// - Parameter bluebubbles: BlueBubbles channel settings.
     /// - Parameter imessage: iMessage channel settings.
     /// - Parameter msteams: Microsoft Teams channel settings.
     /// - Parameter webchat: WebChat channel settings.
@@ -566,6 +568,7 @@ public struct ChannelsConfig: Codable, Sendable, Equatable {
         slack: SlackChannelConfig = SlackChannelConfig(),
         googleChat: GoogleChatChannelConfig = GoogleChatChannelConfig(),
         signal: SignalChannelConfig = SignalChannelConfig(),
+        bluebubbles: BlueBubblesChannelConfig = BlueBubblesChannelConfig(),
         imessage: IMessageChannelConfig = IMessageChannelConfig(),
         msteams: MicrosoftTeamsChannelConfig = MicrosoftTeamsChannelConfig(),
         webchat: WebChatChannelConfig = WebChatChannelConfig()
@@ -576,6 +579,7 @@ public struct ChannelsConfig: Codable, Sendable, Equatable {
         self.slack = slack
         self.googleChat = googleChat
         self.signal = signal
+        self.bluebubbles = bluebubbles
         self.imessage = imessage
         self.msteams = msteams
         self.webchat = webchat
@@ -588,6 +592,7 @@ public struct ChannelsConfig: Codable, Sendable, Equatable {
         case slack
         case googlechat
         case signal
+        case bluebubbles
         case imessage
         case msteams
         case webchat
@@ -601,6 +606,7 @@ public struct ChannelsConfig: Codable, Sendable, Equatable {
         self.slack = try container.decodeIfPresent(SlackChannelConfig.self, forKey: .slack) ?? SlackChannelConfig()
         self.googleChat = try container.decodeIfPresent(GoogleChatChannelConfig.self, forKey: .googlechat) ?? GoogleChatChannelConfig()
         self.signal = try container.decodeIfPresent(SignalChannelConfig.self, forKey: .signal) ?? SignalChannelConfig()
+        self.bluebubbles = try container.decodeIfPresent(BlueBubblesChannelConfig.self, forKey: .bluebubbles) ?? BlueBubblesChannelConfig()
         self.imessage = try container.decodeIfPresent(IMessageChannelConfig.self, forKey: .imessage) ?? IMessageChannelConfig()
         self.msteams = try container.decodeIfPresent(MicrosoftTeamsChannelConfig.self, forKey: .msteams) ?? MicrosoftTeamsChannelConfig()
         self.webchat = try container.decodeIfPresent(WebChatChannelConfig.self, forKey: .webchat) ?? WebChatChannelConfig()
@@ -614,6 +620,7 @@ public struct ChannelsConfig: Codable, Sendable, Equatable {
         try container.encode(self.slack, forKey: .slack)
         try container.encode(self.googleChat, forKey: .googlechat)
         try container.encode(self.signal, forKey: .signal)
+        try container.encode(self.bluebubbles, forKey: .bluebubbles)
         try container.encode(self.imessage, forKey: .imessage)
         try container.encode(self.msteams, forKey: .msteams)
         try container.encode(self.webchat, forKey: .webchat)
@@ -939,6 +946,62 @@ public struct SignalChannelConfig: Codable, Sendable, Equatable {
         self.defaultRecipient = try container.decodeIfPresent(String.self, forKey: .defaultRecipient)
         let pollInterval = try container.decodeIfPresent(Int.self, forKey: .pollIntervalMs) ?? 2_000
         self.pollIntervalMs = max(250, pollInterval)
+    }
+}
+
+/// BlueBubbles adapter configuration.
+public struct BlueBubblesChannelConfig: Codable, Sendable, Equatable {
+    public var enabled: Bool
+    public var serverURL: String
+    public var password: String?
+    public var webhookPath: String
+    public var defaultChatGUID: String?
+
+    /// Creates BlueBubbles channel settings.
+    /// - Parameters:
+    ///   - enabled: Enables BlueBubbles adapter startup.
+    ///   - serverURL: BlueBubbles REST API base URL.
+    ///   - password: BlueBubbles API and webhook password.
+    ///   - webhookPath: Host webhook path for inbound BlueBubbles events.
+    ///   - defaultChatGUID: Default conversation GUID used when outbound peer ID is omitted.
+    public init(
+        enabled: Bool = false,
+        serverURL: String = "http://127.0.0.1:1234",
+        password: String? = nil,
+        webhookPath: String = "/bluebubbles-webhook",
+        defaultChatGUID: String? = nil
+    ) {
+        self.enabled = enabled
+        self.serverURL = serverURL
+        self.password = password
+        self.webhookPath = webhookPath
+        self.defaultChatGUID = defaultChatGUID
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled
+        case serverURL = "serverUrl"
+        case password
+        case webhookPath
+        case defaultChatGUID = "defaultChatGuid"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+        self.serverURL = try container.decodeIfPresent(String.self, forKey: .serverURL) ?? "http://127.0.0.1:1234"
+        self.password = try container.decodeIfPresent(String.self, forKey: .password)
+        self.webhookPath = try container.decodeIfPresent(String.self, forKey: .webhookPath) ?? "/bluebubbles-webhook"
+        self.defaultChatGUID = try container.decodeIfPresent(String.self, forKey: .defaultChatGUID)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(self.enabled, forKey: .enabled)
+        try container.encode(self.serverURL, forKey: .serverURL)
+        try container.encodeIfPresent(self.password, forKey: .password)
+        try container.encode(self.webhookPath, forKey: .webhookPath)
+        try container.encodeIfPresent(self.defaultChatGUID, forKey: .defaultChatGUID)
     }
 }
 

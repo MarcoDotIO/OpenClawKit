@@ -13,6 +13,7 @@ public enum ChannelID: String, CaseIterable, Sendable {
     case googlechat
     case discord
     case signal
+    case bluebubbles
     case imessage
     case msteams
     case line

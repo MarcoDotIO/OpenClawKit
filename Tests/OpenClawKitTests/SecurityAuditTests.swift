@@ -45,6 +45,11 @@ struct SecurityAuditTests {
                     serviceURL: "http://signal.example.com",
                     authToken: "signal-token"
                 ),
+                bluebubbles: BlueBubblesChannelConfig(
+                    enabled: true,
+                    serverURL: "http://bluebubbles.example.com:1234",
+                    password: "bluebubbles-password"
+                ),
                 msteams: MicrosoftTeamsChannelConfig(
                     enabled: true,
                     botAppPassword: "teams-password",
@@ -113,6 +118,11 @@ struct SecurityAuditTests {
             report.findings
                 .first(where: { $0.id == "secrets.config.plaintext" })?
                 .detail.contains("models.providers.qwen-portal.apiKey") == true
+        )
+        #expect(
+            report.findings
+                .first(where: { $0.id == "secrets.config.plaintext" })?
+                .detail.contains("channels.bluebubbles.password") == true
         )
         #expect(report.findings.contains(where: { $0.id.starts(with: "plaintext.file.") }))
         #expect(report.count(for: SecurityAuditSeverity.warning) >= 1)

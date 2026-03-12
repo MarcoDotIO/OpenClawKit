@@ -98,6 +98,13 @@ private struct TelegramChatActionRequest: Encodable {
     }
 }
 
+private enum TelegramOperationKind: String {
+    case identity
+    case poll
+    case send
+    case typing
+}
+
 /// Live Telegram channel adapter backed by Telegram Bot API polling.
 public actor TelegramChannelAdapter: InboundChannelAdapter {
     /// Adapter channel identifier.
@@ -217,7 +224,13 @@ public actor TelegramChannelAdapter: InboundChannelAdapter {
             do {
                 try await self.pollOnce(token: token)
             } catch {
-                // Keep loop alive; this adapter retries on next interval tick.
+                if !self.isRecoverablePollingError(error) {
+                    self.started = false
+                    break
+                }
+            }
+            guard self.started else {
+                break
             }
             let sleepNs = UInt64(max(250, self.config.pollIntervalMs)) * 1_000_000
             try? await Task.sleep(nanoseconds: sleepNs)
@@ -240,7 +253,7 @@ public actor TelegramChannelAdapter: InboundChannelAdapter {
 
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
-        let response = try await self.transport.data(for: request)
+        let response = try await self.execute(request, operation: .poll)
         guard (200..<300).contains(response.statusCode) else {
             throw OpenClawCoreError.unavailable("Telegram poll failed with status \(response.statusCode)")
         }
@@ -341,7 +354,7 @@ public actor TelegramChannelAdapter: InboundChannelAdapter {
         request.httpBody = try JSONEncoder().encode(
             TelegramChatActionRequest(chatID: chatID, action: "typing")
         )
-        let response = try await self.transport.data(for: request)
+        let response = try await self.execute(request, operation: .typing)
         guard (200..<300).contains(response.statusCode) else {
             return false
         }
@@ -353,7 +366,7 @@ public actor TelegramChannelAdapter: InboundChannelAdapter {
         let endpoint = try self.resolveEndpoint(token: token, method: "getMe")
         var request = URLRequest(url: endpoint)
         request.httpMethod = "GET"
-        let response = try await self.transport.data(for: request)
+        let response = try await self.execute(request, operation: .identity)
         guard (200..<300).contains(response.statusCode) else {
             throw OpenClawCoreError.unavailable("Telegram identity check failed with status \(response.statusCode)")
         }
@@ -397,4 +410,52 @@ public actor TelegramChannelAdapter: InboundChannelAdapter {
             .appendingPathComponent("bot\(token)")
             .appendingPathComponent(method)
     }
+
+    private func execute(
+        _ request: URLRequest,
+        operation: TelegramOperationKind
+    ) async throws -> HTTPResponseData {
+        do {
+            return try await self.transport.data(for: request)
+        } catch {
+            if self.isNetworkTransportError(error) {
+                throw TelegramTaggedTransportError(operation: operation, underlying: error)
+            }
+            throw error
+        }
+    }
+
+    private func isRecoverablePollingError(_ error: Error) -> Bool {
+        guard let tagged = error as? TelegramTaggedTransportError else {
+            return false
+        }
+        return tagged.operation == .poll
+    }
+
+    private func isNetworkTransportError(_ error: Error) -> Bool {
+        if error is URLError {
+            return true
+        }
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain {
+            return true
+        }
+        let description = nsError.localizedDescription.lowercased()
+        let recoverableSnippets = [
+            "network connection",
+            "timed out",
+            "timeout",
+            "connection refused",
+            "could not connect",
+            "not connected",
+            "cannot find host",
+            "socket",
+        ]
+        return recoverableSnippets.contains { description.contains($0) }
+    }
+}
+
+private struct TelegramTaggedTransportError: Error {
+    let operation: TelegramOperationKind
+    let underlying: Error
 }

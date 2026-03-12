@@ -184,6 +184,7 @@ public enum SecurityAuditRunner {
             ("channels.googleChat.bearerToken", config.channels.googleChat.bearerToken),
             ("channels.googleChat.verificationToken", config.channels.googleChat.verificationToken),
             ("channels.signal.authToken", config.channels.signal.authToken),
+            ("channels.bluebubbles.password", config.channels.bluebubbles.password),
             ("channels.msteams.botAppPassword", config.channels.msteams.botAppPassword),
             ("channels.webchat.sharedSecret", config.channels.webchat.sharedSecret),
             ("models.openAI.apiKey", config.models.openAI.apiKey),
