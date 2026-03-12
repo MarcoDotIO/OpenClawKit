@@ -241,6 +241,176 @@ struct SkillInvocationEngineTests {
         #expect(result?.output == "allowed:ping")
     }
 
+    @Test
+    func executesProcessBackedShellSkillsWithinAllowlist() async throws {
+        let root = try self.makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        _ = try self.writeSkill(
+            root: root,
+            name: "shell-skill",
+            entrypoint: "scripts/run.sh",
+            entrypointContents: """
+            printf 'shell:%s' "$1"
+            """
+        )
+
+        let engine = SkillInvocationEngine(workspaceRoot: root, invocationTimeoutMs: 2_000)
+        let result = try await engine.invokeIfRequested(message: "/shell-skill hello")
+
+        #expect(result?.output == "shell:hello")
+        #expect(result?.executorID == "process")
+    }
+
+    @Test
+    func rejectsProcessBackedRuntimesOutsideExecAllowlist() async throws {
+        let root = try self.makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let outsideExecutable = root.deletingLastPathComponent().appendingPathComponent("outside-tool-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: outsideExecutable) }
+        try self.writeExecutable(
+            """
+            #!/bin/sh
+            echo unsafe
+            """,
+            to: outsideExecutable
+        )
+
+        _ = try self.writeSkill(
+            root: root,
+            name: "unsafe-runtime",
+            entrypoint: "scripts/run.txt",
+            extraFrontmatter: ["primaryEnv": outsideExecutable.path]
+        )
+
+        let engine = SkillInvocationEngine(workspaceRoot: root, invocationTimeoutMs: 2_000)
+        do {
+            _ = try await engine.invokeIfRequested(message: "/unsafe-runtime hi")
+            Issue.record("Expected exec allowlist denial")
+        } catch {
+            #expect(String(describing: error).contains("exec allowlist"))
+        }
+    }
+
+    @Test
+    func executesDirectExecutableEntrypointsWithinWorkspace() async throws {
+        let root = try self.makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        _ = try self.writeSkill(
+            root: root,
+            name: "direct-exec",
+            entrypoint: "scripts/run",
+            entrypointContents: """
+            #!/bin/sh
+            printf 'direct:%s' "$1"
+            """,
+            makeEntrypointExecutable: true
+        )
+
+        let engine = SkillInvocationEngine(workspaceRoot: root, invocationTimeoutMs: 2_000)
+        let result = try await engine.invokeIfRequested(message: "/direct-exec hi")
+
+        #expect(result?.output == "direct:hi")
+        #expect(result?.executorID == "process")
+    }
+
+    @Test
+    func executesPythonEntrypointsThroughAllowlistedInterpreter() async throws {
+        let root = try self.makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        _ = try self.writeSkill(
+            root: root,
+            name: "python-skill",
+            entrypoint: "scripts/run.py",
+            entrypointContents: """
+            import sys
+            print(f"python:{sys.argv[1]}")
+            """
+        )
+
+        let engine = SkillInvocationEngine(workspaceRoot: root, invocationTimeoutMs: 2_000)
+        let result = try await engine.invokeIfRequested(message: "/python-skill hi")
+
+        #expect(result?.output == "python:hi")
+        #expect(result?.executorID == "process")
+    }
+
+    @Test
+    func executesPrimaryEnvCommandViaProcessRuntime() async throws {
+        let root = try self.makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        _ = try self.writeSkill(
+            root: root,
+            name: "python-env",
+            entrypoint: "scripts/run.txt",
+            extraFrontmatter: ["primaryEnv": "python3 -B"],
+            entrypointContents: """
+            import sys
+            print(f"env:{sys.argv[1]}")
+            """
+        )
+
+        let engine = SkillInvocationEngine(workspaceRoot: root, invocationTimeoutMs: 2_000)
+        let result = try await engine.invokeIfRequested(message: "/python-env hi")
+
+        #expect(result?.output == "env:hi")
+        #expect(result?.executorID == "process")
+    }
+
+    @Test
+    func surfacesNonZeroExitCodesFromProcessBackedSkills() async throws {
+        let root = try self.makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        _ = try self.writeSkill(
+            root: root,
+            name: "failing-shell",
+            entrypoint: "scripts/run.sh",
+            entrypointContents: """
+            echo failing 1>&2
+            exit 2
+            """
+        )
+
+        let engine = SkillInvocationEngine(workspaceRoot: root, invocationTimeoutMs: 2_000)
+        do {
+            _ = try await engine.invokeIfRequested(message: "/failing-shell now")
+            Issue.record("Expected process skill failure")
+        } catch {
+            #expect(String(describing: error).contains("failed with exit code 2"))
+        }
+    }
+
+    @Test
+    func executesRealWASMEntrypointsThroughDefaultBackend() async throws {
+        let root = try self.makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let fixture = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Examples/iOS/OpenClawiOS/skills/wasm-hello/module/hello.wasm")
+
+        let entrypoint = root
+            .appendingPathComponent("skills", isDirectory: true)
+            .appendingPathComponent("wasm-real", isDirectory: true)
+            .appendingPathComponent("module", isDirectory: true)
+            .appendingPathComponent("hello.wasm", isDirectory: false)
+        _ = try self.writeSkill(
+            root: root,
+            name: "wasm-real",
+            entrypoint: "module/hello.wasm"
+        )
+        try FileManager.default.removeItem(at: entrypoint)
+        try FileManager.default.copyItem(at: fixture, to: entrypoint)
+
+        let engine = SkillInvocationEngine(workspaceRoot: root, invocationTimeoutMs: 1_000)
+        let result = try await engine.invokeIfRequested(message: "/wasm-real hi")
+
+        #expect(result?.executorID == "wasm")
+        #expect(result?.output.contains("Hello") == true)
+    }
+
     private func makeWorkspace() throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("openclawkit-skill-invocation-tests", isDirectory: true)
@@ -254,12 +424,17 @@ struct SkillInvocationEngineTests {
         root: URL,
         name: String,
         entrypoint: String,
-        extraFrontmatter: [String: String] = [:]
+        extraFrontmatter: [String: String] = [:],
+        entrypointContents: String = "#!/usr/bin/env bash\n",
+        makeEntrypointExecutable: Bool = false
     ) throws -> URL {
         let skillRoot = root.appendingPathComponent("skills", isDirectory: true).appendingPathComponent(name, isDirectory: true)
         let entrypointFile = skillRoot.appendingPathComponent(entrypoint, isDirectory: false)
         try FileManager.default.createDirectory(at: entrypointFile.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try "#!/usr/bin/env bash\n".write(to: entrypointFile, atomically: true, encoding: .utf8)
+        try entrypointContents.write(to: entrypointFile, atomically: true, encoding: .utf8)
+        if makeEntrypointExecutable {
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: entrypointFile.path)
+        }
 
         var frontmatterLines: [String] = [
             "---",
@@ -279,5 +454,10 @@ struct SkillInvocationEngineTests {
         try frontmatterLines.joined(separator: "\n").write(to: skillFile, atomically: true, encoding: .utf8)
         return skillFile
     }
-}
 
+    private func writeExecutable(_ body: String, to url: URL) throws {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try body.write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+    }
+}

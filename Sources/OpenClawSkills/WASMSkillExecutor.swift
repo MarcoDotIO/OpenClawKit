@@ -29,6 +29,8 @@ public actor WASMSkillExecutor {
     private let processRunner: ProcessRunner
     private let runtimeCandidates: [String]
     private let allowEnvironmentRuntimeOverride: Bool
+    private let execAllowlist: ExecCommandAllowlist
+    private let environmentProvider: @Sendable () -> [String: String]
 
     /// Creates a WASM skill executor.
     /// - Parameters:
@@ -38,11 +40,15 @@ public actor WASMSkillExecutor {
     public init(
         processRunner: ProcessRunner = ProcessRunner(),
         runtimeCandidates: [String] = ["wasmtime", "wasmer"],
-        allowEnvironmentRuntimeOverride: Bool = true
+        allowEnvironmentRuntimeOverride: Bool = true,
+        execAllowlist: ExecCommandAllowlist = WASMSkillExecutor.defaultExecAllowlist(),
+        environmentProvider: @escaping @Sendable () -> [String: String] = { ProcessInfo.processInfo.environment }
     ) {
         self.processRunner = processRunner
         self.runtimeCandidates = runtimeCandidates
         self.allowEnvironmentRuntimeOverride = allowEnvironmentRuntimeOverride
+        self.execAllowlist = execAllowlist
+        self.environmentProvider = environmentProvider
     }
 
     /// Executes a WASM module.
@@ -71,7 +77,11 @@ public actor WASMSkillExecutor {
         if !trimmedInput.isEmpty {
             command.append(trimmedInput)
         }
-        let result = try await self.processRunner.run(command, cwd: modulePath.deletingLastPathComponent())
+        let result = try await self.processRunner.run(
+            command,
+            cwd: modulePath.deletingLastPathComponent(),
+            allowlist: self.execAllowlist
+        )
         if result.exitCode != 0 {
             let detail = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
             throw OpenClawCoreError.unavailable(
@@ -84,8 +94,9 @@ public actor WASMSkillExecutor {
     }
 
     private func resolveProcessRuntimeBinary() -> String? {
+        let environment = self.environmentProvider()
         if self.allowEnvironmentRuntimeOverride,
-           let configured = ProcessInfo.processInfo.environment["OPENCLAW_WASM_RUNTIME"]?
+           let configured = environment["OPENCLAW_WASM_RUNTIME"]?
            .trimmingCharacters(in: .whitespacesAndNewlines),
            !configured.isEmpty
         {
@@ -96,17 +107,30 @@ public actor WASMSkillExecutor {
             if configured.contains("/") {
                 return configured
             }
-            if let resolved = try? BinaryUtils.ensureBinary(configured) {
+            if let resolved = try? BinaryUtils.ensureBinary(configured, pathEnv: environment["PATH"]) {
                 return resolved
             }
             return configured
         }
         for runtime in self.runtimeCandidates {
-            if let resolved = try? BinaryUtils.ensureBinary(runtime) {
+            if let resolved = try? BinaryUtils.ensureBinary(runtime, pathEnv: environment["PATH"]) {
                 return resolved
             }
         }
         return nil
+    }
+
+    public static func defaultExecAllowlist() -> ExecCommandAllowlist {
+        ExecCommandAllowlist(
+            patterns: [
+                "/bin/*",
+                "/usr/bin/*",
+                "/usr/local/bin/*",
+                "/opt/homebrew/bin/*",
+                "/usr/local/Cellar/**/bin/*",
+                "/opt/homebrew/Cellar/**/bin/*",
+            ]
+        )
     }
 
     private func executeModuleWithEmbeddedRuntime(

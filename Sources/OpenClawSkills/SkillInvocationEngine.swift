@@ -71,20 +71,27 @@ private struct JavaScriptSkillExecutorBackend: SkillExecutor {
 
 private struct ProcessSkillExecutorBackend: SkillExecutor {
     let id: String
+    let workspaceRoot: URL
     let processRunner: ProcessRunner
+    let pathGuard: WorkspacePathGuard
 
     func canExecute(skill _: SkillDefinition, entrypoint _: URL) -> Bool {
         true
     }
 
     func execute(skill: SkillDefinition, entrypoint: URL, input: String) async throws -> String {
-        let command = self.buildProcessCommand(
-            entrypoint: entrypoint,
+        let resolvedEntrypoint = try self.pathGuard.resolve(entrypoint.path)
+        let command = try self.buildProcessCommand(
+            entrypoint: resolvedEntrypoint,
             pathExtension: entrypoint.pathExtension.lowercased(),
-            primaryEnv: (skill.metadata.primaryEnv ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            primaryEnv: (skill.metadata.primaryEnv ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
             input: input
         )
-        let result = try await self.processRunner.run(command, cwd: entrypoint.deletingLastPathComponent())
+        let result = try await self.processRunner.run(
+            command,
+            cwd: resolvedEntrypoint.deletingLastPathComponent(),
+            allowlist: Self.defaultAllowlist(for: self.workspaceRoot)
+        )
         if result.exitCode != 0 {
             let message = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
             throw OpenClawCoreError.unavailable(
@@ -100,28 +107,30 @@ private struct ProcessSkillExecutorBackend: SkillExecutor {
         pathExtension: String,
         primaryEnv: String,
         input: String
-    ) -> [String] {
+    ) throws -> [String] {
         var command: [String]
         if !primaryEnv.isEmpty {
-            let normalizedPrimaryEnv: String
-            switch primaryEnv {
-            case "js", "javascript", "javascriptcore":
-                normalizedPrimaryEnv = "node"
-            default:
-                normalizedPrimaryEnv = primaryEnv
-            }
-            let envParts = normalizedPrimaryEnv
+            let envParts = primaryEnv
                 .split(whereSeparator: \.isWhitespace)
                 .map(String.init)
-            command = ["/usr/bin/env"] + envParts + [entrypoint.path]
+            let executable = envParts[0]
+            let normalizedExecutable: String
+            switch executable.lowercased() {
+            case "js", "javascript", "javascriptcore":
+                normalizedExecutable = "node"
+            default:
+                normalizedExecutable = executable
+            }
+            let resolvedExecutable = try ExecCommandAllowlist.resolveExecutableURL(normalizedExecutable)
+            command = [resolvedExecutable.path] + Array(envParts.dropFirst()) + [entrypoint.path]
         } else {
             switch pathExtension {
             case "py":
-                command = ["/usr/bin/env", "python3", entrypoint.path]
+                command = [try ExecCommandAllowlist.resolveExecutableURL("python3").path, entrypoint.path]
             case "sh":
-                command = ["/usr/bin/env", "sh", entrypoint.path]
+                command = [try ExecCommandAllowlist.resolveExecutableURL("sh").path, entrypoint.path]
             case "js", "mjs", "cjs":
-                command = ["/usr/bin/env", "node", entrypoint.path]
+                command = [try ExecCommandAllowlist.resolveExecutableURL("node").path, entrypoint.path]
             default:
                 command = [entrypoint.path]
             }
@@ -133,11 +142,26 @@ private struct ProcessSkillExecutorBackend: SkillExecutor {
         }
         return command
     }
+
+    private static func defaultAllowlist(for workspaceRoot: URL) -> ExecCommandAllowlist {
+        let resolvedRoot = workspaceRoot.standardizedFileURL.resolvingSymlinksInPath()
+        return ExecCommandAllowlist(
+            patterns: [
+                ExecCommandAllowlist.workspace(resolvedRoot).patterns[0],
+                "/bin/*",
+                "/usr/bin/*",
+                "/usr/local/bin/*",
+                "/opt/homebrew/bin/*",
+                "/usr/local/Cellar/**/bin/*",
+                "/opt/homebrew/Cellar/**/bin/*",
+            ]
+        )
+    }
 }
 
 private struct WASMSkillExecutorBackend: SkillExecutor {
     let id: String
-    let workspaceRoot: URL
+    let pathGuard: WorkspacePathGuard
     let executor: WASMSkillExecutor
 
     func canExecute(skill: SkillDefinition, entrypoint: URL) -> Bool {
@@ -152,14 +176,9 @@ private struct WASMSkillExecutorBackend: SkillExecutor {
     }
 
     func execute(skill _: SkillDefinition, entrypoint: URL, input: String) async throws -> String {
-        let rootPath = self.workspaceRoot.standardizedFileURL.path
-        let targetPath = entrypoint.standardizedFileURL.path
-        let prefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
-        guard targetPath.hasPrefix(prefix) else {
-            throw OpenClawCoreError.invalidConfiguration("Skill entrypoint must stay within workspace root")
-        }
+        let resolvedEntrypoint = try self.pathGuard.resolve(entrypoint.path)
         let result = try await self.executor.executeModule(
-            modulePath: entrypoint,
+            modulePath: resolvedEntrypoint,
             input: input
         )
         return result.output
@@ -214,14 +233,16 @@ public actor SkillInvocationEngine {
             defaults.append(
                 WASMSkillExecutorBackend(
                     id: "wasm",
-                    workspaceRoot: self.workspaceRoot,
+                    pathGuard: try! WorkspacePathGuard(workspaceRoot: self.workspaceRoot),
                     executor: WASMSkillExecutor(processRunner: processRunner)
                 )
             )
             defaults.append(
                 ProcessSkillExecutorBackend(
                     id: "process",
-                    processRunner: processRunner
+                    workspaceRoot: self.workspaceRoot,
+                    processRunner: processRunner,
+                    pathGuard: try! WorkspacePathGuard(workspaceRoot: self.workspaceRoot)
                 )
             )
             self.executors = defaults

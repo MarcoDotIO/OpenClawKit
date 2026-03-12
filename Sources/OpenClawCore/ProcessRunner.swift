@@ -35,14 +35,26 @@ public actor ProcessRunner {
     /// - Parameters:
     ///   - command: Command plus arguments where the first entry is executable path.
     ///   - cwd: Optional working directory.
+    ///   - allowlist: Optional executable allowlist enforced before launch.
     /// - Returns: Process execution result.
-    public func run(_ command: [String], cwd: URL? = nil) throws -> ProcessResult {
+    public func run(
+        _ command: [String],
+        cwd: URL? = nil,
+        allowlist: ExecCommandAllowlist? = nil
+    ) throws -> ProcessResult {
         guard let executable = command.first else {
             throw OpenClawCoreError.invalidConfiguration("Process command cannot be empty")
         }
 
+        let executableURL: URL
+        if let allowlist {
+            executableURL = try allowlist.authorizedExecutableURL(for: executable, cwd: cwd)
+        } else {
+            executableURL = try ExecCommandAllowlist.resolveExecutableURL(executable, cwd: cwd)
+        }
+
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
+        process.executableURL = executableURL
         process.arguments = Array(command.dropFirst())
         process.currentDirectoryURL = cwd
 
@@ -51,11 +63,13 @@ public actor ProcessRunner {
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
 
+        let stdoutCapture = PipeCapture(pipe: stdoutPipe)
+        let stderrCapture = PipeCapture(pipe: stderrPipe)
+
         try process.run()
         process.waitUntilExit()
-
-        let outData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        let errData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        let outData = stdoutCapture.finish()
+        let errData = stderrCapture.finish()
         return ProcessResult(
             command: command,
             exitCode: process.terminationStatus,
@@ -74,12 +88,61 @@ public actor ProcessRunner {
     /// - Parameters:
     ///   - command: Command plus arguments.
     ///   - cwd: Optional working directory.
+    ///   - allowlist: Optional executable allowlist enforced before launch.
     /// - Returns: Never returns successfully.
-    public func run(_ command: [String], cwd: URL? = nil) throws -> ProcessResult {
+    public func run(
+        _ command: [String],
+        cwd: URL? = nil,
+        allowlist: ExecCommandAllowlist? = nil
+    ) throws -> ProcessResult {
         _ = command
         _ = cwd
+        _ = allowlist
         throw OpenClawCoreError.unavailable("Process execution is unavailable on this platform")
     }
 }
 #endif
 
+private final class LockedDataBuffer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data = Data()
+
+    func append(_ newData: Data) {
+        self.lock.lock()
+        self.data.append(newData)
+        self.lock.unlock()
+    }
+
+    func snapshot() -> Data {
+        self.lock.lock()
+        let data = self.data
+        self.lock.unlock()
+        return data
+    }
+}
+
+private final class PipeCapture: @unchecked Sendable {
+    private let completion = DispatchGroup()
+    private let buffer = LockedDataBuffer()
+    private let handle: FileHandle
+
+    init(pipe: Pipe) {
+        self.handle = pipe.fileHandleForReading
+        self.completion.enter()
+        self.handle.readabilityHandler = { [buffer, completion] handle in
+            let chunk = handle.availableData
+            if chunk.isEmpty {
+                handle.readabilityHandler = nil
+                completion.leave()
+                return
+            }
+            buffer.append(chunk)
+        }
+    }
+
+    func finish() -> Data {
+        self.completion.wait()
+        try? self.handle.close()
+        return self.buffer.snapshot()
+    }
+}
