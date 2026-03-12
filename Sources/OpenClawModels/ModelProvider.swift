@@ -2,6 +2,27 @@ import Foundation
 import OpenClawCore
 import OpenClawProtocol
 
+/// Reasoning budget preference for providers that expose explicit reasoning controls.
+public enum ModelReasoningEffort: String, Sendable, Equatable, CaseIterable {
+    case low
+    case medium
+    case high
+}
+
+/// Service tier preference for providers that expose tiered latency or cost controls.
+public enum ModelServiceTier: String, Sendable, Equatable, CaseIterable {
+    case auto
+    case standard
+    case priority
+}
+
+/// Transport selection used by Codex-style response APIs.
+public enum CodexTransportPreference: String, Sendable, Equatable, CaseIterable {
+    case auto
+    case sse
+    case websocket
+}
+
 /// Runtime generation policy used for model-provider selection and behavior controls.
 public struct ModelGenerationPolicy: Sendable, Equatable {
     /// Requests token streaming when provider supports it.
@@ -24,6 +45,14 @@ public struct ModelGenerationPolicy: Sendable, Equatable {
     public let fallbackProviderIDs: [String]
     /// Optional local-runtime-specific hints (for example hardware/backend toggles).
     public let localRuntimeHints: [String: String]
+    /// Optional provider reasoning effort hint.
+    public let reasoningEffort: ModelReasoningEffort?
+    /// Optional provider service tier hint.
+    public let serviceTier: ModelServiceTier?
+    /// Requests provider-side response persistence when supported.
+    public let storeResponse: Bool?
+    /// Preferred transport for Codex response APIs.
+    public let codexTransport: CodexTransportPreference
 
     /// Creates generation policy values.
     /// - Parameters:
@@ -47,7 +76,11 @@ public struct ModelGenerationPolicy: Sendable, Equatable {
         topK: Int? = nil,
         requestTimeoutMs: Int? = nil,
         fallbackProviderIDs: [String] = [],
-        localRuntimeHints: [String: String] = [:]
+        localRuntimeHints: [String: String] = [:],
+        reasoningEffort: ModelReasoningEffort? = nil,
+        serviceTier: ModelServiceTier? = nil,
+        storeResponse: Bool? = nil,
+        codexTransport: CodexTransportPreference = .auto
     ) {
         self.streamTokens = streamTokens
         self.allowCancellation = allowCancellation
@@ -59,6 +92,10 @@ public struct ModelGenerationPolicy: Sendable, Equatable {
         self.requestTimeoutMs = requestTimeoutMs.map { max(1, $0) }
         self.fallbackProviderIDs = fallbackProviderIDs
         self.localRuntimeHints = localRuntimeHints
+        self.reasoningEffort = reasoningEffort
+        self.serviceTier = serviceTier
+        self.storeResponse = storeResponse
+        self.codexTransport = codexTransport
     }
 }
 
@@ -72,10 +109,18 @@ public struct ModelGenerationRequest: Sendable, Equatable {
     public let systemPrompt: String?
     /// Optional explicit provider override.
     public let providerID: String?
+    /// Optional explicit model override.
+    public let modelID: String?
+    /// Optional preferred auth-profile identifier.
+    public let preferredAuthProfileID: String?
     /// Additional provider-specific metadata.
     public let metadata: [String: String]
+    /// Additional request headers applied on top of provider config.
+    public let headers: [String: String]
     /// Runtime generation policy controls.
     public let policy: ModelGenerationPolicy
+    /// Optional multimodal attachments for providers that support rich input.
+    public let attachments: [MediaAttachment]
 
     /// Creates a model generation request.
     /// - Parameters:
@@ -85,20 +130,29 @@ public struct ModelGenerationRequest: Sendable, Equatable {
     ///   - providerID: Optional provider override.
     ///   - metadata: Additional metadata.
     ///   - policy: Runtime generation policy controls.
+    ///   - attachments: Optional multimodal attachments.
     public init(
         sessionKey: String,
         prompt: String,
         systemPrompt: String? = nil,
         providerID: String? = nil,
+        modelID: String? = nil,
+        preferredAuthProfileID: String? = nil,
         metadata: [String: String] = [:],
-        policy: ModelGenerationPolicy = ModelGenerationPolicy()
+        headers: [String: String] = [:],
+        policy: ModelGenerationPolicy = ModelGenerationPolicy(),
+        attachments: [MediaAttachment] = []
     ) {
         self.sessionKey = sessionKey
         self.prompt = prompt
         self.systemPrompt = systemPrompt
         self.providerID = providerID
+        self.modelID = modelID?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.preferredAuthProfileID = preferredAuthProfileID?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.metadata = metadata
+        self.headers = headers
         self.policy = policy
+        self.attachments = attachments
     }
 }
 
@@ -185,6 +239,10 @@ public protocol ModelProvider: Sendable {
     /// - Parameter request: Generation request payload.
     /// - Returns: Async throwing stream of model chunks.
     func generateStream(_ request: ModelGenerationRequest) async -> AsyncThrowingStream<ModelStreamChunk, Error>
+
+    /// Requests cancellation for an in-flight generation token when supported.
+    /// - Parameter token: Stable cancellation token.
+    func cancelGeneration(token: String?) async
 }
 
 public extension ModelProvider {
@@ -204,6 +262,8 @@ public extension ModelProvider {
             }
         }
     }
+
+    func cancelGeneration(token _: String?) async {}
 }
 
 /// Default fallback provider returning deterministic placeholder output.
@@ -235,7 +295,10 @@ public actor ModelRouter {
     private var throttlePolicy: ModelProviderThrottlePolicy
     private var requestTimestampsByProvider: [String: [Date]] = [:]
     private let diagnosticsSink: RuntimeDiagnosticSink?
+    private let runtimeAuthResolver: any ProviderRuntimeAuthResolving
     private var adaptivePolicy: AdaptiveRoutingPolicy?
+    private var authConfig: AuthConfig?
+    private var authProfileStore: AuthProfileStore?
 
     /// Creates a model router.
     /// - Parameters:
@@ -246,7 +309,10 @@ public actor ModelRouter {
         providers: [any ModelProvider] = [EchoModelProvider()],
         throttlePolicy: ModelProviderThrottlePolicy = ModelProviderThrottlePolicy(),
         diagnosticsSink: RuntimeDiagnosticSink? = nil,
-        adaptiveRoutingConfig: AdaptiveRoutingConfig? = nil
+        adaptiveRoutingConfig: AdaptiveRoutingConfig? = nil,
+        authConfig: AuthConfig? = nil,
+        authProfileStore: AuthProfileStore? = nil,
+        runtimeAuthResolver: any ProviderRuntimeAuthResolving = RuntimeProviderAuthResolver.shared
     ) {
         var map: [String: any ModelProvider] = [:]
         for provider in providers {
@@ -261,6 +327,9 @@ public actor ModelRouter {
         self.providers = map
         self.throttlePolicy = throttlePolicy
         self.diagnosticsSink = diagnosticsSink
+        self.runtimeAuthResolver = runtimeAuthResolver
+        self.authConfig = authConfig
+        self.authProfileStore = authProfileStore
         if let adaptiveRoutingConfig, adaptiveRoutingConfig.enabled {
             self.adaptivePolicy = AdaptiveRoutingPolicy(config: adaptiveRoutingConfig)
         } else {
@@ -297,6 +366,16 @@ public actor ModelRouter {
             return
         }
         self.adaptivePolicy = AdaptiveRoutingPolicy(config: config)
+    }
+
+    /// Updates auth config used for profile ordering and cooldowns.
+    public func setAuthConfig(_ config: AuthConfig?) {
+        self.authConfig = config
+    }
+
+    /// Updates the auth profile store used for request credential resolution.
+    public func setAuthProfileStore(_ store: AuthProfileStore?) {
+        self.authProfileStore = store
     }
 
     /// Returns a snapshot of adaptive routing scores.
@@ -363,36 +442,57 @@ public actor ModelRouter {
             guard let provider = self.providers[providerID] else {
                 continue
             }
-            let startedAt = Date()
-            do {
-                try await self.applyThrottleIfNeeded(providerID: providerID)
-                let response = try await provider.generate(request)
-                let latencyMs = max(0, Int(Date().timeIntervalSince(startedAt) * 1000))
-                self.recordAdaptiveObservation(
-                    providerID: providerID,
-                    succeeded: true,
-                    latencyMs: latencyMs,
-                    metadata: request.metadata
-                )
-                return response
-            } catch {
-                let latencyMs = max(0, Int(Date().timeIntervalSince(startedAt) * 1000))
-                self.recordAdaptiveObservation(
-                    providerID: providerID,
-                    succeeded: false,
-                    latencyMs: latencyMs,
-                    metadata: request.metadata
-                )
-                lastError = error
-                if let nextProviderID = self.nextAvailableProviderID(after: index, in: orderedProviderIDs) {
-                    await self.emitDiagnostic(
-                        name: "model.request.retry",
-                        metadata: [
-                            "fromProviderID": providerID,
-                            "nextProviderID": nextProviderID,
-                            "error": String(describing: error),
-                        ]
+            let candidateProfileIDs = await self.resolveAuthProfileOrder(for: providerID, request: request)
+            let candidateSet: [String?] = candidateProfileIDs.isEmpty ? [nil] : candidateProfileIDs.map(Optional.some)
+            for profileID in candidateSet {
+                let startedAt = Date()
+                do {
+                    try await self.applyThrottleIfNeeded(providerID: providerID)
+                    let resolvedRequest = try await self.requestWithResolvedAuth(
+                        request,
+                        providerID: providerID,
+                        profileID: profileID
                     )
+                    let response = try await provider.generate(resolvedRequest)
+                    let latencyMs = max(0, Int(Date().timeIntervalSince(startedAt) * 1000))
+                    self.recordAdaptiveObservation(
+                        providerID: providerID,
+                        succeeded: true,
+                        latencyMs: latencyMs,
+                        metadata: resolvedRequest.metadata
+                    )
+                    if let profileID, let authProfileStore {
+                        try? await authProfileStore.recordSuccess(profileID: profileID, provider: providerID)
+                    }
+                    return response
+                } catch {
+                    let latencyMs = max(0, Int(Date().timeIntervalSince(startedAt) * 1000))
+                    self.recordAdaptiveObservation(
+                        providerID: providerID,
+                        succeeded: false,
+                        latencyMs: latencyMs,
+                        metadata: request.metadata
+                    )
+                    if let profileID, let authProfileStore {
+                        try? await authProfileStore.recordFailure(
+                            profileID: profileID,
+                            provider: providerID,
+                            reason: Self.failureReason(for: error),
+                            cooldowns: self.authConfig?.cooldowns ?? AuthCooldownConfig()
+                        )
+                    }
+                    lastError = error
+                    if let nextProviderID = self.nextAvailableProviderID(after: index, in: orderedProviderIDs) {
+                        await self.emitDiagnostic(
+                            name: "model.request.retry",
+                            metadata: [
+                                "fromProviderID": providerID,
+                                "profileID": profileID ?? "",
+                                "nextProviderID": nextProviderID,
+                                "error": String(describing: error),
+                            ]
+                        )
+                    }
                 }
             }
         }
@@ -414,37 +514,58 @@ public actor ModelRouter {
             guard let provider = self.providers[providerID] else {
                 continue
             }
-            let startedAt = Date()
-            do {
-                try await self.applyThrottleIfNeeded(providerID: providerID)
-                let stream = await provider.generateStream(request)
-                let latencyMs = max(0, Int(Date().timeIntervalSince(startedAt) * 1000))
-                self.recordAdaptiveObservation(
-                    providerID: providerID,
-                    succeeded: true,
-                    latencyMs: latencyMs,
-                    metadata: request.metadata
-                )
-                return stream
-            } catch {
-                let latencyMs = max(0, Int(Date().timeIntervalSince(startedAt) * 1000))
-                self.recordAdaptiveObservation(
-                    providerID: providerID,
-                    succeeded: false,
-                    latencyMs: latencyMs,
-                    metadata: request.metadata
-                )
-                lastError = error
-                if let nextProviderID = self.nextAvailableProviderID(after: index, in: orderedProviderIDs) {
-                    await self.emitDiagnostic(
-                        name: "model.request.retry",
-                        metadata: [
-                            "fromProviderID": providerID,
-                            "nextProviderID": nextProviderID,
-                            "error": String(describing: error),
-                            "streaming": "true",
-                        ]
+            let candidateProfileIDs = await self.resolveAuthProfileOrder(for: providerID, request: request)
+            let candidateSet: [String?] = candidateProfileIDs.isEmpty ? [nil] : candidateProfileIDs.map(Optional.some)
+            for profileID in candidateSet {
+                let startedAt = Date()
+                do {
+                    try await self.applyThrottleIfNeeded(providerID: providerID)
+                    let resolvedRequest = try await self.requestWithResolvedAuth(
+                        request,
+                        providerID: providerID,
+                        profileID: profileID
                     )
+                    let stream = await provider.generateStream(resolvedRequest)
+                    let latencyMs = max(0, Int(Date().timeIntervalSince(startedAt) * 1000))
+                    self.recordAdaptiveObservation(
+                        providerID: providerID,
+                        succeeded: true,
+                        latencyMs: latencyMs,
+                        metadata: resolvedRequest.metadata
+                    )
+                    if let profileID, let authProfileStore {
+                        try? await authProfileStore.recordSuccess(profileID: profileID, provider: providerID)
+                    }
+                    return stream
+                } catch {
+                    let latencyMs = max(0, Int(Date().timeIntervalSince(startedAt) * 1000))
+                    self.recordAdaptiveObservation(
+                        providerID: providerID,
+                        succeeded: false,
+                        latencyMs: latencyMs,
+                        metadata: request.metadata
+                    )
+                    if let profileID, let authProfileStore {
+                        try? await authProfileStore.recordFailure(
+                            profileID: profileID,
+                            provider: providerID,
+                            reason: Self.failureReason(for: error),
+                            cooldowns: self.authConfig?.cooldowns ?? AuthCooldownConfig()
+                        )
+                    }
+                    lastError = error
+                    if let nextProviderID = self.nextAvailableProviderID(after: index, in: orderedProviderIDs) {
+                        await self.emitDiagnostic(
+                            name: "model.request.retry",
+                            metadata: [
+                                "fromProviderID": providerID,
+                                "profileID": profileID ?? "",
+                                "nextProviderID": nextProviderID,
+                                "error": String(describing: error),
+                                "streaming": "true",
+                            ]
+                        )
+                    }
                 }
             }
         }
@@ -455,6 +576,25 @@ public actor ModelRouter {
                 )
             )
         }
+    }
+
+    /// Broadcasts a cancellation request to registered providers.
+    /// - Parameter token: Stable cancellation token.
+    public func cancelGeneration(token: String?) async {
+        let normalized = token?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard normalized?.isEmpty == false else {
+            return
+        }
+        let providers = Array(self.providers.values)
+        for provider in providers {
+            await provider.cancelGeneration(token: normalized)
+        }
+        await self.emitDiagnostic(
+            name: "model.request.cancel",
+            metadata: [
+                "cancellationToken": normalized ?? "",
+            ]
+        )
     }
 
     private func applyThrottleIfNeeded(providerID: String) async throws {
@@ -612,5 +752,105 @@ public actor ModelRouter {
             return value
         }
         return nil
+    }
+
+    private func resolveAuthProfileOrder(for providerID: String, request: ModelGenerationRequest) async -> [String] {
+        guard let authProfileStore else {
+            return []
+        }
+        let snapshot = await authProfileStore.snapshot()
+        return AuthProfileResolver.resolveProfileOrder(
+            provider: providerID,
+            preferredProfileID: request.preferredAuthProfileID,
+            config: self.authConfig,
+            snapshot: snapshot
+        )
+    }
+
+    private func requestWithResolvedAuth(
+        _ request: ModelGenerationRequest,
+        providerID: String,
+        profileID: String?
+    ) async throws -> ModelGenerationRequest {
+        guard let profileID, let authProfileStore, let credential = try await authProfileStore.resolvedCredential(for: profileID) else {
+            return request
+        }
+        let runtimeResolution = try await self.runtimeAuthResolver.resolve(
+            providerID: providerID,
+            credential: credential
+        )
+        if runtimeResolution.persistCredential, runtimeResolution.credential != credential {
+            try await authProfileStore.setCredential(runtimeResolution.credential, for: profileID)
+        }
+        var metadata = request.metadata
+        metadata["auth.profileID"] = profileID
+        metadata["auth.providerID"] = providerID
+        for (key, value) in runtimeResolution.metadata {
+            let normalizedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
+            let normalizedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalizedKey.isEmpty, !normalizedValue.isEmpty else { continue }
+            metadata[normalizedKey] = normalizedValue
+        }
+        switch runtimeResolution.credential {
+        case .apiKey(let value):
+            if let key = value.key?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty {
+                metadata["auth.apiKey"] = key
+            }
+        case .token(let value):
+            if let token = value.token?.trimmingCharacters(in: .whitespacesAndNewlines), !token.isEmpty {
+                metadata["auth.accessToken"] = token
+            }
+            if let expires = value.expires {
+                metadata["auth.expires"] = String(expires)
+            }
+        case .oauth(let value):
+            if let accessToken = value.accessToken?.trimmingCharacters(in: .whitespacesAndNewlines), !accessToken.isEmpty {
+                metadata["auth.accessToken"] = accessToken
+            }
+            if let refreshToken = value.refreshToken?.trimmingCharacters(in: .whitespacesAndNewlines), !refreshToken.isEmpty {
+                metadata["auth.refreshToken"] = refreshToken
+            }
+            if let clientID = value.clientID?.trimmingCharacters(in: .whitespacesAndNewlines), !clientID.isEmpty {
+                metadata["auth.clientID"] = clientID
+            }
+            if let expires = value.expires {
+                metadata["auth.expires"] = String(expires)
+            }
+        }
+        return ModelGenerationRequest(
+            sessionKey: request.sessionKey,
+            prompt: request.prompt,
+            systemPrompt: request.systemPrompt,
+            providerID: request.providerID,
+            modelID: request.modelID,
+            preferredAuthProfileID: request.preferredAuthProfileID,
+            metadata: metadata,
+            headers: request.headers,
+            policy: request.policy,
+            attachments: request.attachments
+        )
+    }
+
+    private static func failureReason(for error: Error) -> AuthProfileFailureReason {
+        let description = String(describing: error).lowercased()
+        if description.contains("rate") || description.contains("429") {
+            return .rateLimit
+        }
+        if description.contains("billing") || description.contains("quota") {
+            return .billing
+        }
+        if description.contains("timeout") {
+            return .timeout
+        }
+        if description.contains("expired") || description.contains("session") {
+            return .sessionExpired
+        }
+        if description.contains("model") && description.contains("not found") {
+            return .modelNotFound
+        }
+        if description.contains("auth") || description.contains("token") || description.contains("unauthorized") {
+            return .auth
+        }
+        return .unknown
     }
 }

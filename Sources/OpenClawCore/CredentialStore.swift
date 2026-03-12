@@ -134,7 +134,7 @@ public actor FileCredentialStore: CredentialStore {
         let data = try self.encoder.encode(payload)
         try OpenClawFileSystem.writeData(data, to: self.fileURL)
         #if !os(Windows)
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: self.fileURL.path)
+        try? FileManager().setAttributes([.posixPermissions: 0o600], ofItemAtPath: self.fileURL.path)
         #endif
     }
 
@@ -152,14 +152,21 @@ public actor FileCredentialStore: CredentialStore {
 public actor KeychainCredentialStore: CredentialStore {
     private let service: String
     private let accessGroup: String?
+    private let accessibility: CFString
 
     /// Creates a keychain-backed credential store.
     /// - Parameters:
     ///   - service: Keychain service namespace.
     ///   - accessGroup: Optional keychain access group.
-    public init(service: String = "io.marcodotio.openclawkit.credentials", accessGroup: String? = nil) {
+    ///   - accessibility: Keychain item accessibility applied to saved secrets.
+    public init(
+        service: String = "io.marcodotio.openclawkit.credentials",
+        accessGroup: String? = nil,
+        accessibility: CFString = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+    ) {
         self.service = service
         self.accessGroup = accessGroup
+        self.accessibility = accessibility
     }
 
     public func saveSecret(_ value: String, for key: String) async throws {
@@ -215,11 +222,20 @@ public actor KeychainCredentialStore: CredentialStore {
         }
     }
 
+    internal func itemQuery(for key: String) throws -> [String: Any] {
+        self.baseQuery(for: try Self.normalizedKey(key))
+    }
+
+    internal func itemQueryAccessibility(for key: String) throws -> String? {
+        self.baseQuery(for: try Self.normalizedKey(key))[kSecAttrAccessible as String] as? String
+    }
+
     private func baseQuery(for key: String) -> [String: Any] {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: self.service,
             kSecAttrAccount as String: key,
+            kSecAttrAccessible as String: self.accessibility,
         ]
         if let accessGroup, !accessGroup.isEmpty {
             query[kSecAttrAccessGroup as String] = accessGroup
@@ -247,7 +263,12 @@ public actor KeychainCredentialStore: CredentialStore {
     /// - Parameters:
     ///   - service: Ignored.
     ///   - accessGroup: Ignored.
-    public init(service _: String = "io.marcodotio.openclawkit.credentials", accessGroup _: String? = nil) {}
+    ///   - accessibility: Ignored.
+    public init(
+        service _: String = "io.marcodotio.openclawkit.credentials",
+        accessGroup _: String? = nil,
+        accessibility _: CFString = "kSecAttrAccessibleWhenUnlockedThisDeviceOnly" as CFString
+    ) {}
 
     public func saveSecret(_: String, for _: String) async throws {
         throw OpenClawCoreError.unavailable("Keychain is not available on this platform")

@@ -7,6 +7,10 @@ import UniformTypeIdentifiers
 /// Observable app state coordinating deployment and chat flows in the iOS example.
 @MainActor
 final class OpenClawAppState: ObservableObject {
+    private static func preferredDefaultProvider() -> DeployProvider {
+        FoundationModelsProvider.runtimeAvailability().isAvailable ? .foundation : .openAI
+    }
+
     /// Deployment lifecycle states for the sample app.
     enum DeploymentState: String, Sendable {
         case stopped
@@ -255,6 +259,7 @@ final class OpenClawAppState: ObservableObject {
         let id: UUID
         let role: MessageRole
         let text: String
+        let attachments: [MediaAttachment]?
         let createdAt: Date
 
         /// Creates a chat message.
@@ -262,11 +267,13 @@ final class OpenClawAppState: ObservableObject {
         ///   - id: Stable message identifier.
         ///   - role: Message role label.
         ///   - text: Message text.
+        ///   - attachments: Optional media attachments.
         ///   - createdAt: Creation timestamp.
-        init(id: UUID = UUID(), role: MessageRole, text: String, createdAt: Date = Date()) {
+        init(id: UUID = UUID(), role: MessageRole, text: String, attachments: [MediaAttachment]? = nil, createdAt: Date = Date()) {
             self.id = id
             self.role = role
             self.text = text
+            self.attachments = attachments
             self.createdAt = createdAt
         }
     }
@@ -552,7 +559,8 @@ final class OpenClawAppState: ObservableObject {
             self.providerServiceBaseURL = try container.decodeIfPresent(String.self, forKey: .providerServiceBaseURL) ?? ""
             self.providerServiceRegion = try container.decodeIfPresent(String.self, forKey: .providerServiceRegion) ?? "us-east-1"
             self.providerServiceProfile = try container.decodeIfPresent(String.self, forKey: .providerServiceProfile) ?? "default"
-            self.selectedProvider = try container.decodeIfPresent(DeployProvider.self, forKey: .selectedProvider) ?? .openAI
+            self.selectedProvider = try container.decodeIfPresent(DeployProvider.self, forKey: .selectedProvider)
+                ?? OpenClawAppState.preferredDefaultProvider()
             self.selectedModelID = try container.decodeIfPresent(String.self, forKey: .selectedModelID) ?? self.selectedProvider.defaultModelID
             self.localRuntime = try container.decodeIfPresent(String.self, forKey: .localRuntime) ?? "llmfarm"
             self.localModelPath = try container.decodeIfPresent(String.self, forKey: .localModelPath) ?? ""
@@ -777,8 +785,8 @@ final class OpenClawAppState: ObservableObject {
     @Published var providerServiceBaseURL: String = ""
     @Published var providerServiceRegion: String = "us-east-1"
     @Published var providerServiceProfile: String = "default"
-    @Published var selectedProvider: DeployProvider = .openAI
-    @Published var selectedModelID: String = DeployProvider.openAI.defaultModelID
+    @Published var selectedProvider: DeployProvider = OpenClawAppState.preferredDefaultProvider()
+    @Published var selectedModelID: String = OpenClawAppState.preferredDefaultProvider().defaultModelID
     @Published var localRuntime: String = "llmfarm"
     @Published var localModelPath: String = ""
     @Published var localFallbackModelPaths: String = ""
@@ -810,6 +818,9 @@ final class OpenClawAppState: ObservableObject {
     @Published private(set) var activeRetryPolicy: ChannelSendRetryPolicy = ChannelSendRetryPolicy()
     @Published private(set) var latestIntentGraph: IntentGraph?
     @Published private(set) var liveActivityStatusText: String = "Idle"
+    @Published private(set) var wasmShowcaseStatusText: String = "WASM showcase has not run yet."
+    @Published private(set) var wasmShowcaseOutputPreview: String = ""
+    @Published private(set) var wasmShowcaseRunning: Bool = false
 
     /// Returns whether runtime deployment is actively running.
     var isDeployed: Bool {
@@ -1258,6 +1269,16 @@ final class OpenClawAppState: ObservableObject {
             return config
         }
 
+        func makeProviderModelsConfig(
+            defaultProviderID: String,
+            config: ProviderServiceConfig
+        ) -> ModelsConfig {
+            ModelsConfig(
+                defaultProviderID: defaultProviderID,
+                providers: [defaultProviderID: ModelProviderConfig(legacyService: config)]
+            )
+        }
+
         switch self.selectedProvider {
         case .echo:
             return ModelsConfig(
@@ -1344,115 +1365,61 @@ final class OpenClawAppState: ObservableObject {
             )
         case .xai:
             let config = try makeOpenAIServiceConfig(defaultBaseURL: "https://api.x.ai/v1")
-            return ModelsConfig(
-                defaultProviderID: XAIModelProvider.providerID,
-                providers: [XAIModelProvider.providerID: config]
-            )
+            return makeProviderModelsConfig(defaultProviderID: XAIModelProvider.providerID, config: config)
         case .openRouter:
             let config = try makeOpenAIServiceConfig(defaultBaseURL: "https://openrouter.ai/api/v1")
-            return ModelsConfig(
-                defaultProviderID: OpenRouterModelProvider.providerID,
-                providers: [OpenRouterModelProvider.providerID: config]
-            )
+            return makeProviderModelsConfig(defaultProviderID: OpenRouterModelProvider.providerID, config: config)
         case .groq:
             let config = try makeOpenAIServiceConfig(defaultBaseURL: "https://api.groq.com/openai/v1")
-            return ModelsConfig(
-                defaultProviderID: GroqModelProvider.providerID,
-                providers: [GroqModelProvider.providerID: config]
-            )
+            return makeProviderModelsConfig(defaultProviderID: GroqModelProvider.providerID, config: config)
         case .mistral:
             let config = try makeOpenAIServiceConfig(defaultBaseURL: "https://api.mistral.ai/v1")
-            return ModelsConfig(
-                defaultProviderID: MistralModelProvider.providerID,
-                providers: [MistralModelProvider.providerID: config]
-            )
+            return makeProviderModelsConfig(defaultProviderID: MistralModelProvider.providerID, config: config)
         case .cerebras:
             let config = try makeOpenAIServiceConfig(defaultBaseURL: "https://api.cerebras.ai/v1")
-            return ModelsConfig(
-                defaultProviderID: CerebrasModelProvider.providerID,
-                providers: [CerebrasModelProvider.providerID: config]
-            )
+            return makeProviderModelsConfig(defaultProviderID: CerebrasModelProvider.providerID, config: config)
         case .moonshot:
             let config = try makeOpenAIServiceConfig(defaultBaseURL: "https://api.moonshot.ai/v1")
-            return ModelsConfig(
-                defaultProviderID: MoonshotModelProvider.providerID,
-                providers: [MoonshotModelProvider.providerID: config]
-            )
+            return makeProviderModelsConfig(defaultProviderID: MoonshotModelProvider.providerID, config: config)
         case .liteLLM:
             let config = try makeOpenAIServiceConfig(defaultBaseURL: "http://127.0.0.1:4000/v1")
-            return ModelsConfig(
-                defaultProviderID: LiteLLMModelProvider.providerID,
-                providers: [LiteLLMModelProvider.providerID: config]
-            )
+            return makeProviderModelsConfig(defaultProviderID: LiteLLMModelProvider.providerID, config: config)
         case .together:
             let config = try makeOpenAIServiceConfig(defaultBaseURL: "https://api.together.xyz/v1")
-            return ModelsConfig(
-                defaultProviderID: TogetherModelProvider.providerID,
-                providers: [TogetherModelProvider.providerID: config]
-            )
+            return makeProviderModelsConfig(defaultProviderID: TogetherModelProvider.providerID, config: config)
         case .huggingFace:
             let config = try makeOpenAIServiceConfig(defaultBaseURL: "https://router.huggingface.co/v1")
-            return ModelsConfig(
-                defaultProviderID: HuggingFaceModelProvider.providerID,
-                providers: [HuggingFaceModelProvider.providerID: config]
-            )
+            return makeProviderModelsConfig(defaultProviderID: HuggingFaceModelProvider.providerID, config: config)
         case .qianfan:
             let config = try makeOpenAIServiceConfig(defaultBaseURL: "https://qianfan.baidubce.com/v2")
-            return ModelsConfig(
-                defaultProviderID: QianfanModelProvider.providerID,
-                providers: [QianfanModelProvider.providerID: config]
-            )
+            return makeProviderModelsConfig(defaultProviderID: QianfanModelProvider.providerID, config: config)
         case .nvidia:
             let config = try makeOpenAIServiceConfig(defaultBaseURL: "https://integrate.api.nvidia.com/v1")
-            return ModelsConfig(
-                defaultProviderID: NVIDIAModelProvider.providerID,
-                providers: [NVIDIAModelProvider.providerID: config]
-            )
+            return makeProviderModelsConfig(defaultProviderID: NVIDIAModelProvider.providerID, config: config)
         case .zai:
             let config = try makeOpenAIServiceConfig(defaultBaseURL: "https://api.z.ai/api/paas/v4")
-            return ModelsConfig(
-                defaultProviderID: ZAIModelProvider.providerID,
-                providers: [ZAIModelProvider.providerID: config]
-            )
+            return makeProviderModelsConfig(defaultProviderID: ZAIModelProvider.providerID, config: config)
         case .minimax:
             let config = try makeAnthropicServiceConfig(defaultBaseURL: "https://api.minimax.io/anthropic")
-            return ModelsConfig(
-                defaultProviderID: MinimaxModelProvider.providerID,
-                providers: [MinimaxModelProvider.providerID: config]
-            )
+            return makeProviderModelsConfig(defaultProviderID: MinimaxModelProvider.providerID, config: config)
         case .minimaxPortal:
             let config = try makeAnthropicServiceConfig(
                 defaultBaseURL: "https://api.minimax.io/anthropic",
                 authMode: .oauthToken
             )
-            return ModelsConfig(
-                defaultProviderID: MinimaxPortalModelProvider.providerID,
-                providers: [MinimaxPortalModelProvider.providerID: config]
-            )
+            return makeProviderModelsConfig(defaultProviderID: MinimaxPortalModelProvider.providerID, config: config)
         case .synthetic:
             let config = try makeAnthropicServiceConfig(defaultBaseURL: "https://api.synthetic.new/anthropic")
-            return ModelsConfig(
-                defaultProviderID: SyntheticModelProvider.providerID,
-                providers: [SyntheticModelProvider.providerID: config]
-            )
+            return makeProviderModelsConfig(defaultProviderID: SyntheticModelProvider.providerID, config: config)
         case .xiaomi:
             let config = try makeAnthropicServiceConfig(defaultBaseURL: "https://api.xiaomimimo.com/anthropic")
-            return ModelsConfig(
-                defaultProviderID: XiaomiModelProvider.providerID,
-                providers: [XiaomiModelProvider.providerID: config]
-            )
+            return makeProviderModelsConfig(defaultProviderID: XiaomiModelProvider.providerID, config: config)
         case .cloudflareAIGateway:
             let config = try makeAnthropicServiceConfig(defaultBaseURL: "https://gateway.ai.cloudflare.com/v1")
-            return ModelsConfig(
-                defaultProviderID: CloudflareAIGatewayModelProvider.providerID,
-                providers: [CloudflareAIGatewayModelProvider.providerID: config]
-            )
+            return makeProviderModelsConfig(defaultProviderID: CloudflareAIGatewayModelProvider.providerID, config: config)
         case .vercelAIGateway:
             let config = try makeAnthropicServiceConfig(defaultBaseURL: "https://ai-gateway.vercel.sh/v1")
-            return ModelsConfig(
-                defaultProviderID: VercelAIGatewayModelProvider.providerID,
-                providers: [VercelAIGatewayModelProvider.providerID: config]
-            )
+            return makeProviderModelsConfig(defaultProviderID: VercelAIGatewayModelProvider.providerID, config: config)
         case .amazonBedrock:
             let region = normalized(self.providerServiceRegion) ?? "us-east-1"
             let profile = normalized(self.providerServiceProfile) ?? "default"
@@ -1465,47 +1432,32 @@ final class OpenClawAppState: ObservableObject {
                 region: region,
                 profile: profile
             )
-            return ModelsConfig(
-                defaultProviderID: BedrockConverseModelProvider.providerID,
-                providers: [BedrockConverseModelProvider.providerID: config]
-            )
+            return makeProviderModelsConfig(defaultProviderID: BedrockConverseModelProvider.providerID, config: config)
         case .githubCopilot:
             let config = try makeOpenAIServiceConfig(
                 defaultBaseURL: "https://api.githubcopilot.com",
                 authMode: .bearerToken
             )
-            return ModelsConfig(
-                defaultProviderID: GitHubCopilotModelProvider.providerID,
-                providers: [GitHubCopilotModelProvider.providerID: config]
-            )
+            return makeProviderModelsConfig(defaultProviderID: GitHubCopilotModelProvider.providerID, config: config)
         case .ollama:
             let config = try makeOpenAIServiceConfig(
                 defaultBaseURL: "http://127.0.0.1:11434/v1",
                 authMode: .none,
                 apiStyle: .ollama
             )
-            return ModelsConfig(
-                defaultProviderID: OllamaModelProvider.providerID,
-                providers: [OllamaModelProvider.providerID: config]
-            )
+            return makeProviderModelsConfig(defaultProviderID: OllamaModelProvider.providerID, config: config)
         case .vllm:
             let config = try makeOpenAIServiceConfig(
                 defaultBaseURL: "http://127.0.0.1:8000/v1",
                 authMode: .none
             )
-            return ModelsConfig(
-                defaultProviderID: VLLMModelProvider.providerID,
-                providers: [VLLMModelProvider.providerID: config]
-            )
+            return makeProviderModelsConfig(defaultProviderID: VLLMModelProvider.providerID, config: config)
         case .qwenPortal:
             let config = try makeOpenAIServiceConfig(
                 defaultBaseURL: "https://portal.qwen.ai/v1",
                 authMode: .oauthToken
             )
-            return ModelsConfig(
-                defaultProviderID: QwenPortalModelProvider.providerID,
-                providers: [QwenPortalModelProvider.providerID: config]
-            )
+            return makeProviderModelsConfig(defaultProviderID: QwenPortalModelProvider.providerID, config: config)
         }
     }
 
@@ -1515,7 +1467,7 @@ final class OpenClawAppState: ObservableObject {
         using models: ModelsConfig
     ) async throws {
         func providerServiceConfig(for providerID: String) throws -> ProviderServiceConfig {
-            guard let config = models.providers[providerID] else {
+            guard let config = models.legacyProviderServiceConfig(for: providerID) else {
                 throw OpenClawCoreError.invalidConfiguration(
                     "Missing provider service config for '\(providerID)'"
                 )
@@ -1729,7 +1681,7 @@ final class OpenClawAppState: ObservableObject {
         self.pendingMessage = ""
         self.pendingAttachments = []
         let normalizedText = text.isEmpty ? "Analyze the attached media and summarize the key details." : text
-        await self.sendMessage(self.composePrompt(normalizedText), attachments: staged)
+        await self.sendMessage(text, prompt: self.composePrompt(normalizedText), attachments: staged)
     }
 
     /// Stages one attachment for the next chat request.
@@ -1885,20 +1837,23 @@ final class OpenClawAppState: ObservableObject {
     }
 
     /// Sends a chat message through the active auto-reply engine.
-    /// - Parameter text: User input message text.
-    func sendMessage(_ text: String, attachments: [MediaAttachment] = []) async {
+    /// - Parameters:
+    ///   - text: User input message text (empty if just sending an attachment).
+    ///   - prompt: The text to actually send to the model provider (incorporating the intent skill).
+    ///   - attachments: Optional media attachments.
+    func sendMessage(_ text: String, prompt: String, attachments: [MediaAttachment] = []) async {
         guard let replyEngine, self.deploymentState == .running else {
             self.statusText = "Deploy the agent before sending messages."
             return
         }
 
-        self.appendMessage(.init(role: .user, text: Self.composeUserTimelineText(text, attachments: attachments)))
+        self.appendMessage(.init(role: .user, text: text, attachments: attachments))
         do {
             let outbound = try await replyEngine.process(
                 InboundMessage(
                     channel: .webchat,
                     peerID: "ios-local-user",
-                    text: text,
+                    text: prompt,
                     attachments: attachments
                 )
             )
@@ -1909,6 +1864,12 @@ final class OpenClawAppState: ObservableObject {
         await self.refreshObservabilityState()
     }
 
+    /// Sends a chat message through the active auto-reply engine.
+    /// - Parameter text: User input message text.
+    func sendMessage(_ text: String, attachments: [MediaAttachment] = []) async {
+        await self.sendMessage(text, prompt: self.composePrompt(text), attachments: attachments)
+    }
+
     private func composePrompt(_ text: String) -> String {
         guard let selected = normalized(self.selectedSkillName),
               self.selectableSkillItems.contains(where: { $0.name == selected })
@@ -1916,28 +1877,6 @@ final class OpenClawAppState: ObservableObject {
             return text
         }
         return "/\(selected) \(text)"
-    }
-
-    /// Builds user-visible timeline text with staged attachment summary.
-    private static func composeUserTimelineText(_ text: String, attachments: [MediaAttachment]) -> String {
-        guard !attachments.isEmpty else {
-            return text
-        }
-        let names = attachments
-            .compactMap { attachment in
-                let trimmed = attachment.fileName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                return trimmed.isEmpty ? nil : trimmed
-            }
-        let suffix: String
-        if names.isEmpty {
-            suffix = "[Attachments] \(attachments.count) item(s)"
-        } else {
-            suffix = "[Attachments] \(names.joined(separator: ", "))"
-        }
-        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return suffix
-        }
-        return "\(text)\n\(suffix)"
     }
 
     /// Resolves MIME type from URL extension/type metadata.
@@ -1984,6 +1923,74 @@ final class OpenClawAppState: ObservableObject {
     /// Forces an immediate refresh of diagnostics, channels, and discovered skills.
     func refreshObservabilityNow() async {
         await self.refreshObservabilityState()
+    }
+
+    /// Executes a deterministic WASM smoke test using the bundled `wasm-hello` skill.
+    func runWASMShowcase() async {
+        guard !self.wasmShowcaseRunning else { return }
+        self.wasmShowcaseRunning = true
+        defer { self.wasmShowcaseRunning = false }
+
+        do {
+            try FileManager.default.createDirectory(at: self.workspaceURL, withIntermediateDirectories: true)
+            try self.syncExampleSkillsIntoWorkspace()
+
+            let invocationEngine = SkillInvocationEngine(
+                workspaceRoot: self.workspaceURL,
+                invocationTimeoutMs: 15_000
+            )
+            guard let invocation = try await invocationEngine.invokeIfRequested(message: "/wasm-hello smoke-test") else {
+                self.wasmShowcaseStatusText = "WASM showcase failed: no invocation result returned."
+                self.wasmShowcaseOutputPreview = ""
+                return
+            }
+
+            let registry = SkillRegistry(workspaceRoot: self.workspaceURL)
+            let skills = try await registry.loadSkills()
+            guard let wasmSkill = skills.first(where: {
+                $0.name.caseInsensitiveCompare("wasm-hello") == .orderedSame
+            }) else {
+                self.wasmShowcaseStatusText = "WASM showcase failed: wasm-hello skill not found."
+                self.wasmShowcaseOutputPreview = ""
+                return
+            }
+            guard let entrypoint = try await registry.resolveEntrypoint(for: wasmSkill) else {
+                self.wasmShowcaseStatusText = "WASM showcase failed: wasm-hello entrypoint missing."
+                self.wasmShowcaseOutputPreview = ""
+                return
+            }
+
+            // Run the same module directly to expose the resolved runtime identifier in the UI.
+            let runtimeResult = try await WASMSkillExecutor(
+                runtimeCandidates: [],
+                allowEnvironmentRuntimeOverride: false
+            )
+            .executeModule(modulePath: entrypoint, input: "smoke-test")
+
+            let duration = invocation.durationMs ?? 0
+            let executor = invocation.executorID ?? "unknown"
+            self.wasmShowcaseStatusText = "Success via \(runtimeResult.runtime) (\(duration) ms, executor: \(executor))."
+
+            let invocationOutput = invocation.output.trimmingCharacters(in: .whitespacesAndNewlines)
+            let runtimeOutput = runtimeResult.output.trimmingCharacters(in: .whitespacesAndNewlines)
+            let resolvedOutput = invocationOutput.isEmpty ? runtimeOutput : invocationOutput
+            if resolvedOutput.count > 240 {
+                self.wasmShowcaseOutputPreview = String(resolvedOutput.prefix(240)) + "..."
+            } else {
+                self.wasmShowcaseOutputPreview = resolvedOutput
+            }
+            if self.wasmShowcaseOutputPreview.isEmpty {
+                self.wasmShowcaseOutputPreview = "(no output)"
+            }
+
+            self.appendMessage(.init(role: .system, text: "WASM showcase output:\n\(resolvedOutput)"))
+            self.statusText = "WASM showcase succeeded."
+            await self.refreshObservabilityState()
+        } catch {
+            self.wasmShowcaseStatusText = "WASM showcase failed: \(error.localizedDescription)"
+            self.wasmShowcaseOutputPreview = ""
+            self.statusText = "WASM showcase failed."
+        }
     }
 
     /// Starts background observability polling loop.

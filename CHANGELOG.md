@@ -1,5 +1,49 @@
 # Changelog
 
+## 2026.2.2 - 2026-03-11
+
+### Added
+
+- Canonical TS-shaped model/auth config surface:
+  `OpenClawConfig.auth`, canonical `models.providers`, Bedrock discovery
+  settings, auth profiles, and shared provider catalog parity against the pinned
+  OpenClaw TS reference.
+- Auth profile persistence and routing:
+  secure credential indirection through `CredentialStore`, profile cooldown and
+  last-good tracking, and router integration for profile-aware fallback.
+- Interactive auth descriptors and Apple browser-auth presentation helpers for
+  OAuth-capable providers, with device-code metadata for Copilot/Qwen-style
+  sign-in flows.
+- Provider parity coverage for additional TS-main families and APIs, including
+  `openai-codex`, Google Generative AI-style providers, GitHub Copilot, and the
+  coding-focused provider aliases in the shared catalog.
+- Checked-in provider catalog snapshot coverage via
+  `ProviderCatalogReferenceFixture` to keep parity tests independent from
+  `.cursor/**` at runtime.
+
+### Changed
+
+- Apple Keychain credentials now default to
+  `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` for device-bound, unlock-only
+  storage.
+- Apple sample defaults now prefer Foundation Models when the runtime reports
+  Apple Intelligence availability, while leaving generic config decoding
+  behavior unchanged.
+- The incomplete visionOS spatial demo has been deferred from `2026.2.2`; the
+  shipped example-app validation gate now covers iOS and tvOS only.
+- README, testing docs, and parity notes now describe the Apple hardware model,
+  canonical Swift config sources, and the current validation gate.
+- Legacy provider-service JSON now decodes into canonical provider configs
+  without losing auth mode, API style, or default model information.
+
+### Tests
+
+- Added regression coverage for auth profile persistence, rotation ordering, and
+  Keychain accessibility query handling.
+- Added provider catalog parity snapshot assertions plus canonical/legacy config
+  serialization coverage for `models.providers`.
+- Revalidated `swift build -Xswiftc -warnings-as-errors` and `swift test`.
+
 ## 2026.2.1 - 2026-03-01
 
 ### Added
@@ -400,4 +444,3 @@
   `Scripts/check-networking-concurrency.sh`.
 - Project documentation set: comprehensive `README.md`, architecture guide,
   testing guide, API surface reference, and MIT `LICENSE`.
-

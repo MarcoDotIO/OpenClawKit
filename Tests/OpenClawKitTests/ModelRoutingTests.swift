@@ -62,6 +62,7 @@ struct ModelRoutingTests {
         let body: Data
         private(set) var lastPath: String?
         private(set) var lastAuthorization: String?
+        private(set) var lastRequestBody: Data?
 
         init(statusCode: Int = 200, body: Data) {
             self.statusCode = statusCode
@@ -71,6 +72,7 @@ struct ModelRoutingTests {
         func data(for request: URLRequest) async throws -> HTTPResponseData {
             self.lastPath = request.url?.path
             self.lastAuthorization = request.value(forHTTPHeaderField: "Authorization")
+            self.lastRequestBody = request.httpBody
             return HTTPResponseData(statusCode: self.statusCode, headers: [:], body: self.body)
         }
 
@@ -81,6 +83,13 @@ struct ModelRoutingTests {
         func authorization() -> String? {
             self.lastAuthorization
         }
+
+        func bodyString() -> String? {
+            guard let lastRequestBody else {
+                return nil
+            }
+            return String(data: lastRequestBody, encoding: .utf8)
+        }
     }
 
     actor MockAnthropicTransport: AnthropicHTTPTransport {
@@ -89,6 +98,7 @@ struct ModelRoutingTests {
         private(set) var lastPath: String?
         private(set) var lastAPIKey: String?
         private(set) var lastAuthorization: String?
+        private(set) var lastRequestBody: Data?
 
         init(statusCode: Int = 200, body: Data) {
             self.statusCode = statusCode
@@ -99,6 +109,7 @@ struct ModelRoutingTests {
             self.lastPath = request.url?.path
             self.lastAPIKey = request.value(forHTTPHeaderField: "x-api-key")
             self.lastAuthorization = request.value(forHTTPHeaderField: "Authorization")
+            self.lastRequestBody = request.httpBody
             return HTTPResponseData(statusCode: self.statusCode, headers: [:], body: self.body)
         }
 
@@ -113,12 +124,20 @@ struct ModelRoutingTests {
         func authorization() -> String? {
             self.lastAuthorization
         }
+
+        func bodyString() -> String? {
+            guard let lastRequestBody else {
+                return nil
+            }
+            return String(data: lastRequestBody, encoding: .utf8)
+        }
     }
 
     actor MockGeminiTransport: GeminiHTTPTransport {
         let statusCode: Int
         let body: Data
         private(set) var lastQuery: String?
+        private(set) var lastRequestBody: Data?
 
         init(statusCode: Int = 200, body: Data) {
             self.statusCode = statusCode
@@ -127,11 +146,19 @@ struct ModelRoutingTests {
 
         func data(for request: URLRequest) async throws -> HTTPResponseData {
             self.lastQuery = request.url?.query
+            self.lastRequestBody = request.httpBody
             return HTTPResponseData(statusCode: self.statusCode, headers: [:], body: self.body)
         }
 
         func query() -> String? {
             self.lastQuery
+        }
+
+        func bodyString() -> String? {
+            guard let lastRequestBody else {
+                return nil
+            }
+            return String(data: lastRequestBody, encoding: .utf8)
         }
     }
 
@@ -486,6 +513,87 @@ struct ModelRoutingTests {
     }
 
     @Test
+    func openAICompatibleProviderEmbedsImageAttachmentAsDataURL() async throws {
+        let transport = MockOpenAICompatibleTransport(
+            body: Data("""
+            {"model":"gpt-4.1-mini","choices":[{"index":0,"message":{"role":"assistant","content":"compat-output"}}]}
+            """.utf8)
+        )
+        let provider = OpenAICompatibleModelProvider(
+            configuration: OpenAICompatibleModelConfig(
+                enabled: true,
+                modelID: "gpt-4.1-mini",
+                apiKey: "key",
+                baseURL: "https://compat.example/v1",
+                chatCompletionsPath: "chat/completions"
+            ),
+            transport: transport
+        )
+
+        let attachment = MediaAttachment(
+            mimeType: "image/png",
+            data: Data([0x01, 0x02, 0x03]),
+            fileName: "photo.png"
+        )
+        let response = try await provider.generate(
+            ModelGenerationRequest(
+                sessionKey: "s1",
+                prompt: "Describe this photo.",
+                attachments: [attachment]
+            )
+        )
+
+        #expect(response.text == "compat-output")
+        let requestBody = await transport.bodyString() ?? ""
+        #expect(requestBody.contains("\"image_url\""))
+        #expect(requestBody.contains("data:image\\/png;base64,AQID"))
+        #expect(requestBody.contains("Describe this photo."))
+    }
+
+    @Test
+    func openAICompatibleProviderEmbedsFileAttachmentPayload() async throws {
+        let transport = MockOpenAICompatibleTransport(
+            body: Data("""
+            {"model":"gpt-4.1-mini","choices":[{"index":0,"message":{"role":"assistant","content":"compat-output"}}]}
+            """.utf8)
+        )
+        let provider = OpenAICompatibleModelProvider(
+            configuration: OpenAICompatibleModelConfig(
+                enabled: true,
+                modelID: "gpt-4.1-mini",
+                apiKey: "key",
+                baseURL: "https://compat.example/v1",
+                chatCompletionsPath: "chat/completions"
+            ),
+            transport: transport
+        )
+
+        let textAttachment = MediaAttachment(
+            mimeType: "text/plain",
+            data: Data("line one\nline two".utf8),
+            fileName: "notes.txt"
+        )
+        let binaryAttachment = MediaAttachment(
+            mimeType: "application/octet-stream",
+            data: Data([0x01, 0x02]),
+            fileName: "blob.bin"
+        )
+        _ = try await provider.generate(
+            ModelGenerationRequest(
+                sessionKey: "s1",
+                prompt: "Inspect attached files.",
+                attachments: [textAttachment, binaryAttachment]
+            )
+        )
+
+        let requestBody = await transport.bodyString() ?? ""
+        #expect(requestBody.contains("notes.txt"))
+        #expect(requestBody.contains("line one"))
+        #expect(requestBody.contains("blob.bin"))
+        #expect(requestBody.contains("AQI="))
+    }
+
+    @Test
     func anthropicProviderParsesMessagesResponse() async throws {
         let transport = MockAnthropicTransport(
             body: Data("""
@@ -506,6 +614,40 @@ struct ModelRoutingTests {
 
         #expect(response.providerID == AnthropicModelProvider.providerID)
         #expect(response.text == "anthropic-output")
+    }
+
+    @Test
+    func anthropicProviderEmbedsImageAttachmentBlock() async throws {
+        let transport = MockAnthropicTransport(
+            body: Data("""
+            {"id":"msg_1","model":"claude-3-5-haiku-latest","content":[{"type":"text","text":"anthropic-output"}]}
+            """.utf8)
+        )
+        let provider = AnthropicModelProvider(
+            configuration: AnthropicModelConfig(
+                enabled: true,
+                modelID: "claude-3-5-haiku-latest",
+                apiKey: "key"
+            ),
+            transport: transport
+        )
+        let attachment = MediaAttachment(
+            mimeType: "image/png",
+            data: Data([0x01, 0x02, 0x03]),
+            fileName: "photo.png"
+        )
+        _ = try await provider.generate(
+            ModelGenerationRequest(
+                sessionKey: "s1",
+                prompt: "Describe this image.",
+                attachments: [attachment]
+            )
+        )
+
+        let requestBody = await transport.bodyString() ?? ""
+        #expect(requestBody.contains("\"type\":\"image\""))
+        #expect(requestBody.contains("\"media_type\":\"image\\/png\""))
+        #expect(requestBody.contains("\"data\":\"AQID\""))
     }
 
     @Test
@@ -531,6 +673,41 @@ struct ModelRoutingTests {
         #expect(response.providerID == GeminiModelProvider.providerID)
         #expect(response.text == "gemini-output")
         #expect(await transport.query()?.contains("key=gem-key") == true)
+    }
+
+    @Test
+    func geminiProviderEmbedsImageAttachmentInlineData() async throws {
+        let transport = MockGeminiTransport(
+            body: Data("""
+            {"candidates":[{"content":{"parts":[{"text":"gemini-output"}]}}]}
+            """.utf8)
+        )
+        let provider = GeminiModelProvider(
+            configuration: GeminiModelConfig(
+                enabled: true,
+                modelID: "gemini-2.0-flash",
+                apiKey: "gem-key",
+                baseURL: "https://generativelanguage.googleapis.com/v1beta"
+            ),
+            transport: transport
+        )
+        let attachment = MediaAttachment(
+            mimeType: "image/png",
+            data: Data([0x01, 0x02, 0x03]),
+            fileName: "photo.png"
+        )
+        _ = try await provider.generate(
+            ModelGenerationRequest(
+                sessionKey: "s1",
+                prompt: "Describe this image.",
+                attachments: [attachment]
+            )
+        )
+
+        let requestBody = await transport.bodyString() ?? ""
+        #expect(requestBody.contains("\"inline_data\""))
+        #expect(requestBody.contains("\"mime_type\":\"image\\/png\""))
+        #expect(requestBody.contains("\"data\":\"AQID\""))
     }
 
     @Test

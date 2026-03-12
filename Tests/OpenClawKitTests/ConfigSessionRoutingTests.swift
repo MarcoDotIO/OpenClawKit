@@ -183,35 +183,34 @@ struct ConfigSessionRoutingTests {
             models: ModelsConfig(
                 defaultProviderID: "openrouter",
                 providers: [
-                    "openrouter": ProviderServiceConfig(
+                    "openrouter": ModelProviderConfig(
                         enabled: true,
-                        apiStyle: .openAICompletions,
-                        authMode: .apiKey,
-                        modelID: "anthropic/claude-sonnet-4-5",
-                        apiKey: "openrouter-key",
                         baseURL: "https://openrouter.ai/api/v1",
+                        apiKey: "openrouter-key",
+                        auth: .apiKey,
+                        api: .openAICompletions,
+                        models: [ModelDefinitionConfig(id: "anthropic/claude-sonnet-4-5", api: .openAICompletions)],
                         chatCompletionsPath: "chat/completions"
                     ),
-                    "amazon-bedrock": ProviderServiceConfig(
+                    "amazon-bedrock": ModelProviderConfig(
                         enabled: true,
-                        apiStyle: .bedrockConverse,
-                        authMode: .awsSDK,
-                        modelID: "anthropic.claude-3-5-sonnet",
-                        apiKey: "AWS_PROFILE",
                         baseURL: "https://bedrock-runtime.us-east-1.amazonaws.com",
+                        auth: .awsSDK,
+                        api: .bedrockConverseStream,
+                        models: [ModelDefinitionConfig(id: "anthropic.claude-3-5-sonnet", api: .bedrockConverseStream)],
                         region: "us-east-1",
                         profile: "default",
                         metadata: [
                             "runtime": "aws-sdk",
                         ]
                     ),
-                    "qwen-portal": ProviderServiceConfig(
+                    "qwen-portal": ModelProviderConfig(
                         enabled: true,
-                        apiStyle: .openAICompletions,
-                        authMode: .oauthToken,
-                        modelID: "coder-model",
-                        accessToken: "qwen-oauth-token",
                         baseURL: "https://portal.qwen.ai/v1",
+                        apiKey: "qwen-oauth-token",
+                        auth: .oauth,
+                        api: .openAICompletions,
+                        models: [ModelDefinitionConfig(id: "coder-model", api: .openAICompletions)],
                         scope: "models.read"
                     ),
                 ]
@@ -222,11 +221,46 @@ struct ConfigSessionRoutingTests {
         let decoded = try JSONDecoder().decode(OpenClawConfig.self, from: encoded)
         #expect(decoded.models.defaultProviderID == "openrouter")
         #expect(decoded.models.providers["openrouter"]?.enabled == true)
-        #expect(decoded.models.providers["openrouter"]?.apiStyle == .openAICompletions)
-        #expect(decoded.models.providers["amazon-bedrock"]?.authMode == .awsSDK)
+        #expect(decoded.models.providers["openrouter"]?.api == .openAICompletions)
+        #expect(decoded.models.providers["amazon-bedrock"]?.auth == .awsSDK)
         #expect(decoded.models.providers["amazon-bedrock"]?.region == "us-east-1")
-        #expect(decoded.models.providers["qwen-portal"]?.authMode == .oauthToken)
-        #expect(decoded.models.providers["qwen-portal"]?.accessToken == "qwen-oauth-token")
+        #expect(decoded.models.providers["qwen-portal"]?.auth == .oauth)
+        #expect(decoded.models.providers["qwen-portal"]?.apiKey == "qwen-oauth-token")
+        #expect(decoded.models.providers["qwen-portal"]?.models.first?.id == "coder-model")
+    }
+
+    @Test
+    func providerMatrixLegacyShapeStillDecodesIntoCanonicalProviders() throws {
+        let legacyJSON = """
+        {
+          "models": {
+            "defaultProviderID": "openrouter",
+            "providers": {
+              "openrouter": {
+                "enabled": true,
+                "apiStyle": "openAICompletions",
+                "authMode": "apiKey",
+                "modelID": "anthropic/claude-sonnet-4-5",
+                "apiKey": "openrouter-key",
+                "baseURL": "https://openrouter.ai/api/v1"
+              },
+              "qwen-portal": {
+                "enabled": true,
+                "apiStyle": "openAICompletions",
+                "authMode": "oauthToken",
+                "modelID": "coder-model",
+                "accessToken": "qwen-oauth-token",
+                "baseURL": "https://portal.qwen.ai/v1"
+              }
+            }
+          }
+        }
+        """
+
+        let decoded = try JSONDecoder().decode(OpenClawConfig.self, from: Data(legacyJSON.utf8))
+        #expect(decoded.models.providers["openrouter"]?.api == .openAICompletions)
+        #expect(decoded.models.providers["qwen-portal"]?.auth == .oauth)
+        #expect(decoded.models.providers["qwen-portal"]?.apiKey == "qwen-oauth-token")
     }
 
     @Test
@@ -235,22 +269,21 @@ struct ConfigSessionRoutingTests {
             models: ModelsConfig(
                 defaultProviderID: "synthetic",
                 providers: [
-                    "synthetic": ProviderServiceConfig(
+                    "synthetic": ModelProviderConfig(
                         enabled: true,
-                        apiStyle: .anthropicMessages,
-                        authMode: .apiKey,
-                        modelID: "hf:MiniMaxAI/MiniMax-M2.1",
-                        apiKey: "synthetic-key",
-                        accessToken: nil,
                         baseURL: "https://api.synthetic.new/anthropic",
-                        chatCompletionsPath: "chat/completions",
-                        messagesPath: "messages",
-                        apiVersion: "2023-06-01",
-                        organizationID: "org_openclaw",
+                        apiKey: "synthetic-key",
+                        auth: .apiKey,
+                        api: .anthropicMessages,
                         headers: [
                             "x-gateway-route": "edge",
                             "x-team": "runtime",
                         ],
+                        models: [ModelDefinitionConfig(id: "hf:MiniMaxAI/MiniMax-M2.1", api: .anthropicMessages)],
+                        chatCompletionsPath: "chat/completions",
+                        messagesPath: "messages",
+                        apiVersion: "2023-06-01",
+                        organizationID: "org_openclaw",
                         region: nil,
                         profile: nil,
                         tenantID: nil,
@@ -272,6 +305,34 @@ struct ConfigSessionRoutingTests {
         #expect(synthetic?.headers["x-gateway-route"] == "edge")
         #expect(synthetic?.scope == "models.read")
         #expect(synthetic?.metadata["maxTokens"] == "4096")
+    }
+
+    @Test
+    func authConfigRoundTripsProfilesAndCooldowns() throws {
+        let config = OpenClawConfig(
+            auth: AuthConfig(
+                profiles: [
+                    "openai-codex:work": AuthProfileConfig(provider: "openai-codex", mode: .oauth, email: "work@example.com"),
+                    "github-copilot:default": AuthProfileConfig(provider: "github-copilot", mode: .token),
+                ],
+                order: [
+                    "openai-codex": ["openai-codex:work"],
+                ],
+                cooldowns: AuthCooldownConfig(
+                    billingBackoffHours: 6,
+                    billingBackoffHoursByProvider: ["github-copilot": 2],
+                    billingMaxHours: 12,
+                    failureWindowHours: 18
+                )
+            )
+        )
+
+        let encoded = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(OpenClawConfig.self, from: encoded)
+        #expect(decoded.auth.profiles["openai-codex:work"]?.mode == .oauth)
+        #expect(decoded.auth.order["openai-codex"] == ["openai-codex:work"])
+        #expect(decoded.auth.cooldowns.billingBackoffHoursByProvider["github-copilot"] == 2)
+        #expect(decoded.auth.cooldowns.billingMaxHours == 12)
     }
 
     @Test
@@ -436,4 +497,3 @@ struct ConfigSessionRoutingTests {
         #expect(fetched?.key == "telegram:default:1234")
     }
 }
-

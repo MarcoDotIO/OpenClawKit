@@ -6,7 +6,13 @@ of truth for adapter/provider naming while commits are in flight.
 
 ## Baseline Scope
 
-- **Canonical reference:** `.cursor/openclaw`
+- **Upstream parity reference:** pinned `.cursor/openclaw` snapshot at
+  `8cc0c9baf2ffce3da3402c0fb1309cc31a7343e6`
+- **Swift implementation source of truth:**
+  `Sources/OpenClawCore/OpenClawConfig.swift` and
+  `Sources/OpenClawModels/ProviderCatalog.swift`
+- **Checked-in parity fixture:**
+  `Tests/OpenClawKitTests/ProviderCatalogReferenceFixture.swift`
 - **Release target:** full parity for remaining channel adapters and model API
   services requested for 2026.2.1.
 - **WhatsApp scope lock:** continue using `WhatsAppCloudChannelAdapter` as the
@@ -33,11 +39,13 @@ Current Swift channel baseline:
 
 ## Model API Service Parity Matrix
 
-OpenClaw provider reference surfaces:
+OpenClaw parity reference surfaces:
 
-- `.cursor/openclaw/docs/concepts/model-providers.md`
-- `.cursor/openclaw/src/agents/models-config.providers.ts`
-- `.cursor/openclaw/src/commands/onboard-types.ts`
+- pinned `.cursor/openclaw` snapshot for TS provider/auth behavior
+- `Sources/OpenClawCore/OpenClawConfig.swift` for Swift config compatibility
+- `Sources/OpenClawModels/ProviderCatalog.swift` for Swift provider registry
+- `Tests/OpenClawKitTests/ProviderCatalogReferenceFixture.swift` for the checked-in
+  provider snapshot used by tests
 
 ### Already first-class in Swift SDK
 
@@ -74,5 +82,6 @@ OpenClaw provider reference surfaces:
 3. `swift test`
 4. `./Scripts/build-ios-example.sh`
 5. `./Scripts/test-ios-example.sh`
-6. `Scripts/validate-apple-matrix.sh --platform macos`
-7. `Scripts/validate-apple-matrix.sh --platform ios`
+6. `./Scripts/build-tvos-example.sh`
+7. `Scripts/validate-apple-matrix.sh --platform macos`
+8. `Scripts/validate-apple-matrix.sh --platform ios`

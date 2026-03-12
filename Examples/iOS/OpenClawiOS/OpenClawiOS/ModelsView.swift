@@ -38,31 +38,36 @@ struct ModelsView: View {
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
 
-                        Stepper("Context Window: \(appState.localContextWindow)", value: $appState.localContextWindow, in: 256...32768, step: 256)
-                        Stepper("Top K: \(appState.localTopK)", value: $appState.localTopK, in: 1...200)
-                        Stepper("Max Tokens: \(appState.localMaxTokens)", value: $appState.localMaxTokens, in: 1...8192, step: 32)
-                        Stepper("Timeout (ms): \(appState.localRequestTimeoutMs)", value: $appState.localRequestTimeoutMs, in: 1_000...600_000, step: 500)
+                        DisclosureGroup("Advanced Local Settings") {
+                            Stepper("Context Window: \(appState.localContextWindow)", value: $appState.localContextWindow, in: 256...32768, step: 256)
+                            Stepper("Top K: \(appState.localTopK)", value: $appState.localTopK, in: 1...200)
+                            Stepper("Max Tokens: \(appState.localMaxTokens)", value: $appState.localMaxTokens, in: 1...8192, step: 32)
+                            Stepper("Timeout (ms): \(appState.localRequestTimeoutMs)", value: $appState.localRequestTimeoutMs, in: 1_000...600_000, step: 500)
 
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Temperature: \(appState.localTemperature, format: .number.precision(.fractionLength(2)))")
-                            Slider(value: $appState.localTemperature, in: 0...2, step: 0.05)
-                        }
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Top P: \(appState.localTopP, format: .number.precision(.fractionLength(2)))")
-                            Slider(value: $appState.localTopP, in: 0.05...1, step: 0.05)
-                        }
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Temperature: \(appState.localTemperature, format: .number.precision(.fractionLength(2)))")
+                                Slider(value: $appState.localTemperature, in: 0...2, step: 0.05)
+                            }
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Top P: \(appState.localTopP, format: .number.precision(.fractionLength(2)))")
+                                Slider(value: $appState.localTopP, in: 0.05...1, step: 0.05)
+                            }
 
-                        Toggle("Use Metal", isOn: $appState.localUseMetal)
-                        Toggle("Stream Tokens", isOn: $appState.localStreamTokens)
-                        Toggle("Allow Cancellation", isOn: $appState.localAllowCancellation)
+                            Toggle("Use Metal", isOn: $appState.localUseMetal)
+                            Toggle("Stream Tokens", isOn: $appState.localStreamTokens)
+                            Toggle("Allow Cancellation", isOn: $appState.localAllowCancellation)
+                        }
                     }
                 }
 
                 Section("Observed Model Usage") {
                     let rows = appState.usageSnapshot?.models ?? []
                     if rows.isEmpty {
-                        Text("No model usage recorded yet.")
-                            .foregroundStyle(.secondary)
+                        ContentUnavailableView(
+                            "No Model Usage",
+                            systemImage: "chart.bar.xaxis",
+                            description: Text("No model usage recorded yet.")
+                        )
                     } else {
                         ForEach(rows, id: \.providerID) { row in
                             VStack(alignment: .leading, spacing: 4) {

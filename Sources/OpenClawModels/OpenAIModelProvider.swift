@@ -36,10 +36,11 @@ public struct OpenAIModelProvider: ModelProvider {
         guard self.configuration.enabled else {
             throw OpenClawCoreError.unavailable("OpenAI model provider is disabled")
         }
-        let apiKey = self.configuration.apiKey?.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines) ?? ""
-        guard !apiKey.isEmpty else {
-            throw OpenClawCoreError.invalidConfiguration("OpenAI API key is required")
-        }
+        let apiKey = try ProviderRequestResolution.resolveAPIKey(
+            configured: self.configuration.apiKey,
+            request: request,
+            providerID: self.id
+        )
 
         let base = self.configuration.baseURL.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
         guard let baseURL = URL(string: base), !base.isEmpty else {
@@ -50,11 +51,19 @@ public struct OpenAIModelProvider: ModelProvider {
         var messages: [OpenAIChatMessage] = []
         let systemPrompt = request.systemPrompt?.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines) ?? ""
         if !systemPrompt.isEmpty {
-            messages.append(OpenAIChatMessage(role: "system", content: systemPrompt))
+            messages.append(OpenAIChatMessage(role: "system", content: .text(systemPrompt)))
         }
-        messages.append(OpenAIChatMessage(role: "user", content: request.prompt))
+        messages.append(
+            OpenAIChatMessage(
+                role: "user",
+                content: OpenAIStyleMultimodalSupport.userContent(
+                    prompt: request.prompt,
+                    attachments: request.attachments
+                )
+            )
+        )
         let payload = OpenAIChatCompletionRequest(
-            model: self.configuration.modelID,
+            model: request.resolvedModelID ?? self.configuration.modelID,
             messages: messages
         )
 
@@ -62,6 +71,7 @@ public struct OpenAIModelProvider: ModelProvider {
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        ProviderRequestResolution.applyHeaders(request.resolvedRequestHeaders, request: &urlRequest)
         urlRequest.timeoutInterval = 30
         urlRequest.httpBody = try JSONEncoder().encode(payload)
 
@@ -85,14 +95,14 @@ public struct OpenAIModelProvider: ModelProvider {
     }
 }
 
-private struct OpenAIChatCompletionRequest: Codable, Sendable {
+private struct OpenAIChatCompletionRequest: Encodable, Sendable {
     let model: String
     let messages: [OpenAIChatMessage]
 }
 
-private struct OpenAIChatMessage: Codable, Sendable {
+private struct OpenAIChatMessage: Encodable, Sendable {
     let role: String
-    let content: String
+    let content: OpenAIStyleMessageContent
 }
 
 private struct OpenAIChatCompletionResponse: Codable, Sendable {

@@ -14,10 +14,10 @@ public protocol AnthropicHTTPTransport: Sendable {
 
 extension HTTPClient: AnthropicHTTPTransport {}
 
-private struct AnthropicMessagesRequest: Codable, Sendable {
-    struct Message: Codable, Sendable {
+private struct AnthropicMessagesRequest: Encodable, Sendable {
+    struct Message: Encodable, Sendable {
         let role: String
-        let content: String
+        let content: AnthropicMessageContent
     }
 
     let model: String
@@ -94,7 +94,15 @@ public struct AnthropicModelProvider: ModelProvider {
             model: selectedModel,
             maxTokens: self.configuration.maxTokens,
             system: normalizedSystemPrompt,
-            messages: [.init(role: "user", content: request.prompt)]
+            messages: [
+                .init(
+                    role: "user",
+                    content: AnthropicStyleMultimodalSupport.userContent(
+                        prompt: request.prompt,
+                        attachments: request.attachments
+                    )
+                ),
+            ]
         )
 
         var urlRequest = URLRequest(url: endpoint)

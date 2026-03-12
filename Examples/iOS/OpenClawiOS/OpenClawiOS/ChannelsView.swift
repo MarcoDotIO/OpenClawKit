@@ -30,8 +30,11 @@ struct ChannelsView: View {
 
                 Section("Channel Health") {
                     if appState.channelHealthItems.isEmpty {
-                        Text("No channel health data available yet.")
-                            .foregroundStyle(.secondary)
+                        ContentUnavailableView(
+                            "No Channels Active",
+                            systemImage: "bolt.horizontal.circle.fill",
+                            description: Text("Deploy the agent to see channel health.")
+                        )
                     } else {
                         ForEach(appState.channelHealthItems) { item in
                             VStack(alignment: .leading, spacing: 4) {

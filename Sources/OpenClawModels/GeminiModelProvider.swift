@@ -14,14 +14,10 @@ public protocol GeminiHTTPTransport: Sendable {
 
 extension HTTPClient: GeminiHTTPTransport {}
 
-private struct GeminiGenerateContentRequest: Codable, Sendable {
-    struct Content: Codable, Sendable {
+private struct GeminiGenerateContentRequest: Encodable, Sendable {
+    struct Content: Encodable, Sendable {
         let role: String
-        let parts: [Part]
-    }
-
-    struct Part: Codable, Sendable {
-        let text: String
+        let parts: [GeminiInputPart]
     }
 
     let contents: [Content]
@@ -76,18 +72,19 @@ public struct GeminiModelProvider: ModelProvider {
         guard self.configuration.enabled else {
             throw OpenClawCoreError.unavailable("Gemini model provider is disabled")
         }
-        let apiKey = self.configuration.apiKey?.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines) ?? ""
-        guard !apiKey.isEmpty else {
-            throw OpenClawCoreError.invalidConfiguration("Gemini API key is required")
-        }
-        let requestedModel = request.metadata["model"]?.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-        let modelID = (requestedModel?.isEmpty == false) ? requestedModel! : self.configuration.modelID
+        let apiKey = try ProviderRequestResolution.resolveAPIKey(
+            configured: self.configuration.apiKey,
+            request: request,
+            providerID: self.id
+        )
+        let modelID = request.resolvedModelID ?? self.configuration.modelID
         let endpoint = try self.resolveEndpoint(modelID: modelID, apiKey: apiKey)
         let payload = GeminiGenerateContentRequest(contents: [self.buildContent(from: request)])
 
         var urlRequest = URLRequest(url: endpoint)
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        ProviderRequestResolution.applyHeaders(request.resolvedRequestHeaders, request: &urlRequest)
         urlRequest.timeoutInterval = 30
         urlRequest.httpBody = try JSONEncoder().encode(payload)
 
@@ -119,7 +116,7 @@ public struct GeminiModelProvider: ModelProvider {
         }
         return GeminiGenerateContentRequest.Content(
             role: "user",
-            parts: [.init(text: prompt)]
+            parts: GeminiMultimodalSupport.parts(prompt: prompt, attachments: request.attachments)
         )
     }
 

@@ -25,10 +25,22 @@ fi
 
 APP_PATH="${TARGET_BUILD_DIR}/${WRAPPER_NAME}"
 SKILL_FILE="${APP_PATH}/skills/weather/SKILL.md"
+WASM_SKILL_FILE="${APP_PATH}/skills/wasm-hello/SKILL.md"
+WASM_MODULE_FILE="${APP_PATH}/skills/wasm-hello/module/hello.wasm"
 
 if [[ ! -f "${SKILL_FILE}" ]]; then
   echo "Missing bundled skill file: ${SKILL_FILE}" >&2
   exit 1
 fi
 
-echo "Verified bundled skills at ${SKILL_FILE}"
+if [[ ! -f "${WASM_SKILL_FILE}" ]]; then
+  echo "Missing bundled WASM skill file: ${WASM_SKILL_FILE}" >&2
+  exit 1
+fi
+
+if [[ ! -f "${WASM_MODULE_FILE}" ]]; then
+  echo "Missing bundled WASM module file: ${WASM_MODULE_FILE}" >&2
+  exit 1
+fi
+
+echo "Verified bundled skills at ${SKILL_FILE} and ${WASM_MODULE_FILE}"

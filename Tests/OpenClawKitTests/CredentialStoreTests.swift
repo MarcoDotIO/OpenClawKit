@@ -6,11 +6,12 @@ import Testing
 struct CredentialStoreTests {
     @Test
     func fileCredentialStoreRoundTripAndDelete() async throws {
-        let directory = FileManager.default.temporaryDirectory
+        let fileManager = FileManager()
+        let directory = fileManager.temporaryDirectory
             .appendingPathComponent("openclawkit-tests", isDirectory: true)
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: directory) }
 
         let storeURL = directory.appendingPathComponent("credentials.json")
         let store = FileCredentialStore(fileURL: storeURL)
@@ -26,11 +27,12 @@ struct CredentialStoreTests {
 
     @Test
     func fileCredentialStorePersistsAcrossInstances() async throws {
-        let directory = FileManager.default.temporaryDirectory
+        let fileManager = FileManager()
+        let directory = fileManager.temporaryDirectory
             .appendingPathComponent("openclawkit-tests", isDirectory: true)
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: directory) }
 
         let storeURL = directory.appendingPathComponent("credentials.json")
         let first = FileCredentialStore(fileURL: storeURL)
@@ -43,7 +45,7 @@ struct CredentialStoreTests {
 
     @Test
     func defaultFactorySelectsExpectedStoreForPlatform() {
-        let fallbackURL = FileManager.default.temporaryDirectory
+        let fallbackURL = FileManager().temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
             .appendingPathComponent("credentials.json")
         let store = CredentialStoreFactory.makeDefault(
@@ -97,11 +99,12 @@ struct CredentialStoreTests {
 
     @Test
     func replayLedgerSignerUsesCredentialStoreSecret() async throws {
-        let directory = FileManager.default.temporaryDirectory
+        let fileManager = FileManager()
+        let directory = fileManager.temporaryDirectory
             .appendingPathComponent("openclawkit-replay-ledger-tests", isDirectory: true)
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: directory) }
 
         let store = FileCredentialStore(fileURL: directory.appendingPathComponent("credentials.json"))
         try await store.saveSecret("ledger-secret", for: "replay-ledger")
@@ -149,6 +152,32 @@ struct CredentialStoreTests {
         try await store.deleteSecret(for: key)
         let deleted = try await store.loadSecret(for: key)
         #expect(deleted == nil)
+    }
+
+    @Test
+    func keychainCredentialStoreQueryIncludesAccessibility() async throws {
+        let store = KeychainCredentialStore(
+            service: "io.marcodotio.openclawkit.tests.\(UUID().uuidString)",
+            accessibility: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        )
+
+        let accessibility = try await store.itemQueryAccessibility(for: "openai")
+        #expect(accessibility == kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String)
+    }
+    #endif
+
+    #if !canImport(Security)
+    @Test
+    func nonSecurityPlaceholderMaintainsAccessibilityInitializerShape() async throws {
+        let store = KeychainCredentialStore(
+            service: "io.marcodotio.openclawkit.tests",
+            accessibility: "placeholder" as CFString
+        )
+        do {
+            _ = try await store.loadSecret(for: "unavailable")
+        } catch {
+            #expect(String(describing: error).contains("Keychain"))
+        }
     }
     #endif
 }

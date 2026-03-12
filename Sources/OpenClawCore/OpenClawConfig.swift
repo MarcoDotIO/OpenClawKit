@@ -6,6 +6,7 @@ public struct OpenClawConfig: Codable, Sendable, Equatable {
     public var agents: AgentsConfig
     public var channels: ChannelsConfig
     public var routing: RoutingConfig
+    public var auth: AuthConfig
     public var models: ModelsConfig
     public var runtime: RuntimeConfig
 
@@ -21,6 +22,7 @@ public struct OpenClawConfig: Codable, Sendable, Equatable {
         agents: AgentsConfig = AgentsConfig(),
         channels: ChannelsConfig = ChannelsConfig(),
         routing: RoutingConfig = RoutingConfig(),
+        auth: AuthConfig = AuthConfig(),
         models: ModelsConfig = ModelsConfig(),
         runtime: RuntimeConfig = RuntimeConfig()
     ) {
@@ -28,6 +30,7 @@ public struct OpenClawConfig: Codable, Sendable, Equatable {
         self.agents = agents
         self.channels = channels
         self.routing = routing
+        self.auth = auth
         self.models = models
         self.runtime = runtime
     }
@@ -37,6 +40,7 @@ public struct OpenClawConfig: Codable, Sendable, Equatable {
         case agents
         case channels
         case routing
+        case auth
         case models
         case runtime
     }
@@ -47,6 +51,7 @@ public struct OpenClawConfig: Codable, Sendable, Equatable {
         self.agents = try container.decodeIfPresent(AgentsConfig.self, forKey: .agents) ?? AgentsConfig()
         self.channels = try container.decodeIfPresent(ChannelsConfig.self, forKey: .channels) ?? ChannelsConfig()
         self.routing = try container.decodeIfPresent(RoutingConfig.self, forKey: .routing) ?? RoutingConfig()
+        self.auth = try container.decodeIfPresent(AuthConfig.self, forKey: .auth) ?? AuthConfig()
         self.models = try container.decodeIfPresent(ModelsConfig.self, forKey: .models) ?? ModelsConfig()
         self.runtime = try container.decodeIfPresent(RuntimeConfig.self, forKey: .runtime) ?? RuntimeConfig()
     }
@@ -57,6 +62,7 @@ public struct OpenClawConfig: Codable, Sendable, Equatable {
         try container.encode(self.agents, forKey: .agents)
         try container.encode(self.channels, forKey: .channels)
         try container.encode(self.routing, forKey: .routing)
+        try container.encode(self.auth, forKey: .auth)
         try container.encode(self.models, forKey: .models)
         try container.encode(self.runtime, forKey: .runtime)
     }
@@ -965,13 +971,15 @@ public struct WebChatChannelConfig: Codable, Sendable, Equatable {
 public struct ModelsConfig: Codable, Sendable, Equatable {
     public var defaultProviderID: String
     public var systemPrompt: String?
+    public var mode: ModelsConfigMode
     public var openAI: OpenAIModelConfig
     public var openAICompatible: OpenAICompatibleModelConfig
     public var anthropic: AnthropicModelConfig
     public var gemini: GeminiModelConfig
     public var foundation: FoundationModelConfig
     public var local: LocalModelConfig
-    public var providers: [String: ProviderServiceConfig]
+    public var providers: [String: ModelProviderConfig]
+    public var bedrockDiscovery: BedrockDiscoveryConfig
 
     /// Creates model settings.
     /// - Parameters:
@@ -987,16 +995,19 @@ public struct ModelsConfig: Codable, Sendable, Equatable {
     public init(
         defaultProviderID: String = "echo",
         systemPrompt: String? = nil,
+        mode: ModelsConfigMode = .merge,
         openAI: OpenAIModelConfig = OpenAIModelConfig(),
         openAICompatible: OpenAICompatibleModelConfig = OpenAICompatibleModelConfig(),
         anthropic: AnthropicModelConfig = AnthropicModelConfig(),
         gemini: GeminiModelConfig = GeminiModelConfig(),
         foundation: FoundationModelConfig = FoundationModelConfig(),
         local: LocalModelConfig = LocalModelConfig(),
-        providers: [String: ProviderServiceConfig] = [:]
+        providers: [String: ModelProviderConfig] = [:],
+        bedrockDiscovery: BedrockDiscoveryConfig = BedrockDiscoveryConfig()
     ) {
         self.defaultProviderID = defaultProviderID
         self.systemPrompt = systemPrompt
+        self.mode = mode
         self.openAI = openAI
         self.openAICompatible = openAICompatible
         self.anthropic = anthropic
@@ -1004,11 +1015,42 @@ public struct ModelsConfig: Codable, Sendable, Equatable {
         self.foundation = foundation
         self.local = local
         self.providers = providers
+        self.bedrockDiscovery = bedrockDiscovery
+    }
+
+    @available(*, deprecated, message: "Use ModelProviderConfig-based providers instead")
+    public init(
+        defaultProviderID: String = "echo",
+        systemPrompt: String? = nil,
+        mode: ModelsConfigMode = .merge,
+        openAI: OpenAIModelConfig = OpenAIModelConfig(),
+        openAICompatible: OpenAICompatibleModelConfig = OpenAICompatibleModelConfig(),
+        anthropic: AnthropicModelConfig = AnthropicModelConfig(),
+        gemini: GeminiModelConfig = GeminiModelConfig(),
+        foundation: FoundationModelConfig = FoundationModelConfig(),
+        local: LocalModelConfig = LocalModelConfig(),
+        providers legacyProviders: [String: ProviderServiceConfig],
+        bedrockDiscovery: BedrockDiscoveryConfig = BedrockDiscoveryConfig()
+    ) {
+        self.init(
+            defaultProviderID: defaultProviderID,
+            systemPrompt: systemPrompt,
+            mode: mode,
+            openAI: openAI,
+            openAICompatible: openAICompatible,
+            anthropic: anthropic,
+            gemini: gemini,
+            foundation: foundation,
+            local: local,
+            providers: legacyProviders.mapValues { ModelProviderConfig(legacyService: $0) },
+            bedrockDiscovery: bedrockDiscovery
+        )
     }
 
     private enum CodingKeys: String, CodingKey {
         case defaultProviderID
         case systemPrompt
+        case mode
         case openAI
         case openAICompatible
         case anthropic
@@ -1016,25 +1058,35 @@ public struct ModelsConfig: Codable, Sendable, Equatable {
         case foundation
         case local
         case providers
+        case bedrockDiscovery
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.defaultProviderID = try container.decodeIfPresent(String.self, forKey: .defaultProviderID) ?? "echo"
         self.systemPrompt = try container.decodeIfPresent(String.self, forKey: .systemPrompt)
+        self.mode = try container.decodeIfPresent(ModelsConfigMode.self, forKey: .mode) ?? .merge
         self.openAI = try container.decodeIfPresent(OpenAIModelConfig.self, forKey: .openAI) ?? OpenAIModelConfig()
         self.openAICompatible = try container.decodeIfPresent(OpenAICompatibleModelConfig.self, forKey: .openAICompatible) ?? OpenAICompatibleModelConfig()
         self.anthropic = try container.decodeIfPresent(AnthropicModelConfig.self, forKey: .anthropic) ?? AnthropicModelConfig()
         self.gemini = try container.decodeIfPresent(GeminiModelConfig.self, forKey: .gemini) ?? GeminiModelConfig()
         self.foundation = try container.decodeIfPresent(FoundationModelConfig.self, forKey: .foundation) ?? FoundationModelConfig()
         self.local = try container.decodeIfPresent(LocalModelConfig.self, forKey: .local) ?? LocalModelConfig()
-        self.providers = try container.decodeIfPresent([String: ProviderServiceConfig].self, forKey: .providers) ?? [:]
+        do {
+            self.providers = try container.decodeIfPresent([String: ModelProviderConfig].self, forKey: .providers) ?? [:]
+        } catch {
+            let legacyProviders = try container.decodeIfPresent([String: ProviderServiceConfig].self, forKey: .providers) ?? [:]
+            self.providers = legacyProviders.mapValues { ModelProviderConfig(legacyService: $0) }
+        }
+        self.bedrockDiscovery = try container.decodeIfPresent(BedrockDiscoveryConfig.self, forKey: .bedrockDiscovery)
+            ?? BedrockDiscoveryConfig()
     }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(self.defaultProviderID, forKey: .defaultProviderID)
         try container.encodeIfPresent(self.systemPrompt, forKey: .systemPrompt)
+        try container.encode(self.mode, forKey: .mode)
         try container.encode(self.openAI, forKey: .openAI)
         try container.encode(self.openAICompatible, forKey: .openAICompatible)
         try container.encode(self.anthropic, forKey: .anthropic)
@@ -1042,6 +1094,18 @@ public struct ModelsConfig: Codable, Sendable, Equatable {
         try container.encode(self.foundation, forKey: .foundation)
         try container.encode(self.local, forKey: .local)
         try container.encode(self.providers, forKey: .providers)
+        try container.encode(self.bedrockDiscovery, forKey: .bedrockDiscovery)
+    }
+
+    @available(*, deprecated, message: "Use providers instead")
+    public var providerServices: [String: ProviderServiceConfig] {
+        self.providers.reduce(into: [:]) { partial, entry in
+            partial[entry.key] = entry.value.legacyServiceConfig(providerID: entry.key)
+        }
+    }
+
+    public func legacyProviderServiceConfig(for providerID: String) -> ProviderServiceConfig? {
+        self.providers[providerID]?.legacyServiceConfig(providerID: providerID)
     }
 }
 
@@ -1416,4 +1480,3 @@ public struct LocalModelConfig: Codable, Sendable, Equatable {
         self.maxTokens = max(1, try container.decodeIfPresent(Int.self, forKey: .maxTokens) ?? 512)
     }
 }
-

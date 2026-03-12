@@ -13,6 +13,33 @@ OpenClawKit is a Swift-native agent SDK for Apple platforms and Linux services.
 It provides a complete runtime surface: protocol contracts, model routing, channels,
 skills, memory, observability, security, iOS app integrations, and release-grade tooling.
 
+## 2026.2.2 Highlights
+
+### TS Model/Auth Parity
+
+- Canonical TS-shaped config now lives in `OpenClawConfig.auth` and
+  `OpenClawConfig.models.providers`, with backward-compatible decoding for the
+  older provider-service shape.
+- Auth profiles now support API key, token, and OAuth credential storage with
+  secure secret indirection through `CredentialStore`.
+- Interactive auth metadata now exposes browser-OAuth and device-code flows for
+  providers such as `openai-codex`, `github-copilot`, and `qwen-portal`, with
+  Apple browser login handled through `ASWebAuthenticationSession`.
+- Shared provider catalog parity now covers the current OpenClaw TS reference,
+  including `openai-codex`, Google parity aliases, Copilot, Bedrock, and the
+  additional coding-focused provider families.
+
+### Apple Hardware Hardening
+
+- Keychain-backed credentials now default to
+  `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` for device-bound, unlock-only
+  storage on Apple platforms.
+- Sample app defaults now prefer Foundation Models when the host device is
+  eligible and the runtime reports Apple Intelligence availability.
+- Apple hardware guidance now documents Keychain, Secure Enclave-backed replay
+  signing, Foundation Models, Metal-backed local inference, and Apple connector
+  adapters.
+
 ## 2026.2.1 Highlights
 
 ### Channel + Model-Service Parity
@@ -43,6 +70,7 @@ skills, memory, observability, security, iOS app integrations, and release-grade
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [Runtime Features](#runtime-features)
+- [Apple Hardware](#apple-hardware)
 - [Skills and Connectors](#skills-and-connectors)
 - [Replay, Routing, and Intent Graphs](#replay-routing-and-intent-graphs)
 - [Apple Platform Integrations](#apple-platform-integrations)
@@ -81,8 +109,12 @@ targets: [
 - iOS `17+`
 - macOS `14+`
 - tvOS `17+`
+- visionOS `26+`
 - watchOS `10+`
 - Linux supported for package/runtime flows with compatibility shims
+
+The Swift package still declares visionOS compatibility, but `2026.2.2` does
+not ship a visionOS example app.
 
 ## Quick Start
 
@@ -112,13 +144,33 @@ print(await diagnostics.usageSnapshot().runsCompleted)
 - Actor-isolated embedded runtime orchestration (`EmbeddedAgentRuntime`)
 - Multi-provider model routing with fallback and adaptive optimization across
   OpenAI-compatible, Anthropic-compatible, Gemini, xAI, Bedrock, and local runtimes
+- Provider-aware auth profile routing with OAuth refresh/token exchange support
+  for TS parity providers such as GitHub Copilot and Qwen Portal
 - Channel adapters (Discord, Telegram, WhatsApp Cloud, Slack, Google Chat, Signal,
   iMessage, Microsoft Teams, and production WebChat)
-- Skill discovery/invocation (`SKILL.md`, JS/WASM executors)
+- Skill discovery/invocation (`SKILL.md`, JS/WASM executors with embedded WasmKit fallback)
 - Prompt bootstrap context loading (`AGENTS.md`, identity/personality files)
 - Persistent session routing and conversation memory
 - Streaming output support and typing heartbeat semantics
 - Diagnostics pipeline with usage snapshots and recent-event timelines
+
+## Apple Hardware
+
+- Keychain-backed credentials default to device-bound, unlock-only
+  accessibility, and replay signing surfaces are designed to work with Secure
+  Enclave-backed key material through `ReplayLedgerSigner`.
+- Browser-based OAuth can use the system Apple auth surface via
+  `AppleWebAuthenticationSessionPresenter`, which wraps
+  `ASWebAuthenticationSession` for host apps that need interactive provider
+  sign-in.
+- Foundation Models are the preferred on-device preset in the Apple sample apps
+  when Apple Intelligence is available; `FoundationModelsProvider` handles
+  runtime eligibility checks and surfaces concrete unavailability reasons.
+- Local inference keeps Apple acceleration explicit through
+  `LocalModelConfig.useMetal`, so host apps can bias toward Metal-backed runtimes
+  when they are available.
+- Connector adapters cover Apple-native surfaces such as EventKit and Photos in
+  `AppleConnectorAdapters`, alongside the broader skill permission model.
 
 ## Skills and Connectors
 
@@ -160,11 +212,19 @@ print(await diagnostics.usageSnapshot().runsCompleted)
 
 - Deploy/chat/models/skills/channels/diagnostics flows
 - Provider/channel parity selection surfaces with secure credential persistence
+- Skills tab includes a one-tap WASM smoke test (`wasm-hello`) for simulator validation
 - Intent-graph aware App Intents + shortcuts
 - Live Activities status surfaces for run lifecycle
 - Proactive background automation hooks
 - Multimodal chat attachment staging/import flow
 - Share inbox bridge (`SharePromptInbox`) for extension handoff
+
+WASM smoke-test flow:
+
+1. Build and run `Examples/iOS/OpenClawiOS` on iOS Simulator.
+2. Open the **Skills** tab.
+3. Tap **Run WASM Smoke Test** in the **WASM Showcase** section.
+4. Confirm success status and output preview (backed by `skills/wasm-hello/module/hello.wasm`).
 
 ### Ask OpenClaw Share Extension
 
@@ -203,6 +263,7 @@ Scripts/check-networking-concurrency.sh
 swift test
 ./Scripts/build-ios-example.sh
 ./Scripts/test-ios-example.sh
+./Scripts/build-tvos-example.sh
 ```
 
 Apple matrix static validation:

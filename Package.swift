@@ -8,6 +8,7 @@ let package = Package(
         .iOS(.v17),
         .macOS(.v14),
         .tvOS(.v17),
+        .visionOS(.v26),
         .watchOS(.v10),
     ],
     products: [
@@ -25,6 +26,8 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.10.0"),
+        .package(url: "https://github.com/apple/swift-system.git", from: "1.5.0"),
+        .package(url: "https://github.com/swiftwasm/WasmKit.git", from: "0.2.0"),
     ],
     targets: [
         .target(
@@ -59,7 +62,12 @@ let package = Package(
         ),
         .target(
             name: "OpenClawSkills",
-            dependencies: ["OpenClawCore"],
+            dependencies: [
+                "OpenClawCore",
+                .product(name: "WasmKit", package: "WasmKit", condition: .when(platforms: [.macOS, .iOS])),
+                .product(name: "WasmKitWASI", package: "WasmKit", condition: .when(platforms: [.macOS, .iOS])),
+                .product(name: "SystemPackage", package: "swift-system", condition: .when(platforms: [.macOS, .iOS])),
+            ],
             swiftSettings: [
                 .enableUpcomingFeature("StrictConcurrency"),
             ]
@@ -148,4 +156,3 @@ let package = Package(
         ),
     ]
 )
-

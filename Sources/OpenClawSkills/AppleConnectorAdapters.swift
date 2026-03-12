@@ -139,6 +139,8 @@ public struct ContactsConnectorAdapter: PersonalDataConnectorAdapter {
             return .denied
         case .notDetermined:
             return .notDetermined
+        case .limited:
+            return .unavailable
         @unknown default:
             return .denied
         }

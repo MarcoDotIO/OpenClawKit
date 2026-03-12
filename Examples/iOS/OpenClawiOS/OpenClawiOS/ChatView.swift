@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import OpenClawProtocol
 #if canImport(PhotosUI)
 import PhotosUI
 #endif
@@ -209,15 +210,15 @@ private struct ChatBubble: View {
     var body: some View {
         HStack {
             if message.role == .assistant {
-                bubble(color: .blue.opacity(0.14), alignment: .leading)
-                Spacer(minLength: 24)
+                bubble(color: Theme.assistantBubbleColor, alignment: .leading)
+                Spacer(minLength: Theme.bubbleSpacing)
             } else if message.role == .user {
-                Spacer(minLength: 24)
-                bubble(color: .green.opacity(0.14), alignment: .trailing)
+                Spacer(minLength: Theme.bubbleSpacing)
+                bubble(color: Theme.userBubbleColor, alignment: .trailing)
             } else {
-                Spacer(minLength: 24)
-                bubble(color: .orange.opacity(0.14), alignment: .leading)
-                Spacer(minLength: 24)
+                Spacer(minLength: Theme.bubbleSpacing)
+                bubble(color: Theme.systemBubbleColor, alignment: .leading)
+                Spacer(minLength: Theme.bubbleSpacing)
             }
         }
     }
@@ -228,15 +229,45 @@ private struct ChatBubble: View {
             Text(message.role.rawValue.capitalized)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-            Text(message.text)
+
+            if let attachments = message.attachments, !attachments.isEmpty {
+                ForEach(attachments) { attachment in
+                    if attachment.mimeType.hasPrefix("image/"), let uiImage = UIImage(data: attachment.data) {
+                        Image(uiImage: uiImage)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(maxHeight: 200)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                    } else {
+                        HStack {
+                            Image(systemName: "doc.fill")
+                            Text(attachment.fileName ?? "File")
+                                .font(.caption)
+                                .lineLimit(1)
+                        }
+                        .padding(8)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                    }
+                }
+            }
+
+            if !message.text.isEmpty {
+                Group {
+                    if let attr = try? AttributedString(markdown: message.text, options: .init(interpretedSyntax: .full)) {
+                        Text(attr)
+                    } else {
+                        Text(message.text)
+                    }
+                }
                 .font(.body)
                 .foregroundStyle(.primary)
                 .multilineTextAlignment(alignment == .trailing ? .trailing : .leading)
+            }
         }
-        .padding(10)
+        .padding(Theme.bubblePadding)
         .background(color)
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-        .frame(maxWidth: 280, alignment: alignment)
+        .clipShape(RoundedRectangle(cornerRadius: Theme.bubbleCornerRadius))
+        .frame(maxWidth: Theme.bubbleMaxWidth, alignment: alignment)
     }
 }
 

@@ -14,61 +14,63 @@ struct DiagnosticsView: View {
 
     var body: some View {
         NavigationStack {
-            List {
-                Section("Usage Snapshot") {
-                    if let snapshot = appState.usageSnapshot {
-                        Text("runs: \(snapshot.runsStarted) started / \(snapshot.runsCompleted) completed / \(snapshot.runsFailed) failed")
-                        Text("avg run latency: \(snapshot.averageRunLatencyMs) ms")
-                        Text("model calls: \(snapshot.modelCalls), failures: \(snapshot.modelFailures)")
-                        Text("skills invoked: \(snapshot.skillInvocations)")
-                        Text("channel deliveries: \(snapshot.channelDeliveriesSent) sent / \(snapshot.channelDeliveriesFailed) failed")
-                    } else {
-                        Text("No diagnostics data captured yet.")
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                Section("Recent Events") {
-                    if appState.diagnosticEvents.isEmpty {
-                        Text("No events yet.")
-                            .foregroundStyle(.secondary)
-                    } else {
-                        ForEach(Array(appState.diagnosticEvents.reversed().enumerated()), id: \.offset) { _, event in
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack {
-                                    Text("\(event.subsystem).\(event.name)")
-                                        .font(.caption.weight(.semibold))
-                                    Spacer()
-                                    Text(Self.formatter.string(from: event.occurredAt))
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                }
-                                if let runID = event.runID, !runID.isEmpty {
-                                    Text("run: \(runID)")
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                }
-                                if let sessionKey = event.sessionKey, !sessionKey.isEmpty {
-                                    Text("session: \(sessionKey)")
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                }
-                                if !event.metadata.isEmpty {
-                                    Text(event.metadata
-                                        .sorted(by: { $0.key < $1.key })
-                                        .map { "\($0.key)=\($0.value)" }
-                                        .joined(separator: ", "))
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(3)
-                                }
+            Group {
+                if appState.usageSnapshot == nil && appState.diagnosticEvents.isEmpty {
+                    ContentUnavailableView(
+                        "No Diagnostics",
+                        systemImage: "waveform.path.ecg",
+                        description: Text("Deploy the agent to start capturing runtime diagnostic events.")
+                    )
+                } else {
+                    List {
+                        Section("Usage Snapshot") {
+                            if let snapshot = appState.usageSnapshot {
+                                Text("runs: \(snapshot.runsStarted) started / \(snapshot.runsCompleted) completed / \(snapshot.runsFailed) failed")
+                                Text("avg run latency: \(snapshot.averageRunLatencyMs) ms")
+                                Text("model calls: \(snapshot.modelCalls), failures: \(snapshot.modelFailures)")
+                                Text("skills invoked: \(snapshot.skillInvocations)")
+                                Text("channel deliveries: \(snapshot.channelDeliveriesSent) sent / \(snapshot.channelDeliveriesFailed) failed")
                             }
-                            .padding(.vertical, 2)
+                        }
+
+                        Section("Recent Events") {
+                            ForEach(Array(appState.diagnosticEvents.reversed().enumerated()), id: \.offset) { _, event in
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack {
+                                        Text("\(event.subsystem).\(event.name)")
+                                            .font(.caption.weight(.semibold))
+                                        Spacer()
+                                        Text(Self.formatter.string(from: event.occurredAt))
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    if let runID = event.runID, !runID.isEmpty {
+                                        Text("run: \(runID)")
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    if let sessionKey = event.sessionKey, !sessionKey.isEmpty {
+                                        Text("session: \(sessionKey)")
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    if !event.metadata.isEmpty {
+                                        Text(event.metadata
+                                            .sorted(by: { $0.key < $1.key })
+                                            .map { "\($0.key)=\($0.value)" }
+                                            .joined(separator: ", "))
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(3)
+                                    }
+                                }
+                                .padding(.vertical, 2)
+                            }
                         }
                     }
+                    .listStyle(.insetGrouped)
                 }
             }
-            .listStyle(.insetGrouped)
             .navigationTitle("Diagnostics")
             .toolbar {
                 Button("Refresh") {

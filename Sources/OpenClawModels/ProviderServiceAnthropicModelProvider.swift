@@ -4,10 +4,10 @@ import FoundationNetworking
 #endif
 import OpenClawCore
 
-private struct ProviderServiceAnthropicMessagesRequest: Codable, Sendable {
-    struct Message: Codable, Sendable {
+private struct ProviderServiceAnthropicMessagesRequest: Encodable, Sendable {
+    struct Message: Encodable, Sendable {
         let role: String
-        let content: String
+        let content: AnthropicMessageContent
     }
 
     let model: String
@@ -79,25 +79,31 @@ public struct ProviderServiceAnthropicModelProvider: ModelProvider {
             model: modelID,
             maxTokens: self.resolveMaxTokens(),
             system: self.resolveSystemPrompt(request: request),
-            messages: [.init(role: "user", content: request.prompt)]
+            messages: [
+                .init(
+                    role: "user",
+                    content: AnthropicStyleMultimodalSupport.userContent(
+                        prompt: request.prompt,
+                        attachments: request.attachments
+                    )
+                ),
+            ]
         )
 
         var urlRequest = URLRequest(url: endpoint)
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        try self.applyAuthHeaders(to: &urlRequest)
+        try self.applyAuthHeaders(to: &urlRequest, generationRequest: request)
         urlRequest.setValue(self.resolveAPIVersion(), forHTTPHeaderField: "anthropic-version")
         if let organizationID = self.configuration.organizationID?.trimmingCharacters(in: .whitespacesAndNewlines),
            !organizationID.isEmpty
         {
             urlRequest.setValue(organizationID, forHTTPHeaderField: "x-organization-id")
         }
-        for (key, value) in self.configuration.headers {
-            let normalizedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
-            let normalizedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !normalizedKey.isEmpty, !normalizedValue.isEmpty else { continue }
-            urlRequest.setValue(normalizedValue, forHTTPHeaderField: normalizedKey)
-        }
+        ProviderRequestResolution.applyHeaders(
+            ProviderRequestResolution.mergedHeaders(configured: self.configuration.headers, request: request),
+            request: &urlRequest
+        )
         urlRequest.timeoutInterval = 30
         urlRequest.httpBody = try JSONEncoder().encode(payload)
 
@@ -122,12 +128,11 @@ public struct ProviderServiceAnthropicModelProvider: ModelProvider {
     }
 
     private func resolveModelID(request: ModelGenerationRequest) -> String {
-        let requested = request.metadata["model"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !requested.isEmpty {
-            return requested
-        }
-        let configured = self.configuration.modelID.trimmingCharacters(in: .whitespacesAndNewlines)
-        return configured.isEmpty ? "claude-3-5-haiku-latest" : configured
+        ProviderRequestResolution.resolveModelID(
+            request: request,
+            configured: self.configuration.modelID,
+            fallback: "claude-3-5-haiku-latest"
+        )
     }
 
     private func resolveMaxTokens() -> Int {
@@ -148,19 +153,21 @@ public struct ProviderServiceAnthropicModelProvider: ModelProvider {
         return version.isEmpty ? "2023-06-01" : version
     }
 
-    private func applyAuthHeaders(to request: inout URLRequest) throws {
+    private func applyAuthHeaders(to request: inout URLRequest, generationRequest: ModelGenerationRequest) throws {
         switch self.configuration.authMode {
         case .apiKey:
-            let apiKey = self.configuration.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            guard !apiKey.isEmpty else {
-                throw OpenClawCoreError.invalidConfiguration("\(self.id) API key is required")
-            }
+            let apiKey = try ProviderRequestResolution.resolveAPIKey(
+                configured: self.configuration.apiKey,
+                request: generationRequest,
+                providerID: self.id
+            )
             request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
         case .bearerToken, .oauthToken:
-            let token = self.configuration.accessToken?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            guard !token.isEmpty else {
-                throw OpenClawCoreError.invalidConfiguration("\(self.id) access token is required")
-            }
+            let token = try ProviderRequestResolution.resolveAccessToken(
+                configured: self.configuration.accessToken,
+                request: generationRequest,
+                providerID: self.id
+            )
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         case .none:
             break

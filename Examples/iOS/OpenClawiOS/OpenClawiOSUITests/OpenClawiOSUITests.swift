@@ -45,6 +45,10 @@ final class OpenClawiOSUITests: XCTestCase {
         let app = XCUIApplication()
         app.launch()
 
+        let messagingGroup = app.staticTexts["Messaging Channels"].firstMatch
+        XCTAssertTrue(messagingGroup.waitForExistence(timeout: 10))
+        messagingGroup.tap()
+
         let telegramTokenVisible = app.secureTextFields["Telegram Bot Token"].waitForExistence(timeout: 10)
         let telegramChatIDVisible = app.textFields["Telegram Chat ID (optional)"].exists
 
@@ -72,6 +76,10 @@ final class OpenClawiOSUITests: XCTestCase {
         let app = XCUIApplication()
         app.launch()
 
+        let messagingGroup = app.staticTexts["Messaging Channels"].firstMatch
+        XCTAssertTrue(messagingGroup.waitForExistence(timeout: 10))
+        messagingGroup.tap()
+
         let channelField = app.textFields["Discord Channel ID"]
         XCTAssertTrue(channelField.waitForExistence(timeout: 10))
         channelField.tap()
@@ -90,6 +98,18 @@ final class OpenClawiOSUITests: XCTestCase {
         app.tabBars.buttons["Chat"].tap()
         let picker = app.buttons["Skill: Automatic"]
         XCTAssertTrue(picker.waitForExistence(timeout: 10))
+    }
+
+    func testWASMShowcaseControlsAreVisibleOnSkillsTab() throws {
+        let app = XCUIApplication()
+        app.launch()
+
+        app.tabBars.buttons["Skills"].tap()
+        let status = app.staticTexts["wasm-showcase-status-label"]
+        let button = app.buttons["skills-wasm-smoke-test-button"]
+
+        XCTAssertTrue(status.waitForExistence(timeout: 10))
+        XCTAssertTrue(button.exists)
     }
 
     func testAttachmentImportButtonIsVisibleOnChatTab() throws {

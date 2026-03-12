@@ -14,14 +14,14 @@ public protocol XAIHTTPTransport: Sendable {
 
 extension HTTPClient: XAIHTTPTransport {}
 
-private struct XAIGenerationRequest: Codable, Sendable {
+private struct XAIGenerationRequest: Encodable, Sendable {
     let model: String
     let messages: [XAIGenerationMessage]
 }
 
-private struct XAIGenerationMessage: Codable, Sendable {
+private struct XAIGenerationMessage: Encodable, Sendable {
     let role: String
-    let content: String
+    let content: OpenAIStyleMessageContent
 }
 
 private struct XAIGenerationResponse: Codable, Sendable {
@@ -91,18 +91,16 @@ public struct XAIModelProvider: ModelProvider {
         var urlRequest = URLRequest(url: endpoint)
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        urlRequest.setValue("Bearer \(try self.resolveBearerToken())", forHTTPHeaderField: "Authorization")
+        urlRequest.setValue("Bearer \(try self.resolveBearerToken(request: request))", forHTTPHeaderField: "Authorization")
         if let organizationID = self.configuration.organizationID?.trimmingCharacters(in: .whitespacesAndNewlines),
            !organizationID.isEmpty
         {
             urlRequest.setValue(organizationID, forHTTPHeaderField: "x-organization-id")
         }
-        for (key, value) in self.configuration.headers {
-            let normalizedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
-            let normalizedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !normalizedKey.isEmpty, !normalizedValue.isEmpty else { continue }
-            urlRequest.setValue(normalizedValue, forHTTPHeaderField: normalizedKey)
-        }
+        ProviderRequestResolution.applyHeaders(
+            ProviderRequestResolution.mergedHeaders(configured: self.configuration.headers, request: request),
+            request: &urlRequest
+        )
         urlRequest.timeoutInterval = 30
         urlRequest.httpBody = try JSONEncoder().encode(payload)
 
@@ -124,29 +122,27 @@ public struct XAIModelProvider: ModelProvider {
     }
 
     private func resolveModelID(request: ModelGenerationRequest) -> String {
-        let requested = request.metadata["model"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !requested.isEmpty {
-            return requested
-        }
-        return self.configuration.modelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? "grok-3-mini"
-            : self.configuration.modelID
+        ProviderRequestResolution.resolveModelID(
+            request: request,
+            configured: self.configuration.modelID,
+            fallback: "grok-3-mini"
+        )
     }
 
-    private func resolveBearerToken() throws -> String {
+    private func resolveBearerToken(request: ModelGenerationRequest) throws -> String {
         switch self.configuration.authMode {
         case .apiKey:
-            let apiKey = self.configuration.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            guard !apiKey.isEmpty else {
-                throw OpenClawCoreError.invalidConfiguration("xAI API key is required")
-            }
-            return apiKey
+            return try ProviderRequestResolution.resolveAPIKey(
+                configured: self.configuration.apiKey,
+                request: request,
+                providerID: self.id
+            )
         case .bearerToken, .oauthToken:
-            let token = self.configuration.accessToken?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            guard !token.isEmpty else {
-                throw OpenClawCoreError.invalidConfiguration("xAI access token is required")
-            }
-            return token
+            return try ProviderRequestResolution.resolveAccessToken(
+                configured: self.configuration.accessToken,
+                request: request,
+                providerID: self.id
+            )
         case .none, .awsSDK:
             throw OpenClawCoreError.invalidConfiguration("xAI provider requires token-based authentication")
         }
@@ -156,9 +152,17 @@ public struct XAIModelProvider: ModelProvider {
         var messages: [XAIGenerationMessage] = []
         let systemPrompt = request.systemPrompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !systemPrompt.isEmpty {
-            messages.append(XAIGenerationMessage(role: "system", content: systemPrompt))
+            messages.append(XAIGenerationMessage(role: "system", content: .text(systemPrompt)))
         }
-        messages.append(XAIGenerationMessage(role: "user", content: request.prompt))
+        messages.append(
+            XAIGenerationMessage(
+                role: "user",
+                content: OpenAIStyleMultimodalSupport.userContent(
+                    prompt: request.prompt,
+                    attachments: request.attachments
+                )
+            )
+        )
         return messages
     }
 

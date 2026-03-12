@@ -43,6 +43,24 @@ public struct OpenClawSDK: Sendable {
         try await store.save(config)
     }
 
+    /// Creates a file-backed auth profile store.
+    /// - Parameters:
+    ///   - fileURL: Path to the persisted auth-profile metadata JSON.
+    ///   - credentialStore: Credential store used for secret material.
+    /// - Returns: Initialized auth profile store actor.
+    public func makeAuthProfileStore(
+        fileURL: URL,
+        credentialStore: any CredentialStore
+    ) -> AuthProfileStore {
+        AuthProfileStore(fileURL: fileURL, credentialStore: credentialStore)
+    }
+
+    /// Returns the interactive auth flow descriptor for one provider when available.
+    /// - Parameter providerID: Target provider identifier.
+    public func interactiveAuthDescriptor(for providerID: String) -> InteractiveAuthFlowDescriptor? {
+        InteractiveAuthFlowCatalog.descriptor(for: providerID)
+    }
+
     /// Loads and returns a session store actor from disk.
     /// - Parameter fileURL: Path to session store file.
     /// - Returns: Initialized session store.

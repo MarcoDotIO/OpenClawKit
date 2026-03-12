@@ -4,14 +4,14 @@ import FoundationNetworking
 #endif
 import OpenClawCore
 
-private struct ProviderServiceOpenAIChatCompletionRequest: Codable, Sendable {
+private struct ProviderServiceOpenAIChatCompletionRequest: Encodable, Sendable {
     let model: String
     let messages: [ProviderServiceOpenAIChatMessage]
 }
 
-private struct ProviderServiceOpenAIChatMessage: Codable, Sendable {
+private struct ProviderServiceOpenAIChatMessage: Encodable, Sendable {
     let role: String
-    let content: String
+    let content: OpenAIStyleMessageContent
 }
 
 private struct ProviderServiceOpenAIChatCompletionResponse: Codable, Sendable {
@@ -68,7 +68,7 @@ public struct ProviderServiceOpenAIModelProvider: ModelProvider {
             )
         }
 
-        let endpoint = try self.resolveEndpoint()
+        let endpoint = try self.resolveEndpoint(request: request)
         let modelID = self.resolveModelID(request: request)
         let payload = ProviderServiceOpenAIChatCompletionRequest(
             model: modelID,
@@ -78,7 +78,7 @@ public struct ProviderServiceOpenAIModelProvider: ModelProvider {
         var urlRequest = URLRequest(url: endpoint)
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        if let token = try self.resolveAuthorizationToken() {
+        if let token = try self.resolveAuthorizationToken(request: request) {
             urlRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
         if let organizationID = self.configuration.organizationID?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -86,12 +86,10 @@ public struct ProviderServiceOpenAIModelProvider: ModelProvider {
         {
             urlRequest.setValue(organizationID, forHTTPHeaderField: "x-organization-id")
         }
-        for (key, value) in self.configuration.headers {
-            let normalizedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
-            let normalizedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !normalizedKey.isEmpty, !normalizedValue.isEmpty else { continue }
-            urlRequest.setValue(normalizedValue, forHTTPHeaderField: normalizedKey)
-        }
+        ProviderRequestResolution.applyHeaders(
+            ProviderRequestResolution.mergedHeaders(configured: self.configuration.headers, request: request),
+            request: &urlRequest
+        )
         urlRequest.timeoutInterval = 30
         urlRequest.httpBody = try JSONEncoder().encode(payload)
 
@@ -115,28 +113,27 @@ public struct ProviderServiceOpenAIModelProvider: ModelProvider {
     }
 
     private func resolveModelID(request: ModelGenerationRequest) -> String {
-        let requested = request.metadata["model"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !requested.isEmpty {
-            return requested
-        }
-        let configured = self.configuration.modelID.trimmingCharacters(in: .whitespacesAndNewlines)
-        return configured.isEmpty ? "gpt-4.1-mini" : configured
+        ProviderRequestResolution.resolveModelID(
+            request: request,
+            configured: self.configuration.modelID,
+            fallback: "gpt-4.1-mini"
+        )
     }
 
-    private func resolveAuthorizationToken() throws -> String? {
+    private func resolveAuthorizationToken(request: ModelGenerationRequest) throws -> String? {
         switch self.configuration.authMode {
         case .apiKey:
-            let apiKey = self.configuration.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            guard !apiKey.isEmpty else {
-                throw OpenClawCoreError.invalidConfiguration("\(self.id) API key is required")
-            }
-            return apiKey
+            return try ProviderRequestResolution.resolveAPIKey(
+                configured: self.configuration.apiKey,
+                request: request,
+                providerID: self.id
+            )
         case .bearerToken, .oauthToken:
-            let token = self.configuration.accessToken?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            guard !token.isEmpty else {
-                throw OpenClawCoreError.invalidConfiguration("\(self.id) access token is required")
-            }
-            return token
+            return try ProviderRequestResolution.resolveAccessToken(
+                configured: self.configuration.accessToken,
+                request: request,
+                providerID: self.id
+            )
         case .none:
             return nil
         case .awsSDK:
@@ -150,17 +147,26 @@ public struct ProviderServiceOpenAIModelProvider: ModelProvider {
         var messages: [ProviderServiceOpenAIChatMessage] = []
         let systemPrompt = request.systemPrompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !systemPrompt.isEmpty {
-            messages.append(ProviderServiceOpenAIChatMessage(role: "system", content: systemPrompt))
+            messages.append(ProviderServiceOpenAIChatMessage(role: "system", content: .text(systemPrompt)))
         }
-        messages.append(ProviderServiceOpenAIChatMessage(role: "user", content: request.prompt))
+        messages.append(
+            ProviderServiceOpenAIChatMessage(
+                role: "user",
+                content: OpenAIStyleMultimodalSupport.userContent(
+                    prompt: request.prompt,
+                    attachments: request.attachments
+                )
+            )
+        )
         return messages
     }
 
-    private func resolveEndpoint() throws -> URL {
-        let baseRaw = self.configuration.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !baseRaw.isEmpty, let baseURL = URL(string: baseRaw) else {
-            throw OpenClawCoreError.invalidConfiguration("\(self.id) base URL is invalid")
-        }
+    private func resolveEndpoint(request: ModelGenerationRequest) throws -> URL {
+        let baseURL = try ProviderRequestResolution.resolveBaseURL(
+            configured: self.configuration.baseURL,
+            request: request,
+            providerID: self.id
+        )
         let path = self.configuration.chatCompletionsPath
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))

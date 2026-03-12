@@ -61,29 +61,29 @@ struct SecurityAuditTests {
             models: ModelsConfig(
                 local: LocalModelConfig(enabled: true, modelPath: nil),
                 providers: [
-                    "openrouter": ProviderServiceConfig(
+                    "openrouter": ModelProviderConfig(
                         enabled: true,
-                        apiStyle: .openAICompletions,
-                        authMode: .none,
-                        modelID: "anthropic/claude-sonnet-4-5",
                         baseURL: "https://openrouter.ai/api/v1",
+                        auth: nil,
+                        api: .openAICompletions,
+                        models: [ModelDefinitionConfig(id: "anthropic/claude-sonnet-4-5", api: .openAICompletions)],
                         chatCompletionsPath: "chat/completions"
                     ),
-                    "amazon-bedrock": ProviderServiceConfig(
+                    "amazon-bedrock": ModelProviderConfig(
                         enabled: true,
-                        apiStyle: .bedrockConverse,
-                        authMode: .awsSDK,
-                        modelID: "anthropic.claude-3-5-sonnet",
+                        baseURL: "https://bedrock-runtime.us-east-1.amazonaws.com",
                         apiKey: "AWS_PROFILE",
-                        baseURL: "https://bedrock-runtime.us-east-1.amazonaws.com"
+                        auth: .awsSDK,
+                        api: .bedrockConverseStream,
+                        models: [ModelDefinitionConfig(id: "anthropic.claude-3-5-sonnet", api: .bedrockConverseStream)]
                     ),
-                    "qwen-portal": ProviderServiceConfig(
+                    "qwen-portal": ModelProviderConfig(
                         enabled: true,
-                        apiStyle: .openAICompletions,
-                        authMode: .oauthToken,
-                        modelID: "coder-model",
-                        accessToken: "qwen-oauth-token",
                         baseURL: "https://portal.qwen.ai/v1",
+                        apiKey: "qwen-oauth-token",
+                        auth: .oauth,
+                        api: .openAICompletions,
+                        models: [ModelDefinitionConfig(id: "coder-model", api: .openAICompletions)],
                         chatCompletionsPath: "chat/completions"
                     ),
                 ]
@@ -112,7 +112,7 @@ struct SecurityAuditTests {
         #expect(
             report.findings
                 .first(where: { $0.id == "secrets.config.plaintext" })?
-                .detail.contains("models.providers.qwen-portal.accessToken") == true
+                .detail.contains("models.providers.qwen-portal.apiKey") == true
         )
         #expect(report.findings.contains(where: { $0.id.starts(with: "plaintext.file.") }))
         #expect(report.count(for: SecurityAuditSeverity.warning) >= 1)
@@ -123,28 +123,28 @@ struct SecurityAuditTests {
         let config = OpenClawConfig(
             models: ModelsConfig(
                 providers: [
-                    "ollama": ProviderServiceConfig(
+                    "ollama": ModelProviderConfig(
                         enabled: true,
-                        apiStyle: .ollama,
-                        authMode: .none,
-                        modelID: "llama3.3",
                         baseURL: "http://127.0.0.1:11434/v1",
+                        auth: nil,
+                        api: .ollama,
+                        models: [ModelDefinitionConfig(id: "llama3.3", api: .ollama)],
                         chatCompletionsPath: "chat/completions"
                     ),
-                    "litellm": ProviderServiceConfig(
+                    "litellm": ModelProviderConfig(
                         enabled: true,
-                        apiStyle: .openAICompletions,
-                        authMode: .none,
-                        modelID: "gpt-4.1-mini",
                         baseURL: "http://localhost:4000/v1",
+                        auth: nil,
+                        api: .openAICompletions,
+                        models: [ModelDefinitionConfig(id: "gpt-4.1-mini", api: .openAICompletions)],
                         chatCompletionsPath: "chat/completions"
                     ),
-                    "vllm": ProviderServiceConfig(
+                    "vllm": ModelProviderConfig(
                         enabled: true,
-                        apiStyle: .openAICompletions,
-                        authMode: .none,
-                        modelID: "qwen2.5-coder-32b-instruct",
                         baseURL: "http://127.0.0.1:8000/v1",
+                        auth: nil,
+                        api: .openAICompletions,
+                        models: [ModelDefinitionConfig(id: "qwen2.5-coder-32b-instruct", api: .openAICompletions)],
                         chatCompletionsPath: "chat/completions"
                     ),
                 ]
@@ -164,22 +164,22 @@ struct SecurityAuditTests {
         let config = OpenClawConfig(
             models: ModelsConfig(
                 providers: [
-                    "openrouter": ProviderServiceConfig(
+                    "openrouter": ModelProviderConfig(
                         enabled: true,
-                        apiStyle: .openAICompletions,
-                        authMode: .apiKey,
-                        modelID: "anthropic/claude-sonnet-4-5",
-                        apiKey: "openrouter-key",
                         baseURL: "https://openrouter.ai/api/v1",
+                        apiKey: "openrouter-key",
+                        auth: .apiKey,
+                        api: .openAICompletions,
+                        models: [ModelDefinitionConfig(id: "anthropic/claude-sonnet-4-5", api: .openAICompletions)],
                         chatCompletionsPath: "chat/completions"
                     ),
-                    "qwen-portal": ProviderServiceConfig(
+                    "qwen-portal": ModelProviderConfig(
                         enabled: true,
-                        apiStyle: .openAICompletions,
-                        authMode: .oauthToken,
-                        modelID: "coder-model",
-                        accessToken: "qwen-token",
                         baseURL: "https://portal.qwen.ai/v1",
+                        apiKey: "qwen-token",
+                        auth: .oauth,
+                        api: .openAICompletions,
+                        models: [ModelDefinitionConfig(id: "coder-model", api: .openAICompletions)],
                         chatCompletionsPath: "chat/completions"
                     ),
                 ]
@@ -191,7 +191,7 @@ struct SecurityAuditTests {
         let plaintextDetail = report.findings.first(where: { $0.id == "secrets.config.plaintext" })?.detail ?? ""
 
         #expect(plaintextDetail.contains("models.providers.openrouter.apiKey"))
-        #expect(plaintextDetail.contains("models.providers.qwen-portal.accessToken"))
+        #expect(plaintextDetail.contains("models.providers.qwen-portal.apiKey"))
     }
 
     @Test

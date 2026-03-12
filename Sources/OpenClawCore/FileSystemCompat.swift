@@ -5,7 +5,7 @@ public enum OpenClawFileSystem {
     /// Resolves the current user's home directory across supported platforms.
     /// - Returns: Home directory URL.
     public static func resolveHomeDirectory() -> URL {
-        #if os(iOS) || os(tvOS) || os(watchOS)
+        #if os(iOS) || os(tvOS) || os(visionOS) || os(watchOS)
         URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
         #else
         FileManager.default.homeDirectoryForCurrentUser

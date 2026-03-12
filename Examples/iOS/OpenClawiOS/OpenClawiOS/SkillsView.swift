@@ -16,10 +16,33 @@ struct SkillsView: View {
                     }
                 }
 
+                Section("WASM Showcase") {
+                    Text(appState.wasmShowcaseStatusText)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("wasm-showcase-status-label")
+                    if !appState.wasmShowcaseOutputPreview.isEmpty {
+                        Text(appState.wasmShowcaseOutputPreview)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                    Button(appState.wasmShowcaseRunning ? "Running WASM Smoke Test..." : "Run WASM Smoke Test") {
+                        Task {
+                            await appState.runWASMShowcase()
+                        }
+                    }
+                    .disabled(appState.wasmShowcaseRunning)
+                    .accessibilityIdentifier("skills-wasm-smoke-test-button")
+                }
+
                 Section("Discovered Skills") {
                     if appState.skillItems.isEmpty {
-                        Text("No skills discovered under the current workspace.")
-                            .foregroundStyle(.secondary)
+                        ContentUnavailableView(
+                            "No Skills Discovered",
+                            systemImage: "wand.and.stars.slash",
+                            description: Text("Ensure your workspace contains valid skill definitions.")
+                        )
                     } else {
                         ForEach(appState.skillItems) { skill in
                             VStack(alignment: .leading, spacing: 6) {

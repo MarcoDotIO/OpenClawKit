@@ -4,12 +4,11 @@ import Testing
 @Suite("Foundation Models provider")
 struct FoundationModelsProviderTests {
     @Test
-    func providerThrowsUnavailableWhenFrameworkOrOSIsMissing() async throws {
-        #if canImport(FoundationModels)
-        if #available(iOS 26.0, macOS 26.0, tvOS 26.0, watchOS 26.0, *) {
+    func providerThrowsUnavailableWhenRuntimeIsNotReady() async throws {
+        let availability = FoundationModelsProvider.runtimeAvailability()
+        guard !availability.isAvailable else {
             return
         }
-        #endif
 
         let provider = FoundationModelsProvider()
         do {
@@ -18,7 +17,7 @@ struct FoundationModelsProviderTests {
             )
             Issue.record("Expected Foundation Models to be unavailable")
         } catch {
-            #expect(String(describing: error).lowercased().contains("foundation"))
+            #expect(String(describing: error).contains(availability.message))
         }
     }
 

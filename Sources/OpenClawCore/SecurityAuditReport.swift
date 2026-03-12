@@ -201,13 +201,15 @@ public enum SecurityAuditRunner {
             guard !normalizedID.isEmpty else {
                 continue
             }
-            if let apiKey = provider.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines), !apiKey.isEmpty {
-                exposedKeys.append("models.providers.\(normalizedID).apiKey")
-            }
-            if let accessToken = provider.accessToken?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !accessToken.isEmpty
-            {
-                exposedKeys.append("models.providers.\(normalizedID).accessToken")
+            if let secret = provider.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines), !secret.isEmpty {
+                let secretField: String
+                switch provider.auth {
+                case .oauth, .token:
+                    secretField = "apiKey"
+                case .apiKey, .awsSDK, nil:
+                    secretField = "apiKey"
+                }
+                exposedKeys.append("models.providers.\(normalizedID).\(secretField)")
             }
         }
 
@@ -220,7 +222,7 @@ public enum SecurityAuditRunner {
                 severity: .warning,
                 summary: "Configuration includes plaintext secrets",
                 detail: "Found non-empty secret values in config keys: \(exposedKeys.sorted().joined(separator: ", "))",
-                recommendation: "Move sensitive values to CredentialStore/Keychain-backed storage and avoid committing plaintext values."
+                recommendation: "Move sensitive values to CredentialStore/Keychain-backed storage or auth-profile storage and avoid committing plaintext values."
             ),
         ]
     }
@@ -349,8 +351,8 @@ public enum SecurityAuditRunner {
             guard !normalizedID.isEmpty, provider.enabled else {
                 continue
             }
-            switch provider.authMode {
-            case .none:
+            switch provider.auth {
+            case nil:
                 let normalizedBaseURL = provider.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
                 let isLocalRuntime = normalizedID == "ollama"
                     || normalizedID == "vllm"
@@ -362,12 +364,12 @@ public enum SecurityAuditRunner {
                             id: "models.providers.\(normalizedID).auth-none",
                             severity: .warning,
                             summary: "Provider service uses auth mode none",
-                            detail: "Provider '\(normalizedID)' is enabled with `authMode = none` and baseURL '\(provider.baseURL)'.",
+                            detail: "Provider '\(normalizedID)' is enabled without auth and baseURL '\(provider.baseURL)'.",
                             recommendation: "Use token-based auth for non-local providers."
                         )
                     )
                 }
-            case .awsSDK:
+            case .awsSDK?:
                 let region = provider.region?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 if region.isEmpty {
                     findings.append(
@@ -375,12 +377,12 @@ public enum SecurityAuditRunner {
                             id: "models.providers.\(normalizedID).region-missing",
                             severity: .warning,
                             summary: "AWS-backed provider is missing region",
-                            detail: "Provider '\(normalizedID)' is enabled with `authMode = awsSDK` but no region is configured.",
+                            detail: "Provider '\(normalizedID)' is enabled with `auth = aws-sdk` but no region is configured.",
                             recommendation: "Set `models.providers.\(normalizedID).region` to the intended AWS region."
                         )
                     )
                 }
-            case .apiKey, .bearerToken, .oauthToken:
+            case .apiKey?, .oauth?, .token?:
                 break
             }
         }

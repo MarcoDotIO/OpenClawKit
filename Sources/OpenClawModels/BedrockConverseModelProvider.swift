@@ -113,7 +113,7 @@ public struct BedrockConverseModelProvider: ModelProvider {
         var urlRequest = URLRequest(url: endpoint)
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        try self.applyAuthHeaders(to: &urlRequest)
+        try self.applyAuthHeaders(to: &urlRequest, generationRequest: request)
         if let region = self.configuration.region?.trimmingCharacters(in: .whitespacesAndNewlines),
            !region.isEmpty
         {
@@ -124,12 +124,10 @@ public struct BedrockConverseModelProvider: ModelProvider {
         {
             urlRequest.setValue(profile, forHTTPHeaderField: "x-aws-profile")
         }
-        for (key, value) in self.configuration.headers {
-            let normalizedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
-            let normalizedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !normalizedKey.isEmpty, !normalizedValue.isEmpty else { continue }
-            urlRequest.setValue(normalizedValue, forHTTPHeaderField: normalizedKey)
-        }
+        ProviderRequestResolution.applyHeaders(
+            ProviderRequestResolution.mergedHeaders(configured: self.configuration.headers, request: request),
+            request: &urlRequest
+        )
         urlRequest.timeoutInterval = 30
         urlRequest.httpBody = try JSONEncoder().encode(payload)
 
@@ -152,12 +150,11 @@ public struct BedrockConverseModelProvider: ModelProvider {
     }
 
     private func resolveModelID(request: ModelGenerationRequest) -> String {
-        let requested = request.metadata["model"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !requested.isEmpty {
-            return requested
-        }
-        let configured = self.configuration.modelID.trimmingCharacters(in: .whitespacesAndNewlines)
-        return configured.isEmpty ? "anthropic.claude-3-5-sonnet" : configured
+        ProviderRequestResolution.resolveModelID(
+            request: request,
+            configured: self.configuration.modelID,
+            fallback: "anthropic.claude-3-5-sonnet"
+        )
     }
 
     private func resolveSystemPrompt(request: ModelGenerationRequest) -> [BedrockConverseRequest.ContentBlock]? {
@@ -176,19 +173,21 @@ public struct BedrockConverseModelProvider: ModelProvider {
         return 8_192
     }
 
-    private func applyAuthHeaders(to request: inout URLRequest) throws {
+    private func applyAuthHeaders(to request: inout URLRequest, generationRequest: ModelGenerationRequest) throws {
         switch self.configuration.authMode {
         case .apiKey:
-            let apiKey = self.configuration.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            guard !apiKey.isEmpty else {
-                throw OpenClawCoreError.invalidConfiguration("\(self.id) API key is required")
-            }
+            let apiKey = try ProviderRequestResolution.resolveAPIKey(
+                configured: self.configuration.apiKey,
+                request: generationRequest,
+                providerID: self.id
+            )
             request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
         case .bearerToken, .oauthToken:
-            let token = self.configuration.accessToken?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            guard !token.isEmpty else {
-                throw OpenClawCoreError.invalidConfiguration("\(self.id) access token is required")
-            }
+            let token = try ProviderRequestResolution.resolveAccessToken(
+                configured: self.configuration.accessToken,
+                request: generationRequest,
+                providerID: self.id
+            )
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         case .awsSDK, .none:
             // aws-sdk and none rely on caller/environment provided request signing or gateway-level auth.

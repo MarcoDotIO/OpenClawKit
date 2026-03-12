@@ -14,14 +14,14 @@ public protocol OpenAICompatibleHTTPTransport: Sendable {
 
 extension HTTPClient: OpenAICompatibleHTTPTransport {}
 
-private struct OpenAICompatibleChatCompletionRequest: Codable, Sendable {
+private struct OpenAICompatibleChatCompletionRequest: Encodable, Sendable {
     let model: String
     let messages: [OpenAICompatibleChatMessage]
 }
 
-private struct OpenAICompatibleChatMessage: Codable, Sendable {
+private struct OpenAICompatibleChatMessage: Encodable, Sendable {
     let role: String
-    let content: String
+    let content: OpenAIStyleMessageContent
 }
 
 private struct OpenAICompatibleChatCompletionResponse: Codable, Sendable {
@@ -72,14 +72,14 @@ public struct OpenAICompatibleModelProvider: ModelProvider {
         guard self.configuration.enabled else {
             throw OpenClawCoreError.unavailable("OpenAI-compatible provider is disabled")
         }
-        let apiKey = self.configuration.apiKey?.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines) ?? ""
-        guard !apiKey.isEmpty else {
-            throw OpenClawCoreError.invalidConfiguration("OpenAI-compatible API key is required")
-        }
+        let apiKey = try ProviderRequestResolution.resolveAPIKey(
+            configured: self.configuration.apiKey,
+            request: request,
+            providerID: self.id
+        )
 
         let endpoint = try self.resolveEndpoint()
-        let requestedModel = request.metadata["model"]?.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-        let selectedModel = (requestedModel?.isEmpty == false) ? requestedModel! : self.configuration.modelID
+        let selectedModel = request.resolvedModelID ?? self.configuration.modelID
         let payload = OpenAICompatibleChatCompletionRequest(
             model: selectedModel,
             messages: self.buildMessages(from: request)
@@ -88,6 +88,7 @@ public struct OpenAICompatibleModelProvider: ModelProvider {
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        ProviderRequestResolution.applyHeaders(request.resolvedRequestHeaders, request: &urlRequest)
         urlRequest.timeoutInterval = 30
         urlRequest.httpBody = try JSONEncoder().encode(payload)
 
@@ -113,9 +114,17 @@ public struct OpenAICompatibleModelProvider: ModelProvider {
         var messages: [OpenAICompatibleChatMessage] = []
         let systemPrompt = request.systemPrompt?.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines) ?? ""
         if !systemPrompt.isEmpty {
-            messages.append(OpenAICompatibleChatMessage(role: "system", content: systemPrompt))
+            messages.append(OpenAICompatibleChatMessage(role: "system", content: .text(systemPrompt)))
         }
-        messages.append(OpenAICompatibleChatMessage(role: "user", content: request.prompt))
+        messages.append(
+            OpenAICompatibleChatMessage(
+                role: "user",
+                content: OpenAIStyleMultimodalSupport.userContent(
+                    prompt: request.prompt,
+                    attachments: request.attachments
+                )
+            )
+        )
         return messages
     }
 

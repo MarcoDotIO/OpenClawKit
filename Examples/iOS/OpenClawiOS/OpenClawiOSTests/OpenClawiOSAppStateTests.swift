@@ -15,6 +15,9 @@ final class OpenClawiOSAppStateTests: XCTestCase {
         XCTAssertEqual(state.statusText, "Not deployed")
         XCTAssertFalse(state.isDeployed)
         XCTAssertEqual(state.liveActivityStatusText, "Idle")
+        XCTAssertEqual(state.wasmShowcaseStatusText, "WASM showcase has not run yet.")
+        XCTAssertEqual(state.wasmShowcaseOutputPreview, "")
+        XCTAssertFalse(state.wasmShowcaseRunning)
     }
 
     func testDefaultProviderSelectionAndModelSuggestion() {
@@ -23,6 +26,16 @@ final class OpenClawiOSAppStateTests: XCTestCase {
         XCTAssertEqual(state.selectedProvider, .openAI)
         XCTAssertEqual(state.selectedModelID, OpenClawAppState.DeployProvider.openAI.defaultModelID)
         XCTAssertEqual(state.availableProviders.count, OpenClawAppState.DeployProvider.allCases.count)
+    }
+
+    func testRunWASMShowcaseUpdatesStatusAndOutput() async {
+        let state = OpenClawAppState()
+
+        await state.runWASMShowcase()
+
+        XCTAssertTrue(state.wasmShowcaseStatusText.hasPrefix("Success via"))
+        XCTAssertTrue(state.wasmShowcaseOutputPreview.contains("Hello"))
+        XCTAssertFalse(state.wasmShowcaseRunning)
     }
 
     func testAttachmentStagingAndRemovalLifecycle() {

@@ -44,8 +44,9 @@ Never commit `.env`.
 3. `swift test`
 4. `./Scripts/build-ios-example.sh`
 5. `./Scripts/test-ios-example.sh`
-6. `Scripts/validate-apple-matrix.sh --platform macos`
-7. `Scripts/validate-apple-matrix.sh --platform ios`
+6. `./Scripts/build-tvos-example.sh`
+7. `Scripts/validate-apple-matrix.sh --platform macos`
+8. `Scripts/validate-apple-matrix.sh --platform ios`
 
 ## 2026.2.1 Parity Coverage Highlights
 
@@ -64,3 +65,19 @@ Never commit `.env`.
 - CI platform coverage:
   full per-commit gate remains required, including Apple matrix validation in
   `Scripts/validate-apple-matrix.sh` for macOS and iOS declarations.
+
+## 2026.2.2 Coverage Highlights
+
+- Config/auth compatibility:
+  regression coverage for canonical `auth` and `models.providers` encoding,
+  legacy provider-service decoding, and auth profile cooldown ordering.
+- Provider catalog parity:
+  snapshot-backed assertions for provider IDs, auth modes, base URLs, APIs, and
+  default model IDs against the pinned OpenClaw TS reference commit.
+- Apple hardware hardening:
+  credential-store coverage for device-bound Keychain accessibility and Apple
+  sample defaults that prefer Foundation Models only when runtime availability
+  allows it.
+- Example-app release scope:
+  the `2026.2.2` validation gate covers the iOS and tvOS demos only; the
+  visionOS demo is deferred from this release train.
