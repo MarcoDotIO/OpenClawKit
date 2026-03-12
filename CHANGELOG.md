@@ -1,21 +1,44 @@
 # Changelog
 
-## 2026.2.3 - Unreleased
+## 2026.2.3 - 2026-03-12
 
 ### Added
 
-- `2026.3.11` SDK + control-plane parity train scaffolding and release rules,
-  keyed to the pinned OpenClaw reference snapshot.
+- Session-control parity for the OpenClaw `2026.3.11` runtime model:
+  persisted thinking, reasoning, verbosity, usage, elevation, group
+  activation, send policy, exec settings, labels, and model overrides.
+- In-process gateway control-plane support for typed agent, session, model,
+  skill, secret, and `browser.request` operations, including browser mutation
+  guards and local secret-vault bridging.
+- Built-in `llm-task` structured-generation support with JSON-first output
+  validation, reasoning sanitization, and malformed tool-call repair paths.
+- Exec allowlist enforcement shared by `ProcessRunner`, JS/WASM skill
+  execution, and gateway/browser-adjacent helpers.
+- Shared media fetch/store/handle primitives for local files, URLs, and memory
+  blobs, plus BlueBubbles as a first-class channel adapter.
+- Checked-in Swift-side control-plane parity fixtures to keep provider, session,
+  gateway, `llm-task`, and channel assertions independent from `.cursor/**` at
+  runtime.
 
 ### Changed
 
-- Documentation now states that `2026.2.3` must land as one green commit per
-  implementation step with warnings-as-errors validation and full coverage for
-  newly introduced codepaths.
+- README, testing docs, and the `2026.3.11` parity manifest now describe the
+  shipped `2026.2.3` parity surface, the validated release rules for the train,
+  and the checked-in fixture sources used by the test suite.
+- Session defaulting now only applies when a session is first created or reset,
+  preserving persisted operator overrides on ordinary inbound traffic.
+- iMessage routing is no longer simulation-first when a native transport is
+  present, and Telegram restart behavior is scoped to polling-network failures
+  instead of retrying duplicate-prone outbound sends.
 
 ### Tests
 
-- Pending parity-train implementation and validation.
+- Added regression suites for session controls, gateway request decoding,
+  `llm-task`, exec allowlists, media handling, BlueBubbles/iMessage/Telegram
+  channel behavior, and checked-in control-plane fixtures.
+- Revalidated `swift build -Xswiftc -warnings-as-errors`,
+  `Scripts/check-networking-concurrency.sh`, `swift test`, iOS example
+  build/test, tvOS example build, and Apple matrix validation for macOS + iOS.
 
 ## 2026.2.2 - 2026-03-11
 

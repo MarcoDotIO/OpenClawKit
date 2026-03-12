@@ -13,20 +13,22 @@ OpenClawKit is a Swift-native agent SDK for Apple platforms and Linux services.
 It provides a complete runtime surface: protocol contracts, model routing, channels,
 skills, memory, observability, security, iOS app integrations, and release-grade tooling.
 
-## 2026.2.3 In Flight
+## 2026.2.3 Highlights
 
-- `2026.2.3` is the active SDK + control-plane parity release train for the
-  pinned OpenClaw `2026.3.11` snapshot documented in
-  `docs/parity-2026.3.11.md`.
-- This train is commit-gated: each step must land as one logical commit, build
-  cleanly with `swift build -Xswiftc -warnings-as-errors`, keep all previously
-  passing tests green, and include targeted regression tests for the new
-  codepaths added in that step.
+- `2026.2.3` ships the OpenClaw `2026.3.11` SDK + control-plane parity train
+  documented in `docs/parity-2026.3.11.md`.
+- Session state now matches the TS control surface for thinking, reasoning,
+  usage, exec, send-policy, model override, and persisted labels without
+  overwriting live session state on ordinary inbound traffic.
+- The in-process gateway now exposes typed agent, session, model, skill,
+  secret, and `browser.request` handlers with the recent browser mutation
+  guards from upstream.
+- Built-in `llm-task`, exec allowlist enforcement, shared media fetch/store
+  handling, BlueBubbles channel support, non-simulation-first iMessage paths,
+  and safer Telegram restart semantics are now part of the shipped SDK.
 - Checked-in Swift-side parity fixtures under `Tests/OpenClawKitTests` back the
   provider, session, gateway, `llm-task`, and channel assertions so the test
   suite does not read `.cursor/**` at runtime.
-- The final `2026.2.3` release will be cut from the latest validated parity
-  commit, tagged, released, and pushed from that exact revision.
 
 ## 2026.2.2 Highlights
 
