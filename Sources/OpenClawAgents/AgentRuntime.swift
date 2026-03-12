@@ -763,21 +763,8 @@ public actor EmbeddedAgentRuntime {
         var normalized: [MediaAttachment] = []
         normalized.reserveCapacity(attachments.count)
         for attachment in attachments {
-            let blob = MediaBlob(id: attachment.id, mimeType: attachment.mimeType, data: attachment.data)
-            let normalizedBlob = try await mediaPipeline.normalize(blob)
-            let kind = await mediaPipeline.kind(for: normalizedBlob.mimeType)
-            var metadata = attachment.metadata
-            metadata["kind"] = kind.rawValue
-            metadata["bytes"] = String(normalizedBlob.data.count)
-            normalized.append(
-                MediaAttachment(
-                    id: normalizedBlob.id,
-                    mimeType: normalizedBlob.mimeType,
-                    data: normalizedBlob.data,
-                    fileName: attachment.fileName,
-                    metadata: metadata
-                )
-            )
+            let prepared = try await mediaPipeline.prepare(attachment)
+            normalized.append(prepared.attachment)
         }
         return normalized
     }
