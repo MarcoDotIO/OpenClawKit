@@ -50,7 +50,11 @@ public actor AgentToolRegistry {
     private var tools: [String: any AgentTool] = [:]
 
     /// Creates an empty tool registry.
-    public init() {}
+    public init(tools: [any AgentTool] = []) {
+        for tool in tools {
+            self.tools[tool.name] = tool
+        }
+    }
 
     /// Registers (or replaces) a tool implementation by name.
     /// - Parameter tool: Tool implementation.
@@ -76,4 +80,3 @@ public actor AgentToolRegistry {
         return AgentToolResult(name: call.name, value: value)
     }
 }
-

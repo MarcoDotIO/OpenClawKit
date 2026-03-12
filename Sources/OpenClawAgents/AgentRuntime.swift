@@ -198,16 +198,18 @@ public actor EmbeddedAgentRuntime {
     ///   - diagnosticsSink: Optional diagnostics event sink.
     public init(
         gatewayClient: GatewayClient = GatewayClient(),
-        toolRegistry: AgentToolRegistry = AgentToolRegistry(),
+        toolRegistry: AgentToolRegistry? = nil,
         modelRouter: ModelRouter = ModelRouter(),
         mediaPipeline: MediaPipeline = MediaPipeline(),
         diagnosticsSink: RuntimeDiagnosticSink? = nil
     ) {
         self.gatewayClient = gatewayClient
-        self.toolRegistry = toolRegistry
         self.modelRouter = modelRouter
         self.mediaPipeline = mediaPipeline
         self.diagnosticsSink = diagnosticsSink
+        self.toolRegistry = toolRegistry ?? AgentToolRegistry(
+            tools: [LLMTaskTool(modelRouter: modelRouter)]
+        )
     }
 
     /// Registers a tool implementation for runtime use.
@@ -310,10 +312,11 @@ public actor EmbeddedAgentRuntime {
                     let modelLatencyMs = max(0, Int(Date().timeIntervalSince(modelStartedAt) * 1000))
 
                     events.append(AgentRunEvent(runID: runID, kind: .runCompleted))
+                    let sanitizedOutput = ProviderVisibleTextSanitizer.sanitizeVisibleText(modelResponse.text)
                     let result = AgentRunResult(
                         runID: runID,
                         sessionKey: request.sessionKey,
-                        output: modelResponse.text,
+                        output: sanitizedOutput,
                         toolResults: toolResults,
                         events: events,
                         attachments: normalizedAttachments
@@ -601,6 +604,7 @@ public actor EmbeddedAgentRuntime {
                     )
 
                     var output = ""
+                    var sanitizedOutput = ""
                     var sawFinal = false
                     for try await chunk in modelStream {
                         if Task.isCancelled {
@@ -610,11 +614,17 @@ public actor EmbeddedAgentRuntime {
                         if chunk.isFinal {
                             sawFinal = true
                         }
+                        let sanitizedCandidate = ProviderVisibleTextSanitizer.sanitizeVisibleText(output)
+                        let delta = Self.visibleStreamDelta(previous: sanitizedOutput, current: sanitizedCandidate)
+                        sanitizedOutput = sanitizedCandidate
+                        if delta.isEmpty, chunk.isFinal == false {
+                            continue
+                        }
                         continuation.yield(
                             AgentRunStreamChunk(
                                 runID: runID,
                                 sessionKey: request.sessionKey,
-                                text: chunk.text,
+                                text: delta,
                                 isFinal: chunk.isFinal
                             )
                         )
@@ -692,6 +702,13 @@ public actor EmbeddedAgentRuntime {
                 }
             }
         }
+    }
+
+    private static func visibleStreamDelta(previous: String, current: String) -> String {
+        let sharedPrefixLength = zip(previous, current)
+            .prefix { lhs, rhs in lhs == rhs }
+            .count
+        return String(current.dropFirst(sharedPrefixLength))
     }
 
     /// Builds the final prompt by combining bootstrap context, skills, and user text.

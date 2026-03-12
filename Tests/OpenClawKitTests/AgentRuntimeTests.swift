@@ -61,6 +61,66 @@ struct AgentRuntimeTests {
         }
     }
 
+    actor RuntimeToolingProvider: ModelProvider {
+        let id = "openai-codex"
+
+        func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
+            if request.sessionKey == "llm-task" {
+                return ModelGenerationResponse(
+                    text: """
+                    <thinking>private</thinking>
+                    ```json
+                    {"summary":"tool-ok"}
+                    ```
+                    """,
+                    providerID: self.id,
+                    modelID: request.modelID ?? "gpt-5.3-codex"
+                )
+            }
+            return ModelGenerationResponse(
+                text: "<thinking>internal</thinking>\nVisible final answer",
+                providerID: self.id,
+                modelID: request.modelID ?? "gpt-5.3-codex"
+            )
+        }
+    }
+
+    struct HiddenReasoningStreamingProvider: ModelProvider {
+        let id = "streaming-provider"
+
+        func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
+            ModelGenerationResponse(text: request.prompt, providerID: self.id, modelID: "streaming")
+        }
+
+        func generateStream(_ request: ModelGenerationRequest) async -> AsyncThrowingStream<ModelStreamChunk, Error> {
+            _ = request
+            return AsyncThrowingStream { continuation in
+                continuation.yield(ModelStreamChunk(text: "<thinking>", isFinal: false))
+                continuation.yield(ModelStreamChunk(text: "hidden plan", isFinal: false))
+                continuation.yield(ModelStreamChunk(text: "</thinking>", isFinal: false))
+                continuation.yield(ModelStreamChunk(text: "Visible stream", isFinal: false))
+                continuation.yield(ModelStreamChunk(text: "", isFinal: true))
+                continuation.finish()
+            }
+        }
+    }
+
+    struct NoFinalStreamingProvider: ModelProvider {
+        let id = "streaming-provider"
+
+        func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
+            ModelGenerationResponse(text: request.prompt, providerID: self.id, modelID: "streaming")
+        }
+
+        func generateStream(_ request: ModelGenerationRequest) async -> AsyncThrowingStream<ModelStreamChunk, Error> {
+            _ = request
+            return AsyncThrowingStream { continuation in
+                continuation.yield(ModelStreamChunk(text: "partial", isFinal: false))
+                continuation.finish()
+            }
+        }
+    }
+
     @Test
     func toolCallsExecuteInRunLifecycle() async throws {
         let runtime = EmbeddedAgentRuntime()
@@ -256,6 +316,88 @@ struct AgentRuntimeTests {
         #expect(request.metadata["thinkingLevel"] == "xhigh")
         #expect(request.metadata["reasoningLevel"] == "stream")
         #expect(request.metadata["verboseLevel"] == "full")
+    }
+
+    @Test
+    func runtimeIncludesBuiltInLLMTaskAndSanitizesVisibleOutput() async throws {
+        let router = ModelRouter()
+        await router.register(RuntimeToolingProvider())
+        let runtime = EmbeddedAgentRuntime(modelRouter: router)
+        try await runtime.setDefaultModelProviderID("openai-codex")
+
+        let result = try await runtime.run(
+            AgentRunRequest(
+                runID: "run-llm-task",
+                sessionKey: "session-llm-task",
+                prompt: "main response",
+                toolCalls: [
+                    AgentToolCall(name: "llm-task", arguments: [
+                        "prompt": AnyCodable("Return summary"),
+                        "provider": AnyCodable("openai-codex"),
+                        "model": AnyCodable("gpt-5.3-codex"),
+                    ]),
+                ]
+            )
+        )
+
+        #expect(result.toolResults.count == 1)
+        #expect(result.output == "Visible final answer")
+        let toolResult = try #require(result.toolResults.first)
+        if case .object(let object) = toolResult.value.value {
+            #expect(object["summary"] == AnyCodable("tool-ok"))
+        } else {
+            Issue.record("Expected llm-task tool result to be a JSON object")
+        }
+    }
+
+    @Test
+    func runtimeStreamingSuppressesHiddenReasoningChunks() async throws {
+        let router = ModelRouter()
+        await router.register(HiddenReasoningStreamingProvider())
+        let runtime = EmbeddedAgentRuntime(modelRouter: router)
+        try await runtime.setDefaultModelProviderID("streaming-provider")
+
+        let stream = await runtime.runStream(
+            AgentRunRequest(
+                runID: "run-sanitized-stream",
+                sessionKey: "session-stream",
+                prompt: "stream me"
+            )
+        )
+
+        var chunks: [AgentRunStreamChunk] = []
+        for try await chunk in stream {
+            chunks.append(chunk)
+        }
+
+        #expect(chunks.map(\.text).joined() == "Visible stream")
+        #expect(chunks.last?.isFinal == true)
+    }
+
+    @Test
+    func runtimeStreamingSynthesizesTerminalChunkWhenProviderOmitsFinalMarker() async throws {
+        let router = ModelRouter()
+        await router.register(NoFinalStreamingProvider())
+        let runtime = EmbeddedAgentRuntime(modelRouter: router)
+        try await runtime.setDefaultModelProviderID("streaming-provider")
+
+        let stream = await runtime.runStream(
+            AgentRunRequest(
+                runID: "run-synthetic-final",
+                sessionKey: "session-stream",
+                prompt: "stream me"
+            )
+        )
+
+        var chunks: [AgentRunStreamChunk] = []
+        for try await chunk in stream {
+            chunks.append(chunk)
+        }
+
+        #expect(chunks.count == 2)
+        #expect(chunks.first?.text == "partial")
+        #expect(chunks.last?.text == "")
+        #expect(chunks.last?.isFinal == true)
     }
 
     @Test
