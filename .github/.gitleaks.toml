@@ -4,10 +4,7 @@ title = "OpenClawKit gitleaks overrides"
 useDefault = true
 
 [allowlist]
-description = "Ignore Qwen OAuth reference values and test placeholders"
+description = "Ignore the documented Qwen OAuth client identifier"
 stopwords = [
   "f0304373b74a44d2b584a3fb70ca9e56",
-  "qwen-oauth-token",
-  "fresh-qwen-access",
-  "fresh-qwen-refresh",
 ]

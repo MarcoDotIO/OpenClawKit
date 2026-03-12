@@ -80,7 +80,7 @@ struct SecurityAuditTests {
                     "qwen-portal": ModelProviderConfig(
                         enabled: true,
                         baseURL: "https://portal.qwen.ai/v1",
-                        apiKey: "qwen-oauth-token",
+                        apiKey: "qwen-t1",
                         auth: .oauth,
                         api: .openAICompletions,
                         models: [ModelDefinitionConfig(id: "coder-model", api: .openAICompletions)],

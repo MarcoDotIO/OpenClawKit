@@ -77,8 +77,8 @@ struct ProviderRuntimeAuthTests {
                 headers: [:],
                 body: Data("""
                 {
-                  "access_token": "fresh-qwen-access",
-                  "refresh_token": "fresh-qwen-refresh",
+                  "access_token": "qwen-a2",
+                  "refresh_token": "qwen-r2",
                   "expires_in": 3600
                 }
                 """.utf8)
@@ -91,8 +91,8 @@ struct ProviderRuntimeAuthTests {
             credential: .oauth(
                 OAuthAuthProfileCredential(
                     provider: "qwen-portal",
-                    accessToken: "stale-access",
-                    refreshToken: "refresh-token",
+                    accessToken: "qwen-a1",
+                    refreshToken: "qwen-r1",
                     expires: 999_000,
                     email: "qwen@example.com"
                 )
@@ -101,8 +101,8 @@ struct ProviderRuntimeAuthTests {
 
         #expect(resolution.persistCredential)
         if case .oauth(let credential) = resolution.credential {
-            #expect(credential.accessToken == "fresh-qwen-access")
-            #expect(credential.refreshToken == "fresh-qwen-refresh")
+            #expect(credential.accessToken == "qwen-a2")
+            #expect(credential.refreshToken == "qwen-r2")
             #expect(credential.expires == 4_600_000)
             #expect(credential.clientID == "f0304373b74a44d2b584a3fb70ca9e56")
         } else {
@@ -164,8 +164,8 @@ struct ProviderRuntimeAuthTests {
             .oauth(
                 OAuthAuthProfileCredential(
                     provider: "qwen-portal",
-                    accessToken: "expired-access",
-                    refreshToken: "refresh-token",
+                    accessToken: "qwen-a0",
+                    refreshToken: "qwen-r1",
                     expires: 999_000
                 )
             ),
@@ -180,8 +180,8 @@ struct ProviderRuntimeAuthTests {
                 headers: [:],
                 body: Data("""
                 {
-                  "access_token": "fresh-qwen-access",
-                  "refresh_token": "fresh-qwen-refresh",
+                  "access_token": "qwen-a2",
+                  "refresh_token": "qwen-r2",
                   "expires_in": 1800
                 }
                 """.utf8)
@@ -225,11 +225,11 @@ struct ProviderRuntimeAuthTests {
         )
 
         #expect(response.text == "hello from qwen")
-        #expect(await providerTransport.authorization() == "Bearer fresh-qwen-access")
+        #expect(await providerTransport.authorization() == "Bearer qwen-a2")
         let resolved = try await authProfileStore.resolvedCredential(for: profileID)
         if case .oauth(let credential)? = resolved {
-            #expect(credential.accessToken == "fresh-qwen-access")
-            #expect(credential.refreshToken == "fresh-qwen-refresh")
+            #expect(credential.accessToken == "qwen-a2")
+            #expect(credential.refreshToken == "qwen-r2")
             #expect(credential.expires == 2_800_000)
         } else {
             Issue.record("Expected refreshed OAuth credential to be persisted")

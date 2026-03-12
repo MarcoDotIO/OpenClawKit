@@ -207,7 +207,7 @@ struct ConfigSessionRoutingTests {
                     "qwen-portal": ModelProviderConfig(
                         enabled: true,
                         baseURL: "https://portal.qwen.ai/v1",
-                        apiKey: "qwen-oauth-token",
+                        apiKey: "qwen-t1",
                         auth: .oauth,
                         api: .openAICompletions,
                         models: [ModelDefinitionConfig(id: "coder-model", api: .openAICompletions)],
@@ -225,7 +225,7 @@ struct ConfigSessionRoutingTests {
         #expect(decoded.models.providers["amazon-bedrock"]?.auth == .awsSDK)
         #expect(decoded.models.providers["amazon-bedrock"]?.region == "us-east-1")
         #expect(decoded.models.providers["qwen-portal"]?.auth == .oauth)
-        #expect(decoded.models.providers["qwen-portal"]?.apiKey == "qwen-oauth-token")
+        #expect(decoded.models.providers["qwen-portal"]?.apiKey == "qwen-t1")
         #expect(decoded.models.providers["qwen-portal"]?.models.first?.id == "coder-model")
     }
 
@@ -249,7 +249,7 @@ struct ConfigSessionRoutingTests {
                 "apiStyle": "openAICompletions",
                 "authMode": "oauthToken",
                 "modelID": "coder-model",
-                "accessToken": "qwen-oauth-token",
+                "accessToken": "qwen-t1",
                 "baseURL": "https://portal.qwen.ai/v1"
               }
             }
@@ -260,7 +260,7 @@ struct ConfigSessionRoutingTests {
         let decoded = try JSONDecoder().decode(OpenClawConfig.self, from: Data(legacyJSON.utf8))
         #expect(decoded.models.providers["openrouter"]?.api == .openAICompletions)
         #expect(decoded.models.providers["qwen-portal"]?.auth == .oauth)
-        #expect(decoded.models.providers["qwen-portal"]?.apiKey == "qwen-oauth-token")
+        #expect(decoded.models.providers["qwen-portal"]?.apiKey == "qwen-t1")
     }
 
     @Test

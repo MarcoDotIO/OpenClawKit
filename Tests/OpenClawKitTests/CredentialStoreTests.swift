@@ -171,7 +171,7 @@ struct CredentialStoreTests {
     func nonSecurityPlaceholderMaintainsAccessibilityInitializerShape() async throws {
         let store = KeychainCredentialStore(
             service: "io.marcodotio.openclawkit.tests",
-            accessibility: "placeholder" as CFString
+            accessibility: "placeholder"
         )
         do {
             _ = try await store.loadSecret(for: "unavailable")
