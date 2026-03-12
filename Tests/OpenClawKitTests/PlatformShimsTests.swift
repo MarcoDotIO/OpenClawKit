@@ -42,5 +42,13 @@ struct PlatformShimsTests {
         #expect(result.exitCode == 0)
         #expect(result.stdout.contains("ok"))
     }
-}
 
+    @Test
+    func processRunnerReturnsAfterNonZeroExitWithStderrOnlyOutput() async throws {
+        let runner = ProcessRunner()
+        let result = try await runner.run(["/bin/sh", "-c", "echo failing 1>&2; exit 2"])
+        #expect(result.exitCode == 2)
+        #expect(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        #expect(result.stderr.contains("failing"))
+    }
+}

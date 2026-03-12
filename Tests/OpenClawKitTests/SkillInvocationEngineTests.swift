@@ -411,6 +411,48 @@ struct SkillInvocationEngineTests {
         #expect(result?.output.contains("Hello") == true)
     }
 
+    @Test
+    func processBackedSkillsStillRunAfterWASMExecution() async throws {
+        let root = try self.makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let fixture = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Examples/iOS/OpenClawiOS/skills/wasm-hello/module/hello.wasm")
+
+        let wasmEntrypoint = root
+            .appendingPathComponent("skills", isDirectory: true)
+            .appendingPathComponent("wasm-real", isDirectory: true)
+            .appendingPathComponent("module", isDirectory: true)
+            .appendingPathComponent("hello.wasm", isDirectory: false)
+        _ = try self.writeSkill(
+            root: root,
+            name: "wasm-real",
+            entrypoint: "module/hello.wasm"
+        )
+        try FileManager.default.removeItem(at: wasmEntrypoint)
+        try FileManager.default.copyItem(at: fixture, to: wasmEntrypoint)
+
+        _ = try self.writeSkill(
+            root: root,
+            name: "shell-after-wasm",
+            entrypoint: "scripts/run.sh",
+            entrypointContents: """
+            printf 'shell:%s' "$1"
+            """
+        )
+
+        let engine = SkillInvocationEngine(workspaceRoot: root, invocationTimeoutMs: 2_000)
+        let wasmResult = try await engine.invokeIfRequested(message: "/wasm-real hi")
+        let shellResult = try await engine.invokeIfRequested(message: "/shell-after-wasm later")
+
+        #expect(wasmResult?.executorID == "wasm")
+        #expect(shellResult?.executorID == "process")
+        #expect(shellResult?.output == "shell:later")
+    }
+
     private func makeWorkspace() throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("openclawkit-skill-invocation-tests", isDirectory: true)

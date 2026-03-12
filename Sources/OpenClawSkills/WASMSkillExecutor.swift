@@ -138,9 +138,12 @@ public actor WASMSkillExecutor {
         input: String
     ) throws -> WASMSkillExecutionResult {
 #if canImport(SystemPackage) && canImport(WasmKit) && canImport(WasmKitWASI)
+        let stdinPipe = try FileDescriptor.pipe()
         let stdoutPipe = try FileDescriptor.pipe()
         let stderrPipe = try FileDescriptor.pipe()
         defer {
+            try? stdinPipe.readEnd.close()
+            try? stdinPipe.writeEnd.close()
             try? stdoutPipe.readEnd.close()
             try? stdoutPipe.writeEnd.close()
             try? stderrPipe.readEnd.close()
@@ -153,11 +156,13 @@ public actor WASMSkillExecutor {
             wasiArgs.append(trimmedInput)
         }
 
+        // Use an isolated EOF-only stdin so the WASI bridge never mutates the process-wide stdin descriptor.
+        try stdinPipe.writeEnd.close()
         let wasi = try WASIBridgeToHost(
             args: wasiArgs,
             environment: [:],
             preopens: [:],
-            stdin: .standardInput,
+            stdin: stdinPipe.readEnd,
             stdout: stdoutPipe.writeEnd,
             stderr: stderrPipe.writeEnd
         )

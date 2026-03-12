@@ -65,8 +65,9 @@ public actor ProcessRunner {
 
         let stdoutCapture = PipeCapture(pipe: stdoutPipe)
         let stderrCapture = PipeCapture(pipe: stderrPipe)
-
         try process.run()
+        try? stdoutPipe.fileHandleForWriting.close()
+        try? stderrPipe.fileHandleForWriting.close()
         process.waitUntilExit()
         let outData = stdoutCapture.finish()
         let errData = stderrCapture.finish()

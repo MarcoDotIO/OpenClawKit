@@ -4,7 +4,7 @@ import Testing
 @testable import OpenClawCore
 
 #if canImport(WasmKit) && canImport(WasmKitWASI)
-@Suite("WASM skill executor")
+@Suite("WASM skill executor", .serialized)
 struct WASMSkillExecutorTests {
     @Test
     func embeddedRuntimeExecutesBundledHelloModule() async throws {
