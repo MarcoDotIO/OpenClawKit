@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026.2.3 - Unreleased
+
+### Added
+
+- `2026.3.11` SDK + control-plane parity train scaffolding and release rules,
+  keyed to the pinned OpenClaw reference snapshot.
+
+### Changed
+
+- Documentation now states that `2026.2.3` must land as one green commit per
+  implementation step with warnings-as-errors validation and full coverage for
+  newly introduced codepaths.
+
+### Tests
+
+- Pending parity-train implementation and validation.
+
 ## 2026.2.2 - 2026-03-11
 
 ### Added

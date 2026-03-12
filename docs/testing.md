@@ -48,6 +48,20 @@ Never commit `.env`.
 7. `Scripts/validate-apple-matrix.sh --platform macos`
 8. `Scripts/validate-apple-matrix.sh --platform ios`
 
+## 2026.2.3 Parity Train Rules
+
+The `2026.2.3` release is the SDK + control-plane parity train for the pinned
+OpenClaw `2026.3.11` snapshot in [docs/parity-2026.3.11.md](./parity-2026.3.11.md).
+
+For this train:
+
+1. each implementation step must land as exactly one commit
+2. `swift build -Xswiftc -warnings-as-errors` must pass before the commit is created
+3. all previously passing tests must still pass
+4. tests added for the step must pass and fully cover the code introduced by the step
+
+Do not defer warning cleanup, test fixes, or coverage gaps to later commits.
+
 ## 2026.2.1 Parity Coverage Highlights
 
 - Channel adapter reliability:

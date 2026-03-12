@@ -13,6 +13,18 @@ OpenClawKit is a Swift-native agent SDK for Apple platforms and Linux services.
 It provides a complete runtime surface: protocol contracts, model routing, channels,
 skills, memory, observability, security, iOS app integrations, and release-grade tooling.
 
+## 2026.2.3 In Flight
+
+- `2026.2.3` is the active SDK + control-plane parity release train for the
+  pinned OpenClaw `2026.3.11` snapshot documented in
+  `docs/parity-2026.3.11.md`.
+- This train is commit-gated: each step must land as one logical commit, build
+  cleanly with `swift build -Xswiftc -warnings-as-errors`, keep all previously
+  passing tests green, and include tests that fully cover the new codepaths
+  added in that step.
+- The final `2026.2.3` release will be cut from the latest validated parity
+  commit, tagged, released, and pushed from that exact revision.
+
 ## 2026.2.2 Highlights
 
 ### TS Model/Auth Parity
@@ -284,6 +296,7 @@ CI workflows:
 - [Architecture](docs/architecture.md)
 - [API Surface](docs/api-surface.md)
 - [Testing Guide](docs/testing.md)
+- [2026.3.11 Parity Manifest](docs/parity-2026.3.11.md)
 - [2026.2.1 Parity Manifest](docs/parity-2026.2.1.md)
 - [2026.2.1 Roadmap](docs/roadmap-2026.2.1.md)
 - [Changelog](CHANGELOG.md)
