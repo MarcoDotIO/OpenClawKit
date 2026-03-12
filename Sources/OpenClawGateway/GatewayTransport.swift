@@ -49,6 +49,8 @@ public enum GatewayTransportError: Error, LocalizedError, Sendable {
     case invalidFrame(String)
     /// TLS fingerprint validation failed.
     case tlsFingerprintMismatch
+    /// Remote gateway returned an error response.
+    case remote(ErrorShape)
 
     public var errorDescription: String? {
         switch self {
@@ -60,6 +62,8 @@ public enum GatewayTransportError: Error, LocalizedError, Sendable {
             return "Invalid gateway frame: \(detail)"
         case .tlsFingerprintMismatch:
             return "Gateway TLS fingerprint mismatch"
+        case .remote(let error):
+            return "Gateway remote error (\(error.code.rawValue)): \(error.message)"
         }
     }
 }
@@ -176,15 +180,49 @@ public actor GatewayClient {
 
             let timeoutNs = UInt64(max(0, timeoutMs)) * 1_000_000
             Task { [weak self] in
-                do {
-                    try await Task.sleep(nanoseconds: timeoutNs)
-                } catch {
+                if (try? await Task.sleep(nanoseconds: timeoutNs)) == nil {
                     return
                 }
                 guard !Task.isCancelled else { return }
                 await self?.failPending(id: id, with: GatewayTransportError.requestTimeout(requestID: id))
             }
         }
+    }
+
+    /// Sends a typed request and decodes the typed response payload.
+    /// - Parameters:
+    ///   - method: Gateway method name.
+    ///   - timeoutMs: Timeout in milliseconds.
+    ///   - type: Response payload type.
+    /// - Returns: Decoded typed response payload.
+    public func request<T: Decodable>(
+        _ method: String,
+        timeoutMs: Int = 15_000,
+        as type: T.Type = T.self
+    ) async throws -> T {
+        let response = try await self.send(method: method, timeoutMs: timeoutMs)
+        return try Self.decodeResponse(type, from: response)
+    }
+
+    /// Sends a typed request payload and decodes the typed response payload.
+    /// - Parameters:
+    ///   - method: Gateway method name.
+    ///   - params: Typed request payload.
+    ///   - timeoutMs: Timeout in milliseconds.
+    ///   - type: Response payload type.
+    /// - Returns: Decoded typed response payload.
+    public func request<P: Encodable, T: Decodable>(
+        _ method: String,
+        params: P,
+        timeoutMs: Int = 15_000,
+        as type: T.Type = T.self
+    ) async throws -> T {
+        let encoded = try GatewayPayloadCodec.encode(params)
+        guard case .object(let object) = encoded.value else {
+            throw GatewayTransportError.invalidFrame("Typed gateway params must encode to an object")
+        }
+        let response = try await self.send(method: method, params: object, timeoutMs: timeoutMs)
+        return try Self.decodeResponse(type, from: response)
     }
 
     private func establishConnection() async throws {
@@ -208,6 +246,16 @@ public actor GatewayClient {
 
         self.startReceiveLoop(using: socket)
         self.startTickWatchdog()
+    }
+
+    private static func decodeResponse<T: Decodable>(_ type: T.Type, from response: ResponseFrame) throws -> T {
+        guard response.ok else {
+            if let error = response.error {
+                throw GatewayTransportError.remote(error)
+            }
+            throw GatewayTransportError.invalidFrame("Gateway response marked as failed without an error payload")
+        }
+        return try GatewayPayloadCodec.decode(type, from: response.payload)
     }
 
     private func startReceiveLoop(using socket: any GatewaySocket) {
@@ -254,9 +302,7 @@ public actor GatewayClient {
     }
 
     private func handleInbound(_ raw: String) {
-        guard let data = raw.data(using: .utf8) else {
-            return
-        }
+        let data = Data(raw.utf8)
         do {
             let frame = try JSONDecoder().decode(GatewayFrame.self, from: data)
             switch frame {
@@ -372,4 +418,3 @@ public actor GatewayClient {
         }
     }
 }
-

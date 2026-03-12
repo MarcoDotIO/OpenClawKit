@@ -221,6 +221,14 @@ public actor SessionStore {
         self.records[key]
     }
 
+    /// Deletes one session record by key.
+    /// - Parameter key: Session key to remove.
+    /// - Returns: `true` when a record existed and was removed.
+    @discardableResult
+    public func deleteRecord(forKey key: String) -> Bool {
+        self.records.removeValue(forKey: key) != nil
+    }
+
     /// Returns all session records sorted by key.
     public func allRecords() -> [SessionRecord] {
         self.records.values.sorted { $0.key < $1.key }

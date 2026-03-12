@@ -55,6 +55,141 @@ public struct OpenClawSDK: Sendable {
         AuthProfileStore(fileURL: fileURL, credentialStore: credentialStore)
     }
 
+    /// Creates an in-process gateway server backed by the SDK runtime surfaces.
+    /// - Parameters:
+    ///   - sessionStore: Session store used for session control-plane methods.
+    ///   - credentialStore: Secret store used by `secrets.*` methods.
+    ///   - modelRouter: Model router used by `models.list` and runtime-backed agent runs.
+    ///   - runtime: Optional preconfigured runtime used by `agent` methods.
+    ///   - workspaceRoot: Optional workspace root used by `skills.*` methods.
+    ///   - secretIndexURL: Optional persisted index path for secret-key metadata.
+    ///   - browserRequestHandler: Optional browser proxy handler used by `browser.request`.
+    /// - Returns: Configured in-process gateway server.
+    public func makeGatewayServer(
+        sessionStore: SessionStore,
+        credentialStore: any CredentialStore,
+        modelRouter: ModelRouter = ModelRouter(),
+        runtime: EmbeddedAgentRuntime? = nil,
+        workspaceRoot: URL? = nil,
+        secretIndexURL: URL? = nil,
+        browserRequestHandler: GatewayBrowserRequestHandler? = nil
+    ) -> GatewayServer {
+        let resolvedRuntime = runtime ?? EmbeddedAgentRuntime(modelRouter: modelRouter)
+        let secretVault = GatewaySecretVault(
+            credentialStore: credentialStore,
+            indexURL: secretIndexURL
+        )
+        let handlers = GatewayServerHandlers(
+            runAgent: { params in
+                let prompt = (params.prompt ?? params.message ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !prompt.isEmpty else {
+                    throw OpenClawCoreError.invalidConfiguration("Gateway agent request requires a prompt or message")
+                }
+                let request = AgentRunRequest(
+                    sessionKey: params.sessionKey,
+                    prompt: prompt,
+                    modelProviderID: params.modelProviderID,
+                    modelID: params.modelID
+                )
+                let runID = request.runID
+                let timeoutMs = max(1, params.timeoutMs ?? 30_000)
+                let task = Task { () throws -> GatewayAgentWaitResult in
+                    do {
+                        let result = try await resolvedRuntime.run(request, timeoutMs: timeoutMs)
+                        return GatewayAgentWaitResult(
+                            runID: runID,
+                            status: "ok",
+                            sessionKey: result.sessionKey,
+                            output: result.output
+                        )
+                    } catch {
+                        return GatewayAgentWaitResult(
+                            runID: runID,
+                            status: "error",
+                            sessionKey: request.sessionKey,
+                            error: error.localizedDescription
+                        )
+                    }
+                }
+                return GatewayAgentExecution(runID: runID, task: task)
+            },
+            listModels: {
+                let providerIDs = await modelRouter.configuredProviderIDs()
+                return providerIDs.map { providerID in
+                    let normalizedProviderID = OpenClawReferenceProviderCatalog.normalize(providerID: providerID)
+                    if let entry = OpenClawReferenceProviderCatalog.entry(for: normalizedProviderID) {
+                        return GatewayModelCatalogEntry(
+                            providerID: normalizedProviderID,
+                            modelID: entry.config.defaultModel?.id ?? normalizedProviderID,
+                            displayName: entry.displayName,
+                            api: entry.config.api?.rawValue,
+                            authMode: entry.config.auth?.rawValue
+                        )
+                    }
+                    return GatewayModelCatalogEntry(
+                        providerID: normalizedProviderID,
+                        modelID: normalizedProviderID,
+                        displayName: normalizedProviderID
+                    )
+                }
+                .sorted {
+                    if $0.providerID == $1.providerID {
+                        return $0.modelID < $1.modelID
+                    }
+                    return $0.providerID < $1.providerID
+                }
+            },
+            listSkills: {
+                guard let workspaceRoot else {
+                    return []
+                }
+                let registry = SkillRegistry(workspaceRoot: workspaceRoot)
+                let skills = try await registry.loadSkills()
+                var descriptors: [GatewaySkillDescriptor] = []
+                descriptors.reserveCapacity(skills.count)
+                for skill in skills {
+                    let entrypoint = try? await registry.resolveEntrypoint(for: skill)
+                    descriptors.append(
+                        GatewaySkillDescriptor(
+                            name: skill.name,
+                            description: skill.description,
+                            source: skill.source.rawValue,
+                            entrypoint: entrypoint?.path,
+                            userInvocable: skill.invocation.userInvocable
+                        )
+                    )
+                }
+                return descriptors.sorted { $0.name < $1.name }
+            },
+            invokeSkill: { params in
+                guard let workspaceRoot else {
+                    throw OpenClawCoreError.unavailable("Gateway skills.invoke requires a workspace root")
+                }
+                let engine = SkillInvocationEngine(workspaceRoot: workspaceRoot)
+                let escapedInput = params.input.trimmingCharacters(in: .whitespacesAndNewlines)
+                let message = escapedInput.isEmpty
+                    ? "/\(params.name)"
+                    : "/\(params.name) \(escapedInput)"
+                guard let result = try await engine.invokeIfRequested(message: message) else {
+                    throw OpenClawCoreError.unavailable("Skill '\(params.name)' is not invocable")
+                }
+                return GatewaySkillInvokeResult(
+                    skillName: result.skillName,
+                    output: result.output,
+                    executorID: result.executorID,
+                    durationMs: result.durationMs
+                )
+            },
+            browserRequest: browserRequestHandler
+        )
+        return GatewayServer(
+            sessionStore: sessionStore,
+            secretVault: secretVault,
+            handlers: handlers
+        )
+    }
+
     /// Returns the interactive auth flow descriptor for one provider when available.
     /// - Parameter providerID: Target provider identifier.
     public func interactiveAuthDescriptor(for providerID: String) -> InteractiveAuthFlowDescriptor? {

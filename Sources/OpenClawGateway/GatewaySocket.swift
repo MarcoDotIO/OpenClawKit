@@ -19,12 +19,16 @@ public protocol GatewaySocket: Sendable {
 
 /// In-process loopback socket used by tests and local transport flows.
 public actor LoopbackGatewaySocket: GatewaySocket {
+    private let server: GatewayServer?
     private var open = false
     private var queue: [String] = []
     private var waiters: [CheckedContinuation<String, Error>] = []
 
     /// Creates a loopback socket.
-    public init() {}
+    /// - Parameter server: Optional in-process gateway server dispatcher.
+    public init(server: GatewayServer? = nil) {
+        self.server = server
+    }
 
     /// Marks the loopback socket as connected.
     /// - Parameter url: Ignored loopback URL placeholder.
@@ -42,13 +46,18 @@ public actor LoopbackGatewaySocket: GatewaySocket {
         let decoder = JSONDecoder()
         let encoder = JSONEncoder()
         let request = try decoder.decode(RequestFrame.self, from: Data(text.utf8))
-        let response = ResponseFrame(
-            type: "res",
-            id: request.id,
-            ok: true,
-            payload: AnyCodable(["status": AnyCodable("accepted")]),
-            error: nil
-        )
+        let response: ResponseFrame
+        if let server {
+            response = await server.handle(request)
+        } else {
+            response = ResponseFrame(
+                type: "res",
+                id: request.id,
+                ok: true,
+                payload: AnyCodable(["status": AnyCodable("accepted")]),
+                error: nil
+            )
+        }
         let raw = String(decoding: try encoder.encode(response), as: UTF8.self)
         self.enqueue(raw)
     }
@@ -90,4 +99,3 @@ public actor LoopbackGatewaySocket: GatewaySocket {
         self.queue.append(raw)
     }
 }
-
