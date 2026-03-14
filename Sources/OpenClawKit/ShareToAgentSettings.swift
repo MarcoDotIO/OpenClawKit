@@ -1,5 +1,6 @@
 import Foundation
 
+/// Shared defaults-backed settings for the share-to-agent flow.
 public enum ShareToAgentSettings {
     private static let suiteName = "group.ai.openclaw.shared"
     private static let defaultInstructionKey = "share.defaultInstruction"
@@ -9,6 +10,7 @@ public enum ShareToAgentSettings {
         UserDefaults(suiteName: suiteName) ?? .standard
     }
 
+    /// Loads the default instruction appended to shared content.
     public static func loadDefaultInstruction() -> String {
         let raw = self.defaults.string(forKey: self.defaultInstructionKey)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -18,6 +20,7 @@ public enum ShareToAgentSettings {
         return self.fallbackInstruction
     }
 
+    /// Saves or clears the default instruction appended to shared content.
     public static func saveDefaultInstruction(_ value: String?) {
         let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if trimmed.isEmpty {

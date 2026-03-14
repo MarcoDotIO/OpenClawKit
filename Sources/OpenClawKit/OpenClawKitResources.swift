@@ -1,5 +1,6 @@
 import Foundation
 
+/// Bundle lookup helpers for packaged OpenClawKit resources.
 public enum OpenClawKitResources {
     /// Resource bundle for OpenClawKit.
     ///

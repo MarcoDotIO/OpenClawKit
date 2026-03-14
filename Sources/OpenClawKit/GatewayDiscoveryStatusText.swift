@@ -1,7 +1,9 @@
 import Foundation
 import Network
 
+/// Human-readable status strings for gateway discovery state.
 public enum GatewayDiscoveryStatusText {
+    /// Builds a user-facing status string from the current browser states.
     public static func make(states: [NWBrowser.State], hasBrowsers: Bool) -> String {
         if states.isEmpty {
             return hasBrowsers ? "Setup" : "Idle"
@@ -36,4 +38,3 @@ public enum GatewayDiscoveryStatusText {
         return "Searching…"
     }
 }
-

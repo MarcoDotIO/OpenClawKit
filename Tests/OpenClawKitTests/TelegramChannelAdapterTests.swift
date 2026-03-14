@@ -139,7 +139,18 @@ struct TelegramChannelAdapterTests {
     @Test
     func pollsUpdatesAndDeliversInboundPrivateMessages() async throws {
         let updates = Data("""
-        {"ok":true,"result":[{"update_id":1,"message":{"message_id":10,"text":"hello from tg","chat":{"id":111,"type":"private"},"from":{"id":42,"is_bot":false}}}]}
+        {
+          "ok": true,
+          "result": [{
+            "update_id": 1,
+            "message": {
+              "message_id": 10,
+              "text": "hello from tg",
+              "chat": {"id": 111, "type": "private"},
+              "from": {"id": 42, "is_bot": false}
+            }
+          }]
+        }
         """.utf8)
         let transport = MockTelegramTransport(updateResponses: [updates, Data("{\"ok\":true,\"result\":[]}".utf8)])
         let collector = InboundCollector()
@@ -328,7 +339,18 @@ struct TelegramChannelAdapterTests {
     @Test
     func pollLoopRecoversFromNetworkFailureAndProcessesLaterUpdates() async throws {
         let updates = Data("""
-        {"ok":true,"result":[{"update_id":90,"message":{"message_id":10,"text":"after retry","chat":{"id":111,"type":"private"},"from":{"id":42,"is_bot":false}}}]}
+        {
+          "ok": true,
+          "result": [{
+            "update_id": 90,
+            "message": {
+              "message_id": 10,
+              "text": "after retry",
+              "chat": {"id": 111, "type": "private"},
+              "from": {"id": 42, "is_bot": false}
+            }
+          }]
+        }
         """.utf8)
         let transport = MockTelegramTransport(
             updateResponses: [updates, Data("{\"ok\":true,\"result\":[]}".utf8)],

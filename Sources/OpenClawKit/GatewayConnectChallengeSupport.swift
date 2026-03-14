@@ -1,7 +1,9 @@
 import Foundation
 import OpenClawProtocol
 
+/// Helpers for reading and waiting on gateway connect challenges.
 public enum GatewayConnectChallengeSupport {
+    /// Reads the nonce value from a `connect.challenge` payload.
     public static func nonce(from payload: [String: OpenClawProtocol.AnyCodable]?) -> String? {
         guard let nonce = payload?["nonce"]?.stringValue else { return nil }
         let trimmed = nonce.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -9,6 +11,7 @@ public enum GatewayConnectChallengeSupport {
         return trimmed
     }
 
+    /// Waits for a non-empty connect nonce while applying a timeout.
     public static func waitForNonce<E: Error>(
         timeoutSeconds: Double,
         onTimeout: @escaping @Sendable () -> E,

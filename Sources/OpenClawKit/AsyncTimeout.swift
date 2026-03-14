@@ -1,6 +1,8 @@
 import Foundation
 
+/// Async timeout helpers shared by gateway, media, and command flows.
 public enum AsyncTimeout {
+    /// Runs an async operation with a timeout expressed in seconds.
     public static func withTimeout<T: Sendable>(
         seconds: Double,
         onTimeout: @escaping @Sendable () -> Error,
@@ -24,6 +26,7 @@ public enum AsyncTimeout {
         }
     }
 
+    /// Runs an async operation with a timeout expressed in milliseconds.
     public static func withTimeoutMs<T: Sendable>(
         timeoutMs: Int,
         onTimeout: @escaping @Sendable () -> Error,

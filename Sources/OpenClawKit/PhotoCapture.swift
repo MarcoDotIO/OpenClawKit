@@ -1,6 +1,8 @@
 import Foundation
 
+/// Photo post-processing helpers shared by camera and gateway flows.
 public enum PhotoCapture {
+    /// Transcodes raw image data into a gateway-friendly JPEG payload.
     public static func transcodeJPEGForGateway(
         rawData: Data,
         maxWidthPx: Int,
@@ -16,4 +18,3 @@ public enum PhotoCapture {
             maxBytes: maxEncodedBytes)
     }
 }
-

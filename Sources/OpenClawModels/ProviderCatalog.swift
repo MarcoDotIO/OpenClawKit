@@ -3,11 +3,16 @@ import OpenClawCore
 
 /// Canonical provider entry derived from the pinned OpenClaw TS reference snapshot.
 public struct ProviderCatalogEntry: Sendable, Equatable {
+    /// Stable provider identifier.
     public var providerID: String
+    /// User-facing provider display name.
     public var displayName: String
+    /// Additional provider aliases accepted by config and routing helpers.
     public var aliases: [String]
+    /// Default provider configuration used when synthesizing built-in providers.
     public var config: ModelProviderConfig
 
+    /// Creates one canonical provider catalog entry.
     public init(
         providerID: String,
         displayName: String,
@@ -23,8 +28,10 @@ public struct ProviderCatalogEntry: Sendable, Equatable {
 
 /// Shared provider catalog aligned with the pinned OpenClaw TS reference.
 public enum OpenClawReferenceProviderCatalog {
+    /// Upstream OpenClaw commit used to derive the built-in provider list.
     public static let referenceCommit = "61cd3a6e446c3d181a0a75861fd85d459c068a3d"
 
+    /// Canonical built-in provider entries exposed by the SDK.
     public static let entries: [ProviderCatalogEntry] = [
         entry("openai", "OpenAI", api: .openAIResponses, auth: .apiKey, baseURL: "https://api.openai.com/v1", modelID: "gpt-4.1-mini"),
         entry("openai-compatible", "OpenAI Compatible", api: .openAICompletions, auth: .apiKey, baseURL: "https://api.openai.com/v1", modelID: "gpt-4.1-mini"),
@@ -59,9 +66,33 @@ public enum OpenClawReferenceProviderCatalog {
         entry("openai-codex", "OpenAI Codex", api: .openAICodexResponses, auth: .oauth, baseURL: "https://chatgpt.com/backend-api", modelID: "gpt-5.4"),
         entry("opencode", "OpenCode Zen", api: .openAICompletions, auth: .apiKey, baseURL: "https://api.opencode.ai/v1", modelID: "claude-opus-4-6"),
         entry("opencode-go", "OpenCode Go", api: .openAICompletions, auth: .apiKey, baseURL: "https://api.opencode.ai/v1", modelID: "kimi-k2.5"),
-        entry("google-vertex", "Google Vertex", api: .googleGenerativeAI, auth: .oauth, baseURL: "https://us-central1-aiplatform.googleapis.com", modelID: "gemini-3-pro-preview", inputs: [.text, .image]),
-        entry("google-antigravity", "Google Antigravity", api: .googleGenerativeAI, auth: .oauth, baseURL: "https://generativelanguage.googleapis.com/v1beta", modelID: "gemini-3-pro-preview", inputs: [.text, .image]),
-        entry("google-gemini-cli", "Google Gemini CLI", api: .googleGenerativeAI, auth: .oauth, baseURL: "https://generativelanguage.googleapis.com/v1beta", modelID: "gemini-3-flash-preview", inputs: [.text, .image]),
+        entry(
+            "google-vertex",
+            "Google Vertex",
+            api: .googleGenerativeAI,
+            auth: .oauth,
+            baseURL: "https://us-central1-aiplatform.googleapis.com",
+            modelID: "gemini-3-pro-preview",
+            inputs: [.text, .image]
+        ),
+        entry(
+            "google-antigravity",
+            "Google Antigravity",
+            api: .googleGenerativeAI,
+            auth: .oauth,
+            baseURL: "https://generativelanguage.googleapis.com/v1beta",
+            modelID: "gemini-3-pro-preview",
+            inputs: [.text, .image]
+        ),
+        entry(
+            "google-gemini-cli",
+            "Google Gemini CLI",
+            api: .googleGenerativeAI,
+            auth: .oauth,
+            baseURL: "https://generativelanguage.googleapis.com/v1beta",
+            modelID: "gemini-3-flash-preview",
+            inputs: [.text, .image]
+        ),
         entry("kilocode", "KiloCode", api: .openAICompletions, auth: .apiKey, baseURL: "https://api.kilo.ai/api/gateway/", modelID: "kilo/auto", inputs: [.text, .image], reasoning: true),
         entry("kimi-coding", "Kimi Coding", api: .openAICompletions, auth: .apiKey, baseURL: "https://api.kimi.com/coding/", modelID: "k2p5"),
         entry("venice", "Venice", api: .openAICompletions, auth: .apiKey, baseURL: "https://api.venice.ai/api/v1", modelID: "kimi-k2-5", inputs: [.text, .image], reasoning: true),
@@ -72,6 +103,7 @@ public enum OpenClawReferenceProviderCatalog {
         entry("byteplus-plan", "BytePlus Plan", api: .openAICompletions, auth: .apiKey, baseURL: "https://ark.ap-southeast.bytepluses.com/api/coding/v3", modelID: "ark-code-latest"),
     ]
 
+    /// Normalizes a provider identifier or alias into the canonical built-in provider ID.
     public static func normalize(providerID: String) -> String {
         let normalized = providerID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if entries.contains(where: { $0.providerID == normalized }) {
@@ -86,11 +118,13 @@ public enum OpenClawReferenceProviderCatalog {
         return normalized
     }
 
+    /// Returns the built-in catalog entry for a provider identifier or alias.
     public static func entry(for providerID: String) -> ProviderCatalogEntry? {
         let normalized = normalize(providerID: providerID)
         return entries.first(where: { $0.providerID == normalized })
     }
 
+    /// Returns built-in provider configs keyed by their canonical identifier.
     public static func providerConfigsByID() -> [String: ModelProviderConfig] {
         entries.reduce(into: [:]) { partial, entry in
             partial[entry.providerID] = entry.config
@@ -132,6 +166,7 @@ public enum OpenClawReferenceProviderCatalog {
 
 /// Factory for constructing runtime providers from canonical provider catalog configs.
 public enum ModelProviderFactory {
+    /// Instantiates a model provider implementation for the given provider ID and config.
     public static func makeProvider(
         providerID: String,
         config: ModelProviderConfig

@@ -62,4 +62,3 @@ struct PluginSystemTests {
         #expect(await service.stopped == true)
     }
 }
-

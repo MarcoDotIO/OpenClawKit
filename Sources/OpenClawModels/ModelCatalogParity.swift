@@ -2,6 +2,7 @@ import OpenClawCore
 
 /// Helpers that keep built-in model catalogs aligned with upstream OpenClaw quirks.
 public enum OpenClawModelCatalogParity {
+    /// Spark model ID that is suppressed on direct OpenAI provider surfaces.
     public static let openAIDirectSparkModelID = "gpt-5.3-codex-spark"
 
     private static let suppressedSparkProviderIDs: Set<String> = [
@@ -17,6 +18,7 @@ public enum OpenClawModelCatalogParity {
     private static let codexSparkContextWindow = 128_000
     private static let codexSparkMaxTokens = 128_000
 
+    /// Returns whether a built-in model should be hidden for a provider.
     public static func shouldSuppressBuiltInModel(
         providerID: String,
         modelID: String
@@ -27,6 +29,7 @@ public enum OpenClawModelCatalogParity {
             && normalizedModelID == self.openAIDirectSparkModelID
     }
 
+    /// Returns the user-facing error message for a suppressed built-in model selection.
     public static func suppressedBuiltInModelError(
         providerID: String,
         modelID: String
@@ -35,9 +38,14 @@ public enum OpenClawModelCatalogParity {
             return nil
         }
         let normalizedProviderID = Self.normalizedProviderID(providerID)
-        return "Unknown model: \(normalizedProviderID)/\(self.openAIDirectSparkModelID). \(self.openAIDirectSparkModelID) is only supported via openai-codex OAuth. Use openai-codex/\(self.openAIDirectSparkModelID)."
+        return """
+        Unknown model: \(normalizedProviderID)/\(self.openAIDirectSparkModelID). \
+        \(self.openAIDirectSparkModelID) is only supported via openai-codex OAuth. \
+        Use openai-codex/\(self.openAIDirectSparkModelID).
+        """
     }
 
+    /// Normalizes the built-in model list for provider-specific parity quirks.
     public static func normalizeBuiltInModels(
         providerID: String,
         models: [ModelDefinitionConfig]

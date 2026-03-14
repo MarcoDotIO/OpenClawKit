@@ -1,7 +1,9 @@
 # OpenClawKit Architecture
 
 This package is organized into layered SwiftPM targets so core concerns remain isolated
-while exposing a simple top-level facade.
+while exposing a simple top-level facade. The GitHub Pages documentation site
+publishes the same SDK-first view through Swift-DocC; this page is the compact
+in-repo companion for contributors and integrators.
 
 ## Layer Overview
 
@@ -75,3 +77,5 @@ When adding new features:
 - add core/runtime capability in the appropriate module target
 - wire facade entry points in `OpenClawSDK` only after lower layers are tested
 - add unit + E2E coverage with Swift Testing
+- prefer user-facing conceptual docs in the DocC catalog, and keep this file
+  focused on stable architecture notes

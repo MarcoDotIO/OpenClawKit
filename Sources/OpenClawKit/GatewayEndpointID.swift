@@ -1,7 +1,9 @@
 import Foundation
 import Network
 
+/// Stable identity helpers for Bonjour and network endpoints.
 public enum GatewayEndpointID {
+    /// Returns a stable identifier string for an endpoint.
     public static func stableID(_ endpoint: NWEndpoint) -> String {
         switch endpoint {
         case let .service(name, type, domain, _):
@@ -13,6 +15,7 @@ public enum GatewayEndpointID {
         }
     }
 
+    /// Returns a prettier human-readable endpoint description.
     public static func prettyDescription(_ endpoint: NWEndpoint) -> String {
         BonjourEscapes.decode(String(describing: endpoint))
     }

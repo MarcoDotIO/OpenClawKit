@@ -1,12 +1,18 @@
 import CryptoKit
 import Foundation
 
+/// Device identity payload used for gateway signing and device-auth handshakes.
 public struct DeviceIdentity: Codable, Sendable {
+    /// Stable device identifier derived from the public key.
     public var deviceId: String
+    /// Base64-encoded public key.
     public var publicKey: String
+    /// Base64-encoded private key.
     public var privateKey: String
+    /// Creation timestamp in milliseconds since the Unix epoch.
     public var createdAtMs: Int
 
+    /// Creates a device identity payload.
     public init(deviceId: String, publicKey: String, privateKey: String, createdAtMs: Int) {
         self.deviceId = deviceId
         self.publicKey = publicKey
@@ -36,9 +42,11 @@ enum DeviceIdentityPaths {
     }
 }
 
+/// File-backed helpers for loading, creating, and signing with a device identity.
 public enum DeviceIdentityStore {
     private static let fileName = "device.json"
 
+    /// Loads the existing device identity or generates and persists a new one.
     public static func loadOrCreate() -> DeviceIdentity {
         let url = self.fileURL()
         if let data = try? Data(contentsOf: url),
@@ -53,6 +61,7 @@ public enum DeviceIdentityStore {
         return identity
     }
 
+    /// Signs a payload string with the device private key and returns a base64url signature.
     public static func signPayload(_ payload: String, identity: DeviceIdentity) -> String? {
         guard let privateKeyData = Data(base64Encoded: identity.privateKey) else { return nil }
         do {
@@ -85,6 +94,7 @@ public enum DeviceIdentityStore {
             .replacingOccurrences(of: "=", with: "")
     }
 
+    /// Returns the device public key encoded as base64url.
     public static func publicKeyBase64Url(_ identity: DeviceIdentity) -> String? {
         guard let data = Data(base64Encoded: identity.publicKey) else { return nil }
         return self.base64UrlEncode(data)

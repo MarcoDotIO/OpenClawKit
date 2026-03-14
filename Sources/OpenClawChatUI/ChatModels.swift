@@ -6,10 +6,12 @@ import Foundation
 #if canImport(AppKit)
 import AppKit
 
+/// Platform image type used by shared chat UI attachment previews on AppKit.
 public typealias OpenClawPlatformImage = NSImage
 #elseif canImport(UIKit)
 import UIKit
 
+/// Platform image type used by shared chat UI attachment previews on UIKit.
 public typealias OpenClawPlatformImage = UIImage
 #endif
 

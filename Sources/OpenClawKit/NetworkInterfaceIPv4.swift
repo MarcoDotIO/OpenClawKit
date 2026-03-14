@@ -1,12 +1,17 @@
 import Darwin
 import Foundation
 
+/// IPv4 interface enumeration helpers.
 public enum NetworkInterfaceIPv4 {
+    /// One IPv4 address discovered on a network interface.
     public struct AddressEntry: Sendable {
+        /// Interface name such as `en0`.
         public let name: String
+        /// IPv4 address string.
         public let ip: String
     }
 
+    /// Returns non-loopback IPv4 interface addresses that are currently up.
     public static func addresses() -> [AddressEntry] {
         var addrList: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&addrList) == 0, let first = addrList else { return [] }

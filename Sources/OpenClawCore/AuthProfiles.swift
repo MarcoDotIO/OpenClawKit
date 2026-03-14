@@ -420,6 +420,7 @@ public actor AuthProfileStore {
     private let decoder: JSONDecoder
     private var state: PersistedAuthProfileStoreState
 
+    /// Creates a file-backed auth profile store.
     public init(
         fileURL: URL,
         credentialStore: any CredentialStore
@@ -773,6 +774,7 @@ public actor AuthProfileStore {
 
 /// Resolver that orders auth profiles using config, cooldowns, and round-robin rules.
 public enum AuthProfileResolver {
+    /// Resolves the effective auth-profile order for a provider request.
     public static func resolveProfileOrder(
         provider: String,
         preferredProfileID: String? = nil,

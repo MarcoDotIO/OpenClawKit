@@ -2,6 +2,7 @@
 // swiftlint:disable file_length
 import Foundation
 
+/// Current generated gateway protocol version supported by the SDK.
 public let GATEWAY_PROTOCOL_VERSION = 3
 
 public enum ErrorCode: String, Codable, Sendable {

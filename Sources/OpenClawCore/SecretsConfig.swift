@@ -1,6 +1,8 @@
 import Foundation
 
+/// Default alias used when a secret reference omits its provider.
 public let DEFAULT_SECRET_PROVIDER_ALIAS = "default"
+/// Sentinel file-secret ID used when a file contains one raw value instead of JSON.
 public let SINGLE_VALUE_FILE_SECRET_REF_ID = "value"
 
 private enum SecretPatterns {
@@ -394,7 +396,8 @@ public struct SecretDefaultsConfig: Codable, Sendable, Equatable {
         file: String? = nil,
         exec: String? = nil
     ) {
-        self.env = env.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? DEFAULT_SECRET_PROVIDER_ALIAS : env.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedEnv = env.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.env = normalizedEnv.isEmpty ? DEFAULT_SECRET_PROVIDER_ALIAS : normalizedEnv
         self.file = file?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.exec = exec?.trimmingCharacters(in: .whitespacesAndNewlines)
     }

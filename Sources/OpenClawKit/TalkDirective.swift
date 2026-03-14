@@ -61,7 +61,9 @@ public struct TalkDirectiveParseResult: Equatable, Sendable {
     }
 }
 
+/// Parser for the leading JSON talk directive block.
 public enum TalkDirectiveParser {
+    /// Parses a leading JSON directive block and returns the stripped body text.
     public static func parse(_ text: String) -> TalkDirectiveParseResult {
         let normalized = text.replacingOccurrences(of: "\r\n", with: "\n")
         var lines = normalized.split(separator: "\n", omittingEmptySubsequences: false)

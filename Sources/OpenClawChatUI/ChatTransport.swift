@@ -31,8 +31,10 @@ public protocol OpenClawChatTransport: Sendable {
 }
 
 extension OpenClawChatTransport {
+    /// Updates the active session key used for push-event routing.
     public func setActiveSessionKey(_: String) async throws {}
 
+    /// Resets one session when the transport supports a server-side reset call.
     public func resetSession(sessionKey _: String) async throws {
         throw NSError(
             domain: "OpenClawChatTransport",
@@ -40,6 +42,7 @@ extension OpenClawChatTransport {
             userInfo: [NSLocalizedDescriptionKey: "sessions.reset not supported by this transport"])
     }
 
+    /// Aborts the currently running assistant response for a session when supported.
     public func abortRun(sessionKey _: String, runId _: String) async throws {
         throw NSError(
             domain: "OpenClawChatTransport",
@@ -47,6 +50,7 @@ extension OpenClawChatTransport {
             userInfo: [NSLocalizedDescriptionKey: "chat.abort not supported by this transport"])
     }
 
+    /// Lists recent sessions when the backing transport exposes multi-session history.
     public func listSessions(limit _: Int?) async throws -> OpenClawChatSessionsListResponse {
         throw NSError(
             domain: "OpenClawChatTransport",
@@ -54,6 +58,7 @@ extension OpenClawChatTransport {
             userInfo: [NSLocalizedDescriptionKey: "sessions.list not supported by this transport"])
     }
 
+    /// Lists available model picker choices when the transport supports model discovery.
     public func listModels() async throws -> [OpenClawChatModelChoice] {
         throw NSError(
             domain: "OpenClawChatTransport",
@@ -61,6 +66,7 @@ extension OpenClawChatTransport {
             userInfo: [NSLocalizedDescriptionKey: "models.list not supported by this transport"])
     }
 
+    /// Changes the current session model when the transport supports session patching.
     public func setSessionModel(sessionKey _: String, model _: String?) async throws {
         throw NSError(
             domain: "OpenClawChatTransport",
@@ -68,6 +74,7 @@ extension OpenClawChatTransport {
             userInfo: [NSLocalizedDescriptionKey: "sessions.patch(model) not supported by this transport"])
     }
 
+    /// Changes the current session thinking level when the transport supports session patching.
     public func setSessionThinking(sessionKey _: String, thinkingLevel _: String) async throws {
         throw NSError(
             domain: "OpenClawChatTransport",

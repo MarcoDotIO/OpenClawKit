@@ -162,6 +162,7 @@ private enum GatewayConnectErrorCodes {
     static let deviceIdentityRequired = GatewayConnectAuthDetailCode.deviceIdentityRequired.rawValue
 }
 
+/// Actor-isolated WebSocket gateway channel with reconnect, auth, and request tracking behavior.
 public actor GatewayChannelActor {
     private let logger = Logger(subsystem: "ai.openclaw", category: "gateway")
     private var task: WebSocketTaskBox?
@@ -200,6 +201,7 @@ public actor GatewayChannelActor {
     private let connectOptions: GatewayConnectOptions?
     private let disconnectHandler: (@Sendable (String) async -> Void)?
 
+    /// Creates a gateway channel actor for one endpoint.
     public init(
         url: URL,
         token: String?,
@@ -223,8 +225,10 @@ public actor GatewayChannelActor {
         }
     }
 
+    /// Returns the auth source used for the most recent connect attempt.
     public func authSource() -> GatewayAuthSource { self.lastAuthSource }
 
+    /// Shuts down the socket, cancels reconnect work, and fails any pending requests.
     public func shutdown() async {
         self.shouldReconnect = false
         self.connected = false
@@ -287,6 +291,7 @@ public actor GatewayChannelActor {
         }
     }
 
+    /// Connects to the gateway if needed and performs the full connect handshake.
     public func connect() async throws {
         if self.connected, self.task?.state == .running { return }
         if self.isConnecting {
@@ -692,7 +697,7 @@ public actor GatewayChannelActor {
         }
     }
 
-    private nonisolated func decodeMessageData(_ msg: URLSessionWebSocketTask.Message) -> Data? {
+    nonisolated private func decodeMessageData(_ msg: URLSessionWebSocketTask.Message) -> Data? {
         let data: Data? = switch msg {
         case let .data(data): data
         case let .string(text): text.data(using: .utf8)
@@ -809,7 +814,7 @@ public actor GatewayChannelActor {
         return false
     }
 
-    private nonisolated func sleepUnlessCancelled(nanoseconds: UInt64) async -> Bool {
+    nonisolated private func sleepUnlessCancelled(nanoseconds: UInt64) async -> Bool {
         do {
             try await Task.sleep(nanoseconds: nanoseconds)
         } catch {
@@ -818,6 +823,7 @@ public actor GatewayChannelActor {
         return !Task.isCancelled
     }
 
+    /// Sends a request frame and waits for the matching response payload.
     public func request(
         method: String,
         params: [String: AnyCodable]?,
@@ -868,6 +874,7 @@ public actor GatewayChannelActor {
         return Data() // Should not happen, but tolerate empty payloads.
     }
 
+    /// Sends a fire-and-forget command frame over the gateway socket.
     public func send(method: String, params: [String: AnyCodable]?) async throws {
         try await self.connectOrThrow(context: "gateway connect")
         let payload = try self.encodeRequest(method: method, params: params, kind: "send")

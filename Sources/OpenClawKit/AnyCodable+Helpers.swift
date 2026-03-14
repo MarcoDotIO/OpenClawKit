@@ -1,8 +1,12 @@
 import Foundation
 
 public extension AnyCodable {
+    /// Canonical `null` sentinel used by transport and bridge helpers.
     static let nullValue = AnyCodable(.null)
 
+    /// Converts Foundation container values into `AnyCodable`.
+    /// - Parameter raw: Foundation-backed value to normalize.
+    /// - Returns: A normalized `AnyCodable` value when conversion succeeds.
     static func fromFoundation(_ raw: Any) -> AnyCodable? {
         switch raw {
         case let value as AnyCodable:
@@ -51,6 +55,7 @@ public extension AnyCodable {
         }
     }
 
+    /// Returns the underlying string when the wrapped value is a string.
     var stringValue: String? {
         switch self.value {
         case .string(let value):
@@ -60,6 +65,7 @@ public extension AnyCodable {
         }
     }
 
+    /// Returns the underlying Boolean when the wrapped value is a Boolean.
     var boolValue: Bool? {
         switch self.value {
         case .bool(let value):
@@ -69,6 +75,7 @@ public extension AnyCodable {
         }
     }
 
+    /// Returns the wrapped integer value, coercing integral doubles when possible.
     var intValue: Int? {
         switch self.value {
         case .int(let value):
@@ -80,6 +87,7 @@ public extension AnyCodable {
         }
     }
 
+    /// Returns the wrapped number as a double.
     var doubleValue: Double? {
         switch self.value {
         case .double(let value):
@@ -91,6 +99,7 @@ public extension AnyCodable {
         }
     }
 
+    /// Returns the wrapped object dictionary when the value is a JSON object.
     var dictionaryValue: [String: AnyCodable]? {
         switch self.value {
         case .object(let value):
@@ -100,6 +109,7 @@ public extension AnyCodable {
         }
     }
 
+    /// Returns the wrapped array when the value is a JSON array.
     var arrayValue: [AnyCodable]? {
         switch self.value {
         case .array(let value):
@@ -109,6 +119,7 @@ public extension AnyCodable {
         }
     }
 
+    /// Converts the wrapped value back to Foundation container types.
     var foundationValue: Any {
         switch self.value {
         case .null:

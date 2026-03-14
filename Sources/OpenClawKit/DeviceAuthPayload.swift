@@ -1,7 +1,9 @@
 import Foundation
 import OpenClawProtocol
 
+/// Helpers for constructing device-auth payloads used in gateway connect flows.
 public enum GatewayDeviceAuthPayload {
+    /// Builds the canonical v3 device-auth payload string for signing.
     public static func buildV3(
         deviceId: String,
         clientId: String,
@@ -54,6 +56,7 @@ public enum GatewayDeviceAuthPayload {
         return output
     }
 
+    /// Builds the `device` dictionary sent during gateway connect once the payload is signed.
     public static func signedDeviceDictionary(
         payload: String,
         identity: DeviceIdentity,

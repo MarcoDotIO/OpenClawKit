@@ -1,10 +1,12 @@
 import Foundation
 
+/// Calendar command identifiers supported by shared Apple integrations.
 public enum OpenClawCalendarCommand: String, Codable, Sendable {
     case events = "calendar.events"
     case add = "calendar.add"
 }
 
+/// Calendar event query parameters shared with the generic date-range model.
 public typealias OpenClawCalendarEventsParams = OpenClawDateRangeLimitParams
 
 public struct OpenClawCalendarAddParams: Codable, Sendable, Equatable {

@@ -1,7 +1,9 @@
 import Foundation
 import WebKit
 
+/// Shared WKWebView JavaScript helpers used by browser and canvas integrations.
 public enum WebViewJavaScriptSupport {
+    /// Applies the shared debug-status banner state to a web view.
     @MainActor
     public static func applyDebugStatus(
         webView: WKWebView,
@@ -27,6 +29,7 @@ public enum WebViewJavaScriptSupport {
         webView.evaluateJavaScript(js) { _, _ in }
     }
 
+    /// Evaluates JavaScript and coerces the result to a string.
     @MainActor
     public static func evaluateToString(webView: WKWebView, javaScript: String) async throws -> String {
         try await withCheckedThrowingContinuation { cont in
@@ -44,6 +47,7 @@ public enum WebViewJavaScriptSupport {
         }
     }
 
+    /// Encodes an optional string as a JavaScript literal or `null`.
     public static func jsValue(_ value: String?) -> String {
         guard let value else { return "null" }
         if let data = try? JSONSerialization.data(withJSONObject: [value]),

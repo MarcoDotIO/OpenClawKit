@@ -48,4 +48,3 @@ public actor HTTPClient {
         return HTTPResponseData(statusCode: http.statusCode, headers: headers, body: data)
     }
 }
-

@@ -224,7 +224,15 @@ struct ProtocolModelsTests {
         let payloads: [Any] = [
             accepted,
             wait,
-            GatewayAgentRequest(sessionKey: "main", prompt: "hello", message: "world", modelProviderID: "openai", modelID: "gpt-5.4", timeoutMs: 123, deliver: true),
+            GatewayAgentRequest(
+                sessionKey: "main",
+                prompt: "hello",
+                message: "world",
+                modelProviderID: "openai",
+                modelID: "gpt-5.4",
+                timeoutMs: 123,
+                deliver: true
+            ),
             GatewayAgentWaitParams(runID: "run-1", timeoutMs: 100),
             GatewaySessionListResult(sessions: [session]),
             GatewaySessionGetParams(key: "main"),

@@ -1,6 +1,8 @@
 import AVFoundation
 
+/// Shared camera and microphone authorization helper.
 public enum CameraAuthorization {
+    /// Returns whether the app is authorized for the requested media type, requesting access when needed.
     public static func isAuthorized(for mediaType: AVMediaType) async -> Bool {
         let status = AVCaptureDevice.authorizationStatus(for: mediaType)
         switch status {

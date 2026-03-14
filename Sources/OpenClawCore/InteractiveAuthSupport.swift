@@ -56,6 +56,7 @@ public struct InteractiveAuthFlowDescriptor: Sendable, Equatable {
 
 /// Shared catalog of provider login flows exposed to host apps.
 public enum InteractiveAuthFlowCatalog {
+    /// Known interactive auth descriptors keyed by provider ID.
     public static let descriptors: [InteractiveAuthFlowDescriptor] = [
         InteractiveAuthFlowDescriptor(
             providerID: "openai-codex",

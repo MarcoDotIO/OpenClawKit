@@ -1,11 +1,14 @@
 import Foundation
 import Network
 
+/// Hostname classification helpers used by local-network and gateway trust decisions.
 public enum LoopbackHost {
+    /// Returns whether a host string points at loopback.
     public static func isLoopback(_ rawHost: String) -> Bool {
         self.isLoopbackHost(rawHost)
     }
 
+    /// Returns whether a host string resolves to loopback, wildcard loopback, or localhost names.
     public static func isLoopbackHost(_ rawHost: String) -> Bool {
         var host = rawHost
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -40,6 +43,7 @@ public enum LoopbackHost {
         return false
     }
 
+    /// Returns whether a host should be treated as local-network reachable.
     public static func isLocalNetworkHost(_ rawHost: String) -> Bool {
         let host = rawHost.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !host.isEmpty else { return false }
