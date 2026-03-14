@@ -42,7 +42,6 @@ extension OpenAI: OpenAIKitResponsesRequesting {
 protocol OpenAIKitChatRequesting: Sendable {}
 protocol OpenAIKitResponsesRequesting: Sendable {}
 #endif
-
 typealias OpenAIKitChatClientFactory = @Sendable (
     _ providerID: String,
     _ resolved: OpenAIKitResolvedRequest
