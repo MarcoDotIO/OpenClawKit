@@ -1,7 +1,7 @@
 import Foundation
 
 /// Type-erased `Codable` wrapper restricted to Sendable JSON-compatible values.
-public struct AnyCodable: Codable, Sendable, Equatable {
+public struct AnyCodable: Codable, Sendable, Equatable, Hashable {
     /// Wrapped type-erased value.
     public let value: AnySendableValue
 
@@ -72,7 +72,7 @@ public struct AnyCodable: Codable, Sendable, Equatable {
 }
 
 /// Internal representation for type-erased JSON values.
-public enum AnySendableValue: Sendable, Equatable {
+public enum AnySendableValue: Sendable, Equatable, Hashable {
     case null
     case bool(Bool)
     case int(Int)

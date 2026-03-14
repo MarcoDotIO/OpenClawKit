@@ -107,15 +107,15 @@ enum AssistantTextParser {
         tag: String,
         closing: Bool,
         in text: String,
-        from start: String.Index
-    ) -> Range<String.Index>? {
+        from start: String.Index) -> Range<String.Index>?
+    {
         let token = closing ? "</\(tag)" : "<\(tag)"
         var searchRange = start..<text.endIndex
         while let range = text.range(
             of: token,
             options: [.caseInsensitive, .diacriticInsensitive],
-            range: searchRange
-        ) {
+            range: searchRange)
+        {
             let boundaryIndex = range.upperBound
             guard boundaryIndex < text.endIndex else { return range }
             let boundary = text[boundaryIndex]
@@ -142,8 +142,8 @@ enum AssistantTextParser {
     private static func appendSegment(
         kind: AssistantTextSegment.Kind,
         text: Substring,
-        to segments: inout [AssistantTextSegment]
-    ) {
+        to segments: inout [AssistantTextSegment])
+    {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         segments.append(AssistantTextSegment(kind: kind, text: trimmed))
