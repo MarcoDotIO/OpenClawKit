@@ -1,5 +1,55 @@
 # Changelog
 
+## 2026.2.4 - 2026-03-14
+
+### Added
+
+- OpenClaw `2026.3.13` protocol and gateway/session snapshot parity, including
+  the generated Swift gateway models, richer session metadata, and checked-in
+  parity fixtures pinned to upstream commit
+  `61cd3a6e446c3d181a0a75861fd85d459c068a3d`.
+- Shared Swift package parity surfaces from upstream OpenClaw:
+  `OpenClawChatUI`, gateway discovery/channel helpers, device-auth storage,
+  push payloads, TLS pinning, talk/browser/camera/location/share helpers, and
+  generic password keychain storage.
+- Canonical secrets configuration with `SecretRef`, `SecretInput`,
+  `SecretProviderConfig`, `SecretsConfig`, env/file/exec providers, and
+  backward-compatible plaintext decoding.
+- Expanded gateway config parity for `auth`, `remote`, `tailscale`,
+  `controlUi`, `http`, and `push` blocks, with secret-aware gateway
+  credentials and APNs relay support.
+- Auth profile parity for ref-backed credentials, richer snapshots, cooldown and
+  last-good metadata, and secure-store migration from legacy inline secrets.
+- Provider catalog parity updates including `sglang`, current Codex Spark
+  filtering behavior, and the `2026.3.13` provider reference fixture.
+- Session/runtime fast-mode parity, including per-model defaults, session
+  overrides, runtime forwarding, and provider-specific request shaping.
+
+### Changed
+
+- Direct OpenAI and Codex-backed OpenAI providers now use `OpenAIKit` `3.0.0`
+  behind an OpenClawKit-owned adapter layer for configuration, auth, request
+  building, and error normalization.
+- Direct OpenAI responses requests now use OpenAIKit when the public surface is
+  sufficient, with a local advanced adapter path preserved for richer response
+  payloads such as multimodal inputs, reasoning, service-tier shaping, and
+  Codex transport behavior.
+- Direct Anthropic API-key fast mode now maps to Anthropic `service_tier`
+  semantics, while OAuth and proxy Anthropic paths skip implicit fast-tier
+  injection.
+- README and parity manifests now document the `2026.2.4` release baseline,
+  canonical secrets/gateway config, OpenAIKit-backed OpenAI behavior, fast
+  mode, and `sglang` defaults.
+
+### Tests
+
+- Added regression coverage for imported protocol fields, secrets decoding,
+  gateway config parity, auth profile parity, session-store parity, OpenAIKit
+  backend mapping, OpenAI/Codex responses behavior, provider filtering, and
+  fast-mode request shaping.
+- Revalidated `swift build -Xswiftc -warnings-as-errors` and `swift test`
+  across the final `2026.2.4` release candidate.
+
 ## 2026.2.3 - 2026-03-12
 
 ### Added
