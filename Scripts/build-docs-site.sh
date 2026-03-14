@@ -7,6 +7,7 @@ MERGED_ARCHIVE_PATH="${DOCC_MERGED_ARCHIVE_PATH:-${ROOT_DIR}/.build/OpenClawKit.
 SITE_OUTPUT_PATH="${DOCC_STATIC_SITE_OUTPUT_PATH:-${ROOT_DIR}/.build/docc-static-site}"
 HOSTING_BASE_PATH="${DOCC_HOSTING_BASE_PATH:-/OpenClawKit}"
 SCHEME="${DOCC_SCHEME:-OpenClawKit-Package}"
+ROOT_INDEX_PATH="${SITE_OUTPUT_PATH}/index.html"
 FIRST_PARTY_MODULES=(
     OpenClawProtocol
     OpenClawCore
@@ -57,5 +58,22 @@ xcrun docc process-archive transform-for-static-hosting \
     --output-path "${SITE_OUTPUT_PATH}" \
     --hosting-base-path "${HOSTING_BASE_PATH}"
 
-test -f "${SITE_OUTPUT_PATH}/index.html"
+docs_landing_path="${HOSTING_BASE_PATH%/}/documentation/openclawkit/"
+cat > "${ROOT_INDEX_PATH}" <<EOF
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="refresh" content="0; url=${docs_landing_path}">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenClawKit Documentation</title>
+  <script>location.replace("${docs_landing_path}");</script>
+</head>
+<body>
+  <p>Redirecting to <a href="${docs_landing_path}">OpenClawKit Documentation</a>...</p>
+</body>
+</html>
+EOF
+
+test -f "${ROOT_INDEX_PATH}"
 test -d "${SITE_OUTPUT_PATH}/documentation/openclawkit"
