@@ -153,12 +153,20 @@ public struct AuthProfileUsageStats: Codable, Sendable, Equatable {
 public struct APIKeyAuthProfileCredential: Sendable, Equatable {
     public var provider: String
     public var key: String?
+    public var keyRef: SecretRef?
     public var email: String?
     public var metadata: [String: String]
 
-    public init(provider: String, key: String? = nil, email: String? = nil, metadata: [String: String] = [:]) {
+    public init(
+        provider: String,
+        key: String? = nil,
+        keyRef: SecretRef? = nil,
+        email: String? = nil,
+        metadata: [String: String] = [:]
+    ) {
         self.provider = provider
         self.key = key
+        self.keyRef = keyRef
         self.email = email
         self.metadata = metadata
     }
@@ -168,12 +176,20 @@ public struct APIKeyAuthProfileCredential: Sendable, Equatable {
 public struct TokenAuthProfileCredential: Sendable, Equatable {
     public var provider: String
     public var token: String?
+    public var tokenRef: SecretRef?
     public var expires: Int?
     public var email: String?
 
-    public init(provider: String, token: String? = nil, expires: Int? = nil, email: String? = nil) {
+    public init(
+        provider: String,
+        token: String? = nil,
+        tokenRef: SecretRef? = nil,
+        expires: Int? = nil,
+        email: String? = nil
+    ) {
         self.provider = provider
         self.token = token
+        self.tokenRef = tokenRef
         self.expires = expires
         self.email = email
     }
@@ -255,12 +271,29 @@ public struct AuthProfileStoreSnapshot: Sendable, Equatable {
         public var mode: AuthProfileMode
         public var email: String?
         public var expires: Int?
+        public var clientID: String?
+        public var metadata: [String: String]
+        public var keyRef: SecretRef?
+        public var tokenRef: SecretRef?
 
-        public init(provider: String, mode: AuthProfileMode, email: String? = nil, expires: Int? = nil) {
+        public init(
+            provider: String,
+            mode: AuthProfileMode,
+            email: String? = nil,
+            expires: Int? = nil,
+            clientID: String? = nil,
+            metadata: [String: String] = [:],
+            keyRef: SecretRef? = nil,
+            tokenRef: SecretRef? = nil
+        ) {
             self.provider = provider
             self.mode = mode
             self.email = email
             self.expires = expires
+            self.clientID = clientID
+            self.metadata = metadata
+            self.keyRef = keyRef
+            self.tokenRef = tokenRef
         }
     }
 
@@ -292,6 +325,83 @@ private struct PersistedAuthProfileRecord: Codable, Sendable {
     var expires: Int?
     var clientID: String?
     var metadata: [String: String]
+    var keyRef: SecretRef?
+    var tokenRef: SecretRef?
+    var legacyAPIKey: String?
+    var legacyToken: String?
+    var legacyAccessToken: String?
+    var legacyRefreshToken: String?
+
+    init(
+        provider: String,
+        mode: AuthProfileMode,
+        email: String? = nil,
+        expires: Int? = nil,
+        clientID: String? = nil,
+        metadata: [String: String] = [:],
+        keyRef: SecretRef? = nil,
+        tokenRef: SecretRef? = nil,
+        legacyAPIKey: String? = nil,
+        legacyToken: String? = nil,
+        legacyAccessToken: String? = nil,
+        legacyRefreshToken: String? = nil
+    ) {
+        self.provider = provider
+        self.mode = mode
+        self.email = email
+        self.expires = expires
+        self.clientID = clientID
+        self.metadata = metadata
+        self.keyRef = keyRef
+        self.tokenRef = tokenRef
+        self.legacyAPIKey = legacyAPIKey
+        self.legacyToken = legacyToken
+        self.legacyAccessToken = legacyAccessToken
+        self.legacyRefreshToken = legacyRefreshToken
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case provider
+        case mode
+        case email
+        case expires
+        case clientID
+        case metadata
+        case keyRef
+        case tokenRef
+        case key
+        case token
+        case accessToken
+        case refreshToken
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.provider = try container.decode(String.self, forKey: .provider)
+        self.mode = try container.decode(AuthProfileMode.self, forKey: .mode)
+        self.email = try container.decodeIfPresent(String.self, forKey: .email)
+        self.expires = try container.decodeIfPresent(Int.self, forKey: .expires)
+        self.clientID = try container.decodeIfPresent(String.self, forKey: .clientID)
+        self.metadata = try container.decodeIfPresent([String: String].self, forKey: .metadata) ?? [:]
+        self.keyRef = try container.decodeIfPresent(SecretRef.self, forKey: .keyRef)
+        self.tokenRef = try container.decodeIfPresent(SecretRef.self, forKey: .tokenRef)
+        self.legacyAPIKey = try container.decodeIfPresent(String.self, forKey: .key)
+        self.legacyToken = try container.decodeIfPresent(String.self, forKey: .token)
+        self.legacyAccessToken = try container.decodeIfPresent(String.self, forKey: .accessToken)
+        self.legacyRefreshToken = try container.decodeIfPresent(String.self, forKey: .refreshToken)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(self.provider, forKey: .provider)
+        try container.encode(self.mode, forKey: .mode)
+        try container.encodeIfPresent(self.email, forKey: .email)
+        try container.encodeIfPresent(self.expires, forKey: .expires)
+        try container.encodeIfPresent(self.clientID, forKey: .clientID)
+        try container.encode(self.metadata, forKey: .metadata)
+        try container.encodeIfPresent(self.keyRef, forKey: .keyRef)
+        try container.encodeIfPresent(self.tokenRef, forKey: .tokenRef)
+    }
 }
 
 private struct PersistedAuthProfileStoreState: Codable, Sendable {
@@ -354,7 +464,11 @@ public actor AuthProfileStore {
                     provider: record.provider,
                     mode: record.mode,
                     email: record.email,
-                    expires: record.expires
+                    expires: record.expires,
+                    clientID: record.clientID,
+                    metadata: record.metadata,
+                    keyRef: record.keyRef,
+                    tokenRef: record.tokenRef
                 )
             },
             order: self.state.order,
@@ -381,7 +495,9 @@ public actor AuthProfileStore {
             email: Self.credentialEmail(credential),
             expires: credential.expires,
             clientID: Self.credentialClientID(credential),
-            metadata: Self.credentialMetadata(credential)
+            metadata: Self.credentialMetadata(credential),
+            keyRef: Self.credentialKeyRef(credential),
+            tokenRef: Self.credentialTokenRef(credential)
         )
         self.state.profiles[normalizedProfileID] = record
         try self.save()
@@ -405,15 +521,20 @@ public actor AuthProfileStore {
     /// Loads one resolved credential by combining metadata with secure-store values.
     public func resolvedCredential(for profileID: String) async throws -> AuthProfileCredential? {
         let normalizedProfileID = try Self.normalizeProfileID(profileID)
-        guard let record = self.state.profiles[normalizedProfileID] else {
+        guard let existingRecord = self.state.profiles[normalizedProfileID] else {
             return nil
         }
+        let record = try await self.bridgeLegacySecretsIfNeeded(
+            profileID: normalizedProfileID,
+            record: existingRecord
+        )
         switch record.mode {
         case .apiKey:
             return .apiKey(
                 APIKeyAuthProfileCredential(
                     provider: record.provider,
                     key: try await self.credentialStore.loadSecret(for: Self.secretStoreKey(profileID: normalizedProfileID, field: "apiKey")),
+                    keyRef: record.keyRef,
                     email: record.email,
                     metadata: record.metadata
                 )
@@ -423,6 +544,7 @@ public actor AuthProfileStore {
                 TokenAuthProfileCredential(
                     provider: record.provider,
                     token: try await self.credentialStore.loadSecret(for: Self.secretStoreKey(profileID: normalizedProfileID, field: "token")),
+                    tokenRef: record.tokenRef,
                     expires: record.expires,
                     email: record.email
                 )
@@ -517,6 +639,65 @@ public actor AuthProfileStore {
         }
     }
 
+    private func bridgeLegacySecretsIfNeeded(
+        profileID: String,
+        record: PersistedAuthProfileRecord
+    ) async throws -> PersistedAuthProfileRecord {
+        var updated = record
+        var mutated = false
+
+        if let migrated = try await self.bridgeLegacySecret(
+            currentValue: updated.legacyAPIKey,
+            secureStoreKey: Self.secretStoreKey(profileID: profileID, field: "apiKey")
+        ) {
+            updated.legacyAPIKey = migrated
+            mutated = true
+        }
+        if let migrated = try await self.bridgeLegacySecret(
+            currentValue: updated.legacyToken,
+            secureStoreKey: Self.secretStoreKey(profileID: profileID, field: "token")
+        ) {
+            updated.legacyToken = migrated
+            mutated = true
+        }
+        if let migrated = try await self.bridgeLegacySecret(
+            currentValue: updated.legacyAccessToken,
+            secureStoreKey: Self.secretStoreKey(profileID: profileID, field: "accessToken")
+        ) {
+            updated.legacyAccessToken = migrated
+            mutated = true
+        }
+        if let migrated = try await self.bridgeLegacySecret(
+            currentValue: updated.legacyRefreshToken,
+            secureStoreKey: Self.secretStoreKey(profileID: profileID, field: "refreshToken")
+        ) {
+            updated.legacyRefreshToken = migrated
+            mutated = true
+        }
+
+        if mutated {
+            self.state.profiles[profileID] = updated
+            try self.save()
+        }
+        return updated
+    }
+
+    private func bridgeLegacySecret(
+        currentValue: String?,
+        secureStoreKey: String
+    ) async throws -> String?? {
+        guard let currentValue else {
+            return nil
+        }
+        let normalized = currentValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let existing = try await self.credentialStore.loadSecret(for: secureStoreKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if existing == nil, !normalized.isEmpty {
+            try await self.credentialStore.saveSecret(normalized, for: secureStoreKey)
+        }
+        return .some(nil)
+    }
+
     private func writeSecret(_ value: String?, for key: String) async throws {
         let normalized = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if normalized.isEmpty {
@@ -565,6 +746,20 @@ public actor AuthProfileStore {
         case .oauth(let value):
             return value.metadata
         }
+    }
+
+    private static func credentialKeyRef(_ credential: AuthProfileCredential) -> SecretRef? {
+        if case .apiKey(let value) = credential {
+            return value.keyRef
+        }
+        return nil
+    }
+
+    private static func credentialTokenRef(_ credential: AuthProfileCredential) -> SecretRef? {
+        if case .token(let value) = credential {
+            return value.tokenRef
+        }
+        return nil
     }
 
     private static func secretStoreKey(profileID: String, field: String) -> String {
