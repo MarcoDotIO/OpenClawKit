@@ -174,6 +174,10 @@ public enum SecurityAuditRunner {
         var exposedKeys: [String] = []
 
         let secrets: [(String, String?)] = [
+            ("gateway.auth.token", config.gateway.auth.token?.stringValue),
+            ("gateway.auth.password", config.gateway.auth.password?.stringValue),
+            ("gateway.remote.token", config.gateway.remote?.token?.stringValue),
+            ("gateway.remote.password", config.gateway.remote?.password?.stringValue),
             ("channels.discord.botToken", config.channels.discord.botToken),
             ("channels.telegram.botToken", config.channels.telegram.botToken),
             ("channels.whatsappCloud.accessToken", config.channels.whatsappCloud.accessToken),
@@ -335,14 +339,14 @@ public enum SecurityAuditRunner {
             }
         }
 
-        let authMode = config.gateway.authMode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if authMode.isEmpty || authMode == "none" {
+        let authMode = config.gateway.effectiveAuthMode.rawValue
+        if authMode == GatewayAuthMode.none.rawValue {
             findings.append(
                 SecurityAuditFinding(
                     id: "gateway.auth-mode-unsafe",
                     severity: .error,
                     summary: "Gateway auth mode appears unsafe",
-                    detail: "Gateway auth mode is '\(config.gateway.authMode)'.",
+                    detail: "Gateway auth mode is '\(authMode)'.",
                     recommendation: "Use token-based authentication for gateway access."
                 )
             )

@@ -278,24 +278,6 @@ public struct AdaptiveRoutingConfig: Codable, Sendable, Equatable {
     }
 }
 
-/// Gateway client connection settings.
-public struct GatewayConfig: Codable, Sendable, Equatable {
-    public var host: String
-    public var port: Int
-    public var authMode: String
-
-    /// Creates gateway settings.
-    /// - Parameters:
-    ///   - host: Gateway host name or IP.
-    ///   - port: Gateway port.
-    ///   - authMode: Gateway auth mode string.
-    public init(host: String = "127.0.0.1", port: Int = 18789, authMode: String = "token") {
-        self.host = host
-        self.port = port
-        self.authMode = authMode
-    }
-}
-
 /// Agent runtime defaults and workspace location.
 public struct AgentsConfig: Codable, Sendable, Equatable {
     public var defaultAgentID: String
