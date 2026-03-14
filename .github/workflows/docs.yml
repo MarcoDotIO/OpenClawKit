@@ -10,15 +10,12 @@ concurrency:
   group: docs-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
-permissions:
-  contents: read
-  pages: write
-  id-token: write
-
 jobs:
   docc-site:
     name: Build DocC Site
     runs-on: macos-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -33,9 +30,6 @@ jobs:
           xcodebuild -version
           xcrun swift --version
 
-      - name: Configure GitHub Pages
-        uses: actions/configure-pages@v5
-
       - name: Build DocC site
         run: Scripts/build-docs-site.sh
 
@@ -49,10 +43,18 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: docc-site
     runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
