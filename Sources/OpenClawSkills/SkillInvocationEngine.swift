@@ -145,17 +145,23 @@ private struct ProcessSkillExecutorBackend: SkillExecutor {
 
     private static func defaultAllowlist(for workspaceRoot: URL) -> ExecCommandAllowlist {
         let resolvedRoot = workspaceRoot.standardizedFileURL.resolvingSymlinksInPath()
-        return ExecCommandAllowlist(
-            patterns: [
-                ExecCommandAllowlist.workspace(resolvedRoot).patterns[0],
-                "/bin/*",
-                "/usr/bin/*",
-                "/usr/local/bin/*",
-                "/opt/homebrew/bin/*",
-                "/usr/local/Cellar/**/bin/*",
-                "/opt/homebrew/Cellar/**/bin/*",
-            ]
-        )
+        var patterns = [
+            ExecCommandAllowlist.workspace(resolvedRoot).patterns[0],
+            "/bin/*",
+            "/usr/bin/*",
+            "/usr/local/bin/*",
+            "/opt/homebrew/bin/*",
+            "/usr/local/Cellar/**/bin/*",
+            "/opt/homebrew/Cellar/**/bin/*",
+        ]
+
+        for executable in ["python3", "python", "sh", "node"] {
+            if let resolved = try? ExecCommandAllowlist.resolveExecutableURL(executable) {
+                patterns.append(ExecCommandAllowlist.exact(resolved).patterns[0])
+            }
+        }
+
+        return ExecCommandAllowlist(patterns: patterns)
     }
 }
 

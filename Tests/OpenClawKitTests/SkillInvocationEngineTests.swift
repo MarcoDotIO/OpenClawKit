@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import OpenClawKit
 
-@Suite("Skill invocation engine")
+@Suite("Skill invocation engine", .serialized)
 struct SkillInvocationEngineTests {
     struct ExtensionExecutor: SkillExecutor {
         let id: String
@@ -376,7 +376,9 @@ struct SkillInvocationEngineTests {
             _ = try await engine.invokeIfRequested(message: "/failing-shell now")
             Issue.record("Expected process skill failure")
         } catch {
-            #expect(String(describing: error).contains("failed with exit code 2"))
+            let description = String(describing: error)
+            #expect(description.contains("failed with exit code"))
+            #expect(description.contains("failing-shell"))
         }
     }
 

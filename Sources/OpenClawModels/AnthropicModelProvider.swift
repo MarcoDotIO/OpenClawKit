@@ -24,12 +24,14 @@ private struct AnthropicMessagesRequest: Encodable, Sendable {
     let maxTokens: Int
     let system: String?
     let messages: [Message]
+    let serviceTier: String?
 
     private enum CodingKeys: String, CodingKey {
         case model
         case maxTokens = "max_tokens"
         case system
         case messages
+        case serviceTier = "service_tier"
     }
 }
 
@@ -102,7 +104,14 @@ public struct AnthropicModelProvider: ModelProvider {
                         attachments: request.attachments
                     )
                 ),
-            ]
+            ],
+            serviceTier: AnthropicFastModeResolution.serviceTier(
+                providerID: self.id,
+                baseURL: endpoint.deletingLastPathComponent(),
+                request: request,
+                configuredFastMode: self.configuration.fastMode,
+                allowsFastModeDefaults: true
+            )
         )
 
         var urlRequest = URLRequest(url: endpoint)

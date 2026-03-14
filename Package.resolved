@@ -1,6 +1,15 @@
 {
-  "originHash" : "27793f9193596dfa6204cf427b9a078ce48f779f456dfc63d6dc63e0e31da9c8",
+  "originHash" : "a6f634f86cd373eb5e7e3b07ec4a396950fca4e107d8917b7b591e9ae08c9202",
   "pins" : [
+    {
+      "identity" : "openaikit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/OpenDive/OpenAIKit.git",
+      "state" : {
+        "revision" : "f8ba5a73bc599859f7e9139f74af9fd58b0f09d7",
+        "version" : "3.0.0"
+      }
+    },
     {
       "identity" : "swift-argument-parser",
       "kind" : "remoteSourceControl",
@@ -78,8 +87,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/swiftwasm/WasmKit.git",
       "state" : {
-        "revision" : "7bba33fa3c2460ff2d150d3e47ae6d6cb1160440",
-        "version" : "0.2.0"
+        "revision" : "a654a899a0e2802bf66429214e8ebc51c397c4d9"
       }
     }
   ],

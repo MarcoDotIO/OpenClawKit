@@ -132,6 +132,7 @@ public struct ModelDefinitionConfig: Codable, Sendable, Equatable {
     public var id: String
     public var name: String
     public var api: ModelAPI?
+    public var fastMode: Bool?
     public var reasoning: Bool
     public var input: [ModelInputType]
     public var cost: ModelCostConfig
@@ -144,6 +145,7 @@ public struct ModelDefinitionConfig: Codable, Sendable, Equatable {
         id: String,
         name: String? = nil,
         api: ModelAPI? = nil,
+        fastMode: Bool? = nil,
         reasoning: Bool = false,
         input: [ModelInputType] = [.text],
         cost: ModelCostConfig = ModelCostConfig(),
@@ -155,6 +157,7 @@ public struct ModelDefinitionConfig: Codable, Sendable, Equatable {
         self.id = id
         self.name = name ?? id
         self.api = api
+        self.fastMode = fastMode
         self.reasoning = reasoning
         self.input = input.isEmpty ? [.text] : input
         self.cost = cost
@@ -168,6 +171,7 @@ public struct ModelDefinitionConfig: Codable, Sendable, Equatable {
         case id
         case name
         case api
+        case fastMode
         case reasoning
         case input
         case cost
@@ -183,6 +187,7 @@ public struct ModelDefinitionConfig: Codable, Sendable, Equatable {
         self.id = id
         self.name = try container.decodeIfPresent(String.self, forKey: .name) ?? id
         self.api = try container.decodeIfPresent(ModelAPI.self, forKey: .api)
+        self.fastMode = try container.decodeIfPresent(Bool.self, forKey: .fastMode)
         self.reasoning = try container.decodeIfPresent(Bool.self, forKey: .reasoning) ?? false
         self.input = try container.decodeIfPresent([ModelInputType].self, forKey: .input) ?? [.text]
         self.cost = try container.decodeIfPresent(ModelCostConfig.self, forKey: .cost) ?? ModelCostConfig()
@@ -452,6 +457,7 @@ extension ModelProviderConfig {
         let defaultModel = ModelDefinitionConfig(
             id: legacyService.modelID,
             api: defaultAPI,
+            fastMode: legacyService.fastMode,
             headers: legacyService.headers
         )
         self.init(
@@ -488,6 +494,7 @@ extension ModelProviderConfig {
             apiStyle: selectedAPI.legacyStyle,
             authMode: authMode,
             modelID: model?.id ?? "gpt-4.1-mini",
+            fastMode: model?.fastMode,
             apiKey: usesAccessToken ? nil : secretValue,
             accessToken: usesAccessToken ? secretValue : nil,
             baseURL: self.baseURL,

@@ -31,13 +31,13 @@ jobs:
         run: swift --version
 
       - name: Swift build
-        run: swift build
+        run: Scripts/build-linux-runtime.sh
 
       - name: Networking concurrency gate
         run: Scripts/check-networking-concurrency.sh
 
       - name: Swift tests
-        run: swift test
+        run: Scripts/test-linux-runtime.sh
 
   ios-example-build:
     name: iOS Example Build

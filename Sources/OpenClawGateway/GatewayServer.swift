@@ -378,12 +378,28 @@ public actor GatewayServer {
     }
 
     private func errorResponse(id: String, code: ErrorCode, message: String) -> ResponseFrame {
-        ResponseFrame(
+        let errorShape = ErrorShape(
+            code: code.rawValue,
+            message: message,
+            details: nil,
+            retryable: nil,
+            retryafterms: nil
+        )
+        let errorPayload: [String: AnyCodable]?
+        if let encoded = try? GatewayPayloadCodec.encode(errorShape), case .object(let object) = encoded.value {
+            errorPayload = object
+        } else {
+            errorPayload = [
+                "code": AnyCodable(code.rawValue),
+                "message": AnyCodable(message),
+            ]
+        }
+        return ResponseFrame(
             type: "res",
             id: id,
             ok: false,
             payload: nil,
-            error: ErrorShape(code: code, message: message)
+            error: errorPayload
         )
     }
 

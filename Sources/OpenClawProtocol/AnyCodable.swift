@@ -1,14 +1,30 @@
 import Foundation
 
 /// Type-erased `Codable` wrapper restricted to Sendable JSON-compatible values.
-public struct AnyCodable: Codable, Sendable, Equatable {
+public struct AnyCodable: Codable, Sendable, Equatable, Hashable {
     /// Wrapped type-erased value.
     public let value: AnySendableValue
+
+    /// Creates a wrapper from an explicit internal representation.
+    /// - Parameter value: Pre-normalized type-erased JSON value.
+    public init(_ value: AnySendableValue) {
+        self.value = value
+    }
 
     /// Creates a wrapper from a Sendable value.
     /// - Parameter value: Value to wrap.
     public init(_ value: some Sendable) {
         self.value = AnySendableValue(value)
+    }
+
+    /// Creates a wrapper from an optional Sendable value, preserving `nil` as JSON null.
+    /// - Parameter value: Optional value to wrap.
+    public init<T>(_ value: T?) where T: Sendable {
+        if let value {
+            self.value = AnySendableValue(value)
+        } else {
+            self.value = .null
+        }
     }
 
     public init(from decoder: Decoder) throws {
@@ -56,7 +72,7 @@ public struct AnyCodable: Codable, Sendable, Equatable {
 }
 
 /// Internal representation for type-erased JSON values.
-public enum AnySendableValue: Sendable, Equatable {
+public enum AnySendableValue: Sendable, Equatable, Hashable {
     case null
     case bool(Bool)
     case int(Int)
@@ -77,13 +93,28 @@ public enum AnySendableValue: Sendable, Equatable {
             self = .double(v)
         case let v as String:
             self = .string(v)
+        case let v as [Bool]:
+            self = .array(v.map(AnyCodable.init))
+        case let v as [Int]:
+            self = .array(v.map(AnyCodable.init))
+        case let v as [Double]:
+            self = .array(v.map(AnyCodable.init))
+        case let v as [String]:
+            self = .array(v.map(AnyCodable.init))
         case let v as [String: AnyCodable]:
             self = .object(v)
         case let v as [AnyCodable]:
             self = .array(v)
+        case let v as [String: Bool]:
+            self = .object(v.mapValues(AnyCodable.init))
+        case let v as [String: Int]:
+            self = .object(v.mapValues(AnyCodable.init))
+        case let v as [String: Double]:
+            self = .object(v.mapValues(AnyCodable.init))
+        case let v as [String: String]:
+            self = .object(v.mapValues(AnyCodable.init))
         default:
             self = .string(String(describing: value))
         }
     }
 }
-

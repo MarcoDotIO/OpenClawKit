@@ -641,7 +641,7 @@ public actor AutoReplyEngine {
             config: self.config
         )
         let resolvedAgentID = self.config.agents.resolvedAgentID(for: routingContext)
-        let session = await self.sessionStore.resolveOrCreate(
+        let sessionRecord = await self.sessionStore.resolveOrCreate(
             sessionKey: sessionKey,
             defaultAgentID: resolvedAgentID,
             route: SessionRoute(
@@ -651,7 +651,7 @@ public actor AutoReplyEngine {
             ),
             defaults: self.config.agents
         )
-        let resolvedSession = session.resolved(using: self.config.agents)
+        let resolvedSession = sessionRecord.resolved(using: self.config.agents)
         await self.emitDiagnostic(
             name: "routing.session_resolved",
             sessionKey: sessionKey,
@@ -750,6 +750,7 @@ public actor AutoReplyEngine {
             verboseLevel: resolvedSession.verboseLevel,
             responseUsage: resolvedSession.responseUsage,
             elevatedLevel: resolvedSession.elevatedLevel,
+            fastMode: sessionRecord.fastMode,
             workspaceRootPath: self.config.agents.workspaceRoot,
             attachments: message.attachments
         )

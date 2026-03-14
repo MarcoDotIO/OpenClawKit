@@ -2,6 +2,7 @@ import Foundation
 
 /// Root configuration object for runtime, routing, channels, and models.
 public struct OpenClawConfig: Codable, Sendable, Equatable {
+    public var secrets: SecretsConfig
     public var gateway: GatewayConfig
     public var agents: AgentsConfig
     public var channels: ChannelsConfig
@@ -12,12 +13,14 @@ public struct OpenClawConfig: Codable, Sendable, Equatable {
 
     /// Creates an OpenClaw runtime configuration.
     /// - Parameters:
+    ///   - secrets: Secret provider and resolution settings.
     ///   - gateway: Gateway transport settings.
     ///   - agents: Agent workspace/default settings.
     ///   - channels: Channel adapter settings.
     ///   - routing: Session routing behavior.
     ///   - models: Model provider settings.
     public init(
+        secrets: SecretsConfig = SecretsConfig(),
         gateway: GatewayConfig = GatewayConfig(),
         agents: AgentsConfig = AgentsConfig(),
         channels: ChannelsConfig = ChannelsConfig(),
@@ -26,6 +29,7 @@ public struct OpenClawConfig: Codable, Sendable, Equatable {
         models: ModelsConfig = ModelsConfig(),
         runtime: RuntimeConfig = RuntimeConfig()
     ) {
+        self.secrets = secrets
         self.gateway = gateway
         self.agents = agents
         self.channels = channels
@@ -36,6 +40,7 @@ public struct OpenClawConfig: Codable, Sendable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
+        case secrets
         case gateway
         case agents
         case channels
@@ -47,6 +52,7 @@ public struct OpenClawConfig: Codable, Sendable, Equatable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.secrets = try container.decodeIfPresent(SecretsConfig.self, forKey: .secrets) ?? SecretsConfig()
         self.gateway = try container.decodeIfPresent(GatewayConfig.self, forKey: .gateway) ?? GatewayConfig()
         self.agents = try container.decodeIfPresent(AgentsConfig.self, forKey: .agents) ?? AgentsConfig()
         self.channels = try container.decodeIfPresent(ChannelsConfig.self, forKey: .channels) ?? ChannelsConfig()
@@ -58,6 +64,7 @@ public struct OpenClawConfig: Codable, Sendable, Equatable {
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(self.secrets, forKey: .secrets)
         try container.encode(self.gateway, forKey: .gateway)
         try container.encode(self.agents, forKey: .agents)
         try container.encode(self.channels, forKey: .channels)
@@ -268,24 +275,6 @@ public struct AdaptiveRoutingConfig: Codable, Sendable, Equatable {
         )
         self.decisionWindow = max(1, try container.decodeIfPresent(Int.self, forKey: .decisionWindow) ?? 500)
         self.objective = try container.decodeIfPresent(AdaptiveRoutingObjective.self, forKey: .objective) ?? .balanced
-    }
-}
-
-/// Gateway client connection settings.
-public struct GatewayConfig: Codable, Sendable, Equatable {
-    public var host: String
-    public var port: Int
-    public var authMode: String
-
-    /// Creates gateway settings.
-    /// - Parameters:
-    ///   - host: Gateway host name or IP.
-    ///   - port: Gateway port.
-    ///   - authMode: Gateway auth mode string.
-    public init(host: String = "127.0.0.1", port: Int = 18789, authMode: String = "token") {
-        self.host = host
-        self.port = port
-        self.authMode = authMode
     }
 }
 
@@ -1290,6 +1279,7 @@ public struct ProviderServiceConfig: Codable, Sendable, Equatable {
     public var apiStyle: ProviderServiceAPIStyle
     public var authMode: ProviderServiceAuthMode
     public var modelID: String
+    public var fastMode: Bool?
     public var apiKey: String?
     public var accessToken: String?
     public var baseURL: String
@@ -1328,6 +1318,7 @@ public struct ProviderServiceConfig: Codable, Sendable, Equatable {
         apiStyle: ProviderServiceAPIStyle = .openAICompletions,
         authMode: ProviderServiceAuthMode = .apiKey,
         modelID: String = "gpt-4.1-mini",
+        fastMode: Bool? = nil,
         apiKey: String? = nil,
         accessToken: String? = nil,
         baseURL: String = "https://api.openai.com/v1",
@@ -1346,6 +1337,7 @@ public struct ProviderServiceConfig: Codable, Sendable, Equatable {
         self.apiStyle = apiStyle
         self.authMode = authMode
         self.modelID = modelID
+        self.fastMode = fastMode
         self.apiKey = apiKey
         self.accessToken = accessToken
         self.baseURL = baseURL
@@ -1366,6 +1358,7 @@ public struct ProviderServiceConfig: Codable, Sendable, Equatable {
         case apiStyle
         case authMode
         case modelID
+        case fastMode
         case apiKey
         case accessToken
         case baseURL
@@ -1387,6 +1380,7 @@ public struct ProviderServiceConfig: Codable, Sendable, Equatable {
         self.apiStyle = try container.decodeIfPresent(ProviderServiceAPIStyle.self, forKey: .apiStyle) ?? .openAICompletions
         self.authMode = try container.decodeIfPresent(ProviderServiceAuthMode.self, forKey: .authMode) ?? .apiKey
         self.modelID = try container.decodeIfPresent(String.self, forKey: .modelID) ?? "gpt-4.1-mini"
+        self.fastMode = try container.decodeIfPresent(Bool.self, forKey: .fastMode)
         self.apiKey = try container.decodeIfPresent(String.self, forKey: .apiKey)
         self.accessToken = try container.decodeIfPresent(String.self, forKey: .accessToken)
         self.baseURL = try container.decodeIfPresent(String.self, forKey: .baseURL) ?? "https://api.openai.com/v1"
@@ -1407,6 +1401,7 @@ public struct ProviderServiceConfig: Codable, Sendable, Equatable {
 public struct OpenAIModelConfig: Codable, Sendable, Equatable {
     public var enabled: Bool
     public var modelID: String
+    public var fastMode: Bool?
     public var apiKey: String?
     public var baseURL: String
 
@@ -1419,11 +1414,13 @@ public struct OpenAIModelConfig: Codable, Sendable, Equatable {
     public init(
         enabled: Bool = false,
         modelID: String = "gpt-4.1-mini",
+        fastMode: Bool? = nil,
         apiKey: String? = nil,
         baseURL: String = "https://api.openai.com/v1"
     ) {
         self.enabled = enabled
         self.modelID = modelID
+        self.fastMode = fastMode
         self.apiKey = apiKey
         self.baseURL = baseURL
     }
@@ -1463,6 +1460,7 @@ public struct OpenAICompatibleModelConfig: Codable, Sendable, Equatable {
 public struct AnthropicModelConfig: Codable, Sendable, Equatable {
     public var enabled: Bool
     public var modelID: String
+    public var fastMode: Bool?
     public var apiKey: String?
     public var baseURL: String
     public var apiVersion: String
@@ -1479,6 +1477,7 @@ public struct AnthropicModelConfig: Codable, Sendable, Equatable {
     public init(
         enabled: Bool = false,
         modelID: String = "claude-3-5-haiku-latest",
+        fastMode: Bool? = nil,
         apiKey: String? = nil,
         baseURL: String = "https://api.anthropic.com/v1",
         apiVersion: String = "2023-06-01",
@@ -1486,6 +1485,7 @@ public struct AnthropicModelConfig: Codable, Sendable, Equatable {
     ) {
         self.enabled = enabled
         self.modelID = modelID
+        self.fastMode = fastMode
         self.apiKey = apiKey
         self.baseURL = baseURL
         self.apiVersion = apiVersion

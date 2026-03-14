@@ -8,7 +8,8 @@ while exposing a simple top-level facade.
 1. `OpenClawProtocol`
    - Transport models (`RequestFrame`, `ResponseFrame`, `EventFrame`, `GatewayFrame`)
    - Protocol version and error code constants
-   - Generated from `Scripts/protocol-schema.json`
+   - Synced from the pinned upstream OpenClaw generated Swift snapshot via
+     `Scripts/protocol-gen-swift.mjs`
 
 2. `OpenClawCore`
    - Cross-platform shims (crypto/network/security/process/fs)

@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import OpenClawCore
 
-@Suite("Credential stores")
+@Suite("Credential stores", .serialized)
 struct CredentialStoreTests {
     @Test
     func fileCredentialStoreRoundTripAndDelete() async throws {

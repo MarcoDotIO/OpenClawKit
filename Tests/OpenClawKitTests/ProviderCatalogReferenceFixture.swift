@@ -9,7 +9,7 @@ struct ProviderCatalogSnapshotEntry: Sendable, Equatable {
 }
 
 enum ProviderCatalogReferenceFixture {
-    static let referenceCommit = "8cc0c9baf2ffce3da3402c0fb1309cc31a7343e6"
+    static let referenceCommit = "61cd3a6e446c3d181a0a75861fd85d459c068a3d"
 
     static let entries: [ProviderCatalogSnapshotEntry] = [
         .init(providerID: "openai", auth: .apiKey, api: .openAIResponses, baseURL: "https://api.openai.com/v1", defaultModelID: "gpt-4.1-mini"),
@@ -40,6 +40,7 @@ enum ProviderCatalogReferenceFixture {
         .init(providerID: "github-copilot", auth: .token, api: .githubCopilot, baseURL: "https://api.githubcopilot.com", defaultModelID: "gpt-5"),
         .init(providerID: "ollama", auth: nil, api: .ollama, baseURL: "http://127.0.0.1:11434/v1", defaultModelID: "llama3.3"),
         .init(providerID: "vllm", auth: nil, api: .openAICompletions, baseURL: "http://127.0.0.1:8000/v1", defaultModelID: "qwen2.5-coder-32b-instruct"),
+        .init(providerID: "sglang", auth: .apiKey, api: .openAICompletions, baseURL: "http://127.0.0.1:30000/v1", defaultModelID: "Qwen/Qwen3-8B"),
         .init(providerID: "qwen-portal", auth: .oauth, api: .openAICompletions, baseURL: "https://portal.qwen.ai/v1", defaultModelID: "coder-model"),
         .init(providerID: "openai-codex", auth: .oauth, api: .openAICodexResponses, baseURL: "https://chatgpt.com/backend-api", defaultModelID: "gpt-5.4"),
         .init(providerID: "opencode", auth: .apiKey, api: .openAICompletions, baseURL: "https://api.opencode.ai/v1", defaultModelID: "claude-opus-4-6"),

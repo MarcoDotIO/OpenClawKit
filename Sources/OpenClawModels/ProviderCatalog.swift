@@ -23,7 +23,7 @@ public struct ProviderCatalogEntry: Sendable, Equatable {
 
 /// Shared provider catalog aligned with the pinned OpenClaw TS reference.
 public enum OpenClawReferenceProviderCatalog {
-    public static let referenceCommit = "8cc0c9baf2ffce3da3402c0fb1309cc31a7343e6"
+    public static let referenceCommit = "61cd3a6e446c3d181a0a75861fd85d459c068a3d"
 
     public static let entries: [ProviderCatalogEntry] = [
         entry("openai", "OpenAI", api: .openAIResponses, auth: .apiKey, baseURL: "https://api.openai.com/v1", modelID: "gpt-4.1-mini"),
@@ -54,6 +54,7 @@ public enum OpenClawReferenceProviderCatalog {
         entry("github-copilot", "GitHub Copilot", api: .githubCopilot, auth: .token, baseURL: "https://api.githubcopilot.com", modelID: "gpt-5"),
         entry("ollama", "Ollama", api: .ollama, auth: nil, baseURL: "http://127.0.0.1:11434/v1", modelID: "llama3.3"),
         entry("vllm", "vLLM", api: .openAICompletions, auth: nil, baseURL: "http://127.0.0.1:8000/v1", modelID: "qwen2.5-coder-32b-instruct"),
+        entry("sglang", "SGLang", api: .openAICompletions, auth: .apiKey, baseURL: "http://127.0.0.1:30000/v1", modelID: "Qwen/Qwen3-8B"),
         entry("qwen-portal", "Qwen Portal", api: .openAICompletions, auth: .oauth, baseURL: "https://portal.qwen.ai/v1", modelID: "coder-model"),
         entry("openai-codex", "OpenAI Codex", api: .openAICodexResponses, auth: .oauth, baseURL: "https://chatgpt.com/backend-api", modelID: "gpt-5.4"),
         entry("opencode", "OpenCode Zen", api: .openAICompletions, auth: .apiKey, baseURL: "https://api.opencode.ai/v1", modelID: "claude-opus-4-6"),

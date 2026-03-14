@@ -156,7 +156,7 @@ struct GatewayTransportE2ETests {
             .requestTimeout(requestID: "req-1"),
             .invalidFrame("broken"),
             .tlsFingerprintMismatch,
-            .remote(ErrorShape(code: .unavailable, message: "remote failed")),
+            .remote(ErrorShape(code: "unavailable", message: "remote failed", details: nil, retryable: nil, retryafterms: nil)),
         ]
 
         let descriptions = cases.compactMap(\.errorDescription)
@@ -352,13 +352,25 @@ struct GatewayTransportE2ETests {
 
         await socket.enqueue(raw: String(
             decoding: try JSONEncoder().encode(
-                EventFrame(type: "event", event: "tick", payload: AnyCodable(["kind": AnyCodable("heartbeat")]), seq: 1)
+                EventFrame(
+                    type: "event",
+                    event: "tick",
+                    payload: AnyCodable(["kind": AnyCodable("heartbeat")]),
+                    seq: 1,
+                    stateversion: nil
+                )
             ),
             as: UTF8.self
         ))
         await socket.enqueue(raw: String(
             decoding: try JSONEncoder().encode(
-                EventFrame(type: "event", event: "notice", payload: AnyCodable(["kind": AnyCodable("message")]), seq: 2)
+                EventFrame(
+                    type: "event",
+                    event: "notice",
+                    payload: AnyCodable(["kind": AnyCodable("message")]),
+                    seq: 2,
+                    stateversion: nil
+                )
             ),
             as: UTF8.self
         ))
@@ -493,7 +505,7 @@ struct GatewayTransportE2ETests {
         } catch let error as GatewayTransportError {
             switch error {
             case .remote(let shape):
-                #expect(shape.code == .unavailable)
+                #expect(shape.code == ErrorCode.unavailable.rawValue)
             default:
                 Issue.record("Expected remote gateway error")
             }

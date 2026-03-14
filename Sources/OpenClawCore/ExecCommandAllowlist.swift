@@ -110,7 +110,10 @@ public struct ExecCommandAllowlist: Sendable, Equatable {
             if normalized.hasPrefix("/") {
                 return normalized
             }
-            return Self.normalizeGlobPath(FileManager.default.currentDirectoryPath + "/" + normalized)
+            let currentDirectory = Self.normalizeResolvedPath(
+                URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+            )
+            return Self.normalizeGlobPath(currentDirectory + "/" + normalized)
         }
 
         return Self.normalizeResolvedPath(URL(fileURLWithPath: trimmed))

@@ -13,22 +13,37 @@ OpenClawKit is a Swift-native agent SDK for Apple platforms and Linux services.
 It provides a complete runtime surface: protocol contracts, model routing, channels,
 skills, memory, observability, security, iOS app integrations, and release-grade tooling.
 
-## 2026.2.3 Highlights
+## 2026.2.4 Highlights
 
-- `2026.2.3` ships the OpenClaw `2026.3.11` SDK + control-plane parity train
-  documented in `docs/parity-2026.3.11.md`.
-- Session state now matches the TS control surface for thinking, reasoning,
-  usage, exec, send-policy, model override, and persisted labels without
-  overwriting live session state on ordinary inbound traffic.
-- The in-process gateway now exposes typed agent, session, model, skill,
-  secret, and `browser.request` handlers with the recent browser mutation
-  guards from upstream.
-- Built-in `llm-task`, exec allowlist enforcement, shared media fetch/store
-  handling, BlueBubbles channel support, non-simulation-first iMessage paths,
-  and safer Telegram restart semantics are now part of the shipped SDK.
-- Checked-in Swift-side parity fixtures under `Tests/OpenClawKitTests` back the
-  provider, session, gateway, `llm-task`, and channel assertions so the test
-  suite does not read `.cursor/**` at runtime.
+### OpenClaw 2026.3.13 Parity
+
+- The generated gateway/session Swift snapshot is now pinned to the OpenClaw
+  `2026.3.13` upstream release commit
+  `61cd3a6e446c3d181a0a75861fd85d459c068a3d`.
+- Shared Apple-facing Swift surfaces from upstream are now bundled here,
+  including gateway discovery/channel helpers, device-auth storage, TLS pinning,
+  push payloads, and the additive `OpenClawChatUI` product.
+- The provider catalog matches the current parity baseline, including `sglang`,
+  current Codex Spark handling, and richer session/runtime metadata such as
+  `fastMode` and `spawnedWorkspaceDir`.
+
+### Secrets, Gateway, and Auth Parity
+
+- Canonical `OpenClawConfig.secrets` now supports env, file, and exec-backed
+  secret providers through `SecretRef`, `SecretInput`, and `SecretsConfig`.
+- `GatewayConfig` now carries upstream-style auth, remote, control UI, HTTP,
+  Tailscale, and push/APNs relay settings with secret-aware credentials.
+- Auth profiles can persist ref-backed credentials and richer cooldown/last-good
+  metadata while still decoding older plaintext config safely.
+
+### OpenAIKit + Fast Mode
+
+- Direct OpenAI and Codex-backed OpenAI paths now run through `OpenAIKit`
+  `3.0.0` via an internal OpenClawKit adapter layer.
+- The shared fast-mode toggle is wired through canonical config, session state,
+  and runtime policy resolution.
+- Fast mode applies OpenAI/Codex low-latency shaping where supported, and maps
+  direct Anthropic API-key requests onto Anthropic `service_tier` semantics.
 
 ## 2026.2.2 Highlights
 
@@ -87,6 +102,7 @@ skills, memory, observability, security, iOS app integrations, and release-grade
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [Runtime Features](#runtime-features)
+- [Secrets, Fast Mode, and Provider Parity](#secrets-fast-mode-and-provider-parity)
 - [Apple Hardware](#apple-hardware)
 - [Skills and Connectors](#skills-and-connectors)
 - [Replay, Routing, and Intent Graphs](#replay-routing-and-intent-graphs)
@@ -162,9 +178,13 @@ print(await diagnostics.usageSnapshot().runsCompleted)
 - In-process gateway control plane with typed agent, session, model, skill,
   secret, and `browser.request` handlers
 - Multi-provider model routing with fallback and adaptive optimization across
-  OpenAI-compatible, Anthropic-compatible, Gemini, xAI, Bedrock, and local runtimes
+  OpenAIKit-backed direct OpenAI/Codex, OpenAI-compatible, Anthropic-compatible,
+  Gemini, xAI, Bedrock, and local runtimes
 - Provider-aware auth profile routing with OAuth refresh/token exchange support
   for TS parity providers such as GitHub Copilot and Qwen Portal
+- Built-in `llm-task` structured-generation tool for JSON-first agent workflows
+- Secret-aware config and gateway auth surfaces using `SecretRef`,
+  `SecretInput`, and `CredentialStore`
 - Built-in `llm-task` structured-generation tool for JSON-first agent workflows
 - Channel adapters (Discord, Telegram, WhatsApp Cloud, Slack, Google Chat, Signal,
   BlueBubbles, iMessage, Microsoft Teams, and production WebChat)
@@ -175,6 +195,107 @@ print(await diagnostics.usageSnapshot().runsCompleted)
 - Persistent session routing and conversation memory
 - Streaming output support and typing heartbeat semantics
 - Diagnostics pipeline with usage snapshots and recent-event timelines
+- Shared gateway/device helpers in `OpenClawKit` plus optional SwiftUI chat
+  surfaces in `OpenClawChatUI`
+
+## Secrets, Fast Mode, and Provider Parity
+
+The canonical parity surface lives in `OpenClawConfig.secrets`,
+`OpenClawConfig.gateway`, and `OpenClawConfig.models.providers`.
+
+```json
+{
+  "secrets": {
+    "providers": {
+      "default": {
+        "source": "env",
+        "allowlist": ["OPENAI_API_KEY", "OPENCLAW_GATEWAY_TOKEN"]
+      },
+      "mounted-json": {
+        "source": "file",
+        "path": "/run/secrets/providers.json"
+      }
+    },
+    "defaults": {
+      "env": "default",
+      "file": "mounted-json"
+    }
+  },
+  "gateway": {
+    "auth": {
+      "mode": "token",
+      "token": "${OPENCLAW_GATEWAY_TOKEN}"
+    },
+    "remote": {
+      "enabled": true,
+      "url": "https://gateway.example.com",
+      "token": {
+        "source": "file",
+        "provider": "mounted-json",
+        "id": "/gateway/token"
+      }
+    },
+    "push": {
+      "apns": {
+        "relay": {
+          "baseUrl": "https://push.example.com",
+          "timeoutMs": 15000
+        }
+      }
+    }
+  },
+  "models": {
+    "providers": {
+      "openai": {
+        "enabled": true,
+        "baseURL": "https://api.openai.com/v1",
+        "auth": "api-key",
+        "api": "openai-responses",
+        "models": [
+          {
+            "id": "gpt-5.4",
+            "api": "openai-responses",
+            "fastMode": true
+          }
+        ]
+      },
+      "sglang": {
+        "enabled": true,
+        "baseURL": "http://127.0.0.1:30000/v1",
+        "auth": "api-key",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "Qwen/Qwen3-8B",
+            "api": "openai-completions"
+          }
+        ]
+      }
+    }
+  }
+}
+```
+
+Notes:
+
+- Secret-bearing fields accept either plaintext strings or structured refs.
+  Environment templates such as `"${OPENAI_API_KEY}"` decode into `SecretRef`
+  automatically.
+- Direct `openai/*` and `openai-codex/*` requests use the OpenAIKit-backed path.
+  `openai-compatible/*` remains on the custom HTTP transport so proxy/runtime
+  compatibility stays unchanged.
+- Fast mode resolves in the same direction as upstream OpenClaw:
+  request override, session override, per-model config default, then provider
+  behavior fallback.
+- For direct OpenAI public API traffic, fast mode adds low reasoning effort,
+  low text verbosity, and `service_tier=priority` when that surface supports it.
+- For direct Anthropic API-key traffic, fast mode maps onto
+  `service_tier=auto`, while explicit `fastMode: false` maps to
+  `service_tier=standard_only`. OAuth and proxy Anthropic paths skip that
+  default injection.
+- Built-in model filtering suppresses the stale direct
+  `openai/gpt-5.3-codex-spark` row while preserving Codex Spark on the
+  `openai-codex/*` auth path.
 
 ## Apple Hardware
 
@@ -234,6 +355,9 @@ print(await diagnostics.usageSnapshot().runsCompleted)
 
 - Deploy/chat/models/skills/channels/diagnostics flows
 - Provider/channel parity selection surfaces with secure credential persistence
+- Project-owned UI remains the example shell, while shared gateway/device
+  helpers now live in `OpenClawKit` and reusable chat surfaces ship separately
+  in `OpenClawChatUI`
 - Skills tab includes a one-tap WASM smoke test (`wasm-hello`) for simulator validation
 - Intent-graph aware App Intents + shortcuts
 - Live Activities status surfaces for run lifecycle
@@ -274,6 +398,7 @@ The extension writes shared prompts into the app-group inbox:
 - `OpenClawMemory` - conversation store + memory graph bridge
 - `OpenClawMedia` - attachment normalization/classification
 - `OpenClawKit` - top-level SDK facade
+- `OpenClawChatUI` - optional shared SwiftUI chat surfaces
 
 ## Testing and CI
 
@@ -306,6 +431,7 @@ CI workflows:
 - [Architecture](docs/architecture.md)
 - [API Surface](docs/api-surface.md)
 - [Testing Guide](docs/testing.md)
+- [2026.2.4 Parity Manifest](docs/parity-2026.2.4.md)
 - [2026.3.11 Parity Manifest](docs/parity-2026.3.11.md)
 - [2026.2.1 Parity Manifest](docs/parity-2026.2.1.md)
 - [2026.2.1 Roadmap](docs/roadmap-2026.2.1.md)
@@ -316,6 +442,10 @@ Protocol generation:
 ```bash
 node Scripts/protocol-gen-swift.mjs
 ```
+
+This syncs `OpenClawProtocol/GatewayModels.swift` from the pinned upstream
+OpenClaw 2026.3.13 generated Swift snapshot at
+`61cd3a6e446c3d181a0a75861fd85d459c068a3d`.
 
 ## Contributing
 
