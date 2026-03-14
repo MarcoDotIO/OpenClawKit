@@ -2,6 +2,9 @@ import Foundation
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
+#if canImport(OpenAIKit)
+import OpenAIKit
+#endif
 import OpenClawCore
 import OpenClawProtocol
 
@@ -79,15 +82,33 @@ public struct OpenAIResponsesModelProvider: ModelProvider {
 
     private let configuration: ProviderServiceConfig
     private let transport: any OpenAICompatibleHTTPTransport
+    private let responsesClientFactory: OpenAIKitResponsesClientFactory
 
     public init(
         id: String,
         configuration: ProviderServiceConfig,
         transport: any OpenAICompatibleHTTPTransport = HTTPClient()
     ) {
+        self.init(
+            id: id,
+            configuration: configuration,
+            transport: transport,
+            responsesClientFactory: { providerID, resolved in
+                try OpenAIKitClientFactory.makeResponsesClient(providerID: providerID, resolved: resolved)
+            }
+        )
+    }
+
+    init(
+        id: String,
+        configuration: ProviderServiceConfig,
+        transport: any OpenAICompatibleHTTPTransport,
+        responsesClientFactory: @escaping OpenAIKitResponsesClientFactory
+    ) {
         self.id = id
         self.configuration = configuration
         self.transport = transport
+        self.responsesClientFactory = responsesClientFactory
     }
 
     public func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
@@ -95,13 +116,48 @@ public struct OpenAIResponsesModelProvider: ModelProvider {
             throw OpenClawCoreError.unavailable("\(self.id) model provider is disabled")
         }
 
-        let endpoint = try self.resolveEndpoint(request: request)
+        let resolved = try OpenAIKitClientFactory.resolve(
+            providerID: self.id,
+            configuration: self.configuration,
+            request: request
+        )
+
+        #if canImport(OpenAIKit)
+        if self.canUseOpenAIKitResponses(request: request, resolved: resolved) {
+            do {
+                let client = try self.responsesClientFactory(self.id, resolved)
+                let response = try await client.createResponse(
+                    parameters: ResponseCreateParameters(
+                        model: resolved.modelID,
+                        input: request.prompt,
+                        instructions: ModelGenerationRequest.normalized(request.systemPrompt)
+                    )
+                )
+                let text = Self.resolveText(from: response)
+                guard !text.isEmpty else {
+                    throw OpenClawCoreError.unavailable("\(self.id) response did not include text output")
+                }
+                return ModelGenerationResponse(
+                    text: text,
+                    providerID: self.id,
+                    modelID: response.model ?? resolved.modelID
+                )
+            } catch {
+                throw OpenAIKitErrorNormalizer.normalize(error, providerID: self.id)
+            }
+        }
+        #endif
+
+        return try await self.generateAdvanced(request: request, resolved: resolved)
+    }
+
+    private func generateAdvanced(
+        request: ModelGenerationRequest,
+        resolved: OpenAIKitResolvedRequest
+    ) async throws -> ModelGenerationResponse {
+        let endpoint = self.resolveEndpoint(baseURL: resolved.baseURL)
         let payload = OpenAIResponsesRequest(
-            model: ProviderRequestResolution.resolveModelID(
-                request: request,
-                configured: self.configuration.modelID,
-                fallback: "gpt-4.1-mini"
-            ),
+            model: resolved.modelID,
             input: self.buildInput(from: request),
             instructions: ModelGenerationRequest.normalized(request.systemPrompt),
             stream: request.policy.streamTokens || request.policy.codexTransport != .auto,
@@ -113,14 +169,17 @@ public struct OpenAIResponsesModelProvider: ModelProvider {
         var urlRequest = URLRequest(url: endpoint)
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        if let token = try self.resolveAuthorizationToken(request: request) {
+        if case .bearerToken(let token) = resolved.authorization {
             urlRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
-        ProviderRequestResolution.applyHeaders(
-            ProviderRequestResolution.mergedHeaders(configured: self.configuration.headers, request: request),
-            request: &urlRequest
-        )
-        urlRequest.timeoutInterval = 30
+        if let organizationID = resolved.organizationID {
+            urlRequest.setValue(organizationID, forHTTPHeaderField: "OpenAI-Organization")
+        }
+        if let projectID = resolved.projectID {
+            urlRequest.setValue(projectID, forHTTPHeaderField: "OpenAI-Project")
+        }
+        ProviderRequestResolution.applyHeaders(resolved.requestOptions.additionalHeaders, request: &urlRequest)
+        urlRequest.timeoutInterval = resolved.requestOptions.timeoutInterval
         urlRequest.httpBody = try JSONEncoder().encode(payload)
 
         let response = try await self.transport.data(for: urlRequest)
@@ -135,12 +194,24 @@ public struct OpenAIResponsesModelProvider: ModelProvider {
         return ModelGenerationResponse(text: text, providerID: self.id, modelID: decoded.model ?? payload.model)
     }
 
-    private func resolveEndpoint(request: ModelGenerationRequest) throws -> URL {
-        let baseURL = try ProviderRequestResolution.resolveBaseURL(
-            configured: self.configuration.baseURL,
-            request: request,
-            providerID: self.id
-        )
+    #if canImport(OpenAIKit)
+    private func canUseOpenAIKitResponses(
+        request: ModelGenerationRequest,
+        resolved: OpenAIKitResolvedRequest
+    ) -> Bool {
+        guard resolved.clientConfiguration != nil else {
+            return false
+        }
+        return request.attachments.isEmpty &&
+            request.policy.streamTokens == false &&
+            request.policy.storeResponse == nil &&
+            request.policy.serviceTier == nil &&
+            request.policy.reasoningEffort == nil &&
+            request.policy.codexTransport == .auto
+    }
+    #endif
+
+    private func resolveEndpoint(baseURL: URL) -> URL {
         let path = self.configuration.chatCompletionsPath
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
@@ -150,27 +221,6 @@ public struct OpenAIResponsesModelProvider: ModelProvider {
             endpoint = endpoint.appendingPathComponent(String(segment))
         }
         return endpoint
-    }
-
-    private func resolveAuthorizationToken(request: ModelGenerationRequest) throws -> String? {
-        switch self.configuration.authMode {
-        case .apiKey:
-            return try ProviderRequestResolution.resolveAPIKey(
-                configured: self.configuration.apiKey,
-                request: request,
-                providerID: self.id
-            )
-        case .bearerToken, .oauthToken:
-            return try ProviderRequestResolution.resolveAccessToken(
-                configured: self.configuration.accessToken,
-                request: request,
-                providerID: self.id
-            )
-        case .none:
-            return nil
-        case .awsSDK:
-            throw OpenClawCoreError.invalidConfiguration("\(self.id) does not support aws-sdk auth mode")
-        }
     }
 
     private func buildInput(from request: ModelGenerationRequest) -> [OpenAIResponsesRequest.InputItem] {
@@ -211,4 +261,10 @@ public struct OpenAIResponsesModelProvider: ModelProvider {
             return item.text?.trimmingCharacters(in: .whitespacesAndNewlines)
         }.filter { !$0.isEmpty }.joined(separator: "\n")
     }
+
+    #if canImport(OpenAIKit)
+    private static func resolveText(from response: ResponseObject) -> String {
+        response.outputText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+    #endif
 }
