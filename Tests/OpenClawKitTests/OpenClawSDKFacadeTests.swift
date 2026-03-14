@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import OpenClawKit
 
-@Suite("OpenClawSDK facade")
+@Suite("OpenClawSDK facade", .serialized)
 struct OpenClawSDKFacadeTests {
     private struct StaticIntentProvider: ModelProvider {
         let id = "intent-static"
@@ -111,4 +111,3 @@ struct OpenClawSDKFacadeTests {
         #expect(response.result.output.contains("intent:"))
     }
 }
-

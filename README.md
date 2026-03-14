@@ -317,6 +317,9 @@ Protocol generation:
 node Scripts/protocol-gen-swift.mjs
 ```
 
+This syncs `OpenClawProtocol/GatewayModels.swift` from the pinned upstream
+OpenClaw 2026.3.13 generated Swift snapshot.
+
 ## Contributing
 
 Issues and PRs are welcome.

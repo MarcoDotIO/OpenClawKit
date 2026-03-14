@@ -7,7 +7,7 @@ import Glibc
 import Darwin
 #endif
 
-@Suite("Media pipeline")
+@Suite("Media pipeline", .serialized)
 struct MediaPipelineTests {
     @Test
     func normalizeRejectsEmptyMimeTypeAndOversizedPayloads() async throws {

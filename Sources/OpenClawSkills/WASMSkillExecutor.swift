@@ -161,7 +161,7 @@ public actor WASMSkillExecutor {
         let wasi = try WASIBridgeToHost(
             args: wasiArgs,
             environment: [:],
-            preopens: [:],
+            preopens: [],
             stdin: stdinPipe.readEnd,
             stdout: stdoutPipe.writeEnd,
             stderr: stderrPipe.writeEnd

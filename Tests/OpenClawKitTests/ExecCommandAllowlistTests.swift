@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import OpenClawCore
 
-@Suite("Exec command allowlist")
+@Suite("Exec command allowlist", .serialized)
 struct ExecCommandAllowlistTests {
     @Test
     func matchesWildcardPatternsAndNormalizesRelativePaths() throws {

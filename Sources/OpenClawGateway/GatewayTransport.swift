@@ -63,7 +63,7 @@ public enum GatewayTransportError: Error, LocalizedError, Sendable {
         case .tlsFingerprintMismatch:
             return "Gateway TLS fingerprint mismatch"
         case .remote(let error):
-            return "Gateway remote error (\(error.code.rawValue)): \(error.message)"
+            return "Gateway remote error (\(error.code)): \(error.message)"
         }
     }
 }
@@ -251,7 +251,8 @@ public actor GatewayClient {
     private static func decodeResponse<T: Decodable>(_ type: T.Type, from response: ResponseFrame) throws -> T {
         guard response.ok else {
             if let error = response.error {
-                throw GatewayTransportError.remote(error)
+                let shape = try GatewayPayloadCodec.decode(ErrorShape.self, from: AnyCodable(error))
+                throw GatewayTransportError.remote(shape)
             }
             throw GatewayTransportError.invalidFrame("Gateway response marked as failed without an error payload")
         }
@@ -318,6 +319,8 @@ public actor GatewayClient {
                     }
                 }
             case .req:
+                break
+            case .unknown:
                 break
             }
         } catch {

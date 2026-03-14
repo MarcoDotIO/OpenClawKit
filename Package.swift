@@ -27,7 +27,10 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.10.0"),
         .package(url: "https://github.com/apple/swift-system.git", from: "1.5.0"),
-        .package(url: "https://github.com/swiftwasm/WasmKit.git", from: "0.2.0"),
+        .package(
+            url: "https://github.com/swiftwasm/WasmKit.git",
+            revision: "a654a899a0e2802bf66429214e8ebc51c397c4d9"
+        ),
     ],
     targets: [
         .target(

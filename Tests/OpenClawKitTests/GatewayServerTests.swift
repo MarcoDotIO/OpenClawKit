@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import OpenClawKit
 
-@Suite("Gateway server")
+@Suite("Gateway server", .serialized)
 struct GatewayServerTests {
     final class BrowserRecorder: @unchecked Sendable {
         private let lock = NSLock()
@@ -691,7 +691,7 @@ struct GatewayServerTests {
     ) async throws -> T {
         let response = await self.rawRequest(server, method: method, params: params)
         guard response.ok else {
-            throw GatewayTransportError.remote(try #require(response.error))
+            throw GatewayTransportError.remote(try Self.errorShape(from: response))
         }
         return try GatewayPayloadCodec.decode(type, from: response.payload)
     }
@@ -704,11 +704,25 @@ struct GatewayServerTests {
         try await self.request(server, method: method, params: EmptyPayload(), as: type)
     }
 
+    private static func errorShape(from response: ResponseFrame) throws -> ErrorShape {
+        let payload = try #require(response.error)
+        return try GatewayPayloadCodec.decode(ErrorShape.self, from: AnyCodable(payload))
+    }
+
     private func makeTempDirectory(named name: String) throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(name, isDirectory: true)
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root
+    }
+}
+
+private extension Dictionary where Key == String, Value == AnyCodable {
+    var code: ErrorCode? {
+        guard case .string(let rawValue) = self["code"]?.value else {
+            return nil
+        }
+        return ErrorCode(rawValue: rawValue)
     }
 }

@@ -89,26 +89,29 @@ struct ProtocolModelsTests {
     @Test
     func typedGatewayModelsCoverConstructorsAndNilPayloadDecoding() throws {
         let connect = ConnectParams(
-            minProtocol: 1,
-            maxProtocol: 3,
+            minprotocol: 1,
+            maxprotocol: 3,
             client: ["name": AnyCodable("OpenClawKit")],
             caps: ["sessions", "skills"],
             commands: ["agent.run"],
             permissions: ["exec": AnyCodable(true)],
-            pathEnv: "/usr/bin",
+            pathenv: "/usr/bin",
             role: "sdk",
             scopes: ["runtime"],
             device: ["platform": AnyCodable("macos")],
-            auth: ["kind": AnyCodable("oauth")]
+            auth: ["kind": AnyCodable("oauth")],
+            locale: nil,
+            useragent: nil
         )
-        #expect(connect.maxProtocol == 3)
+        #expect(connect.maxprotocol == 3)
         #expect(connect.client["name"] == AnyCodable("OpenClawKit"))
 
         let event = EventFrame(
             type: "event",
             event: "tick",
             payload: AnyCodable(["seq": AnyCodable(7)]),
-            seq: 7
+            seq: 7,
+            stateversion: nil
         )
         let eventEncoded = try JSONEncoder().encode(GatewayFrame.event(event))
         let eventDecoded = try JSONDecoder().decode(GatewayFrame.self, from: eventEncoded)
@@ -133,11 +136,13 @@ struct ProtocolModelsTests {
             Issue.record("Expected .req frame")
         }
 
-        do {
-            let _ = try JSONDecoder().decode(GatewayFrame.self, from: Data(#"{"type":"bogus"}"#.utf8))
-            Issue.record("Expected invalid gateway frame type to fail decoding")
-        } catch {
-            #expect(String(describing: error).contains("Unsupported frame type"))
+        let unknownFrame = try JSONDecoder().decode(GatewayFrame.self, from: Data(#"{"type":"bogus"}"#.utf8))
+        switch unknownFrame {
+        case .unknown(let type, let raw):
+            #expect(type == "bogus")
+            #expect(raw["type"] == AnyCodable("bogus"))
+        default:
+            Issue.record("Expected invalid gateway frame type to decode as .unknown")
         }
 
         let empty = try GatewayPayloadCodec.decode(EmptyPayload.self, from: nil)
@@ -255,6 +260,131 @@ struct ProtocolModelsTests {
             browserResponse,
         ]
         #expect(payloads.count == 20)
+    }
+
+    @Test
+    func gatewayFrameDecodePreservesUnknownFrames() throws {
+        let payload = Data(#"{"type":"notice","status":"warming","retryAfterMs":200}"#.utf8)
+        let decoded = try JSONDecoder().decode(GatewayFrame.self, from: payload)
+
+        switch decoded {
+        case .unknown(let type, let raw):
+            #expect(type == "notice")
+            #expect(raw["status"] == AnyCodable("warming"))
+            #expect(raw["retryAfterMs"] == AnyCodable(200))
+        default:
+            Issue.record("Expected .unknown frame")
+        }
+    }
+
+    @Test
+    func helloOkDecodeIncludesCanvasHostURLAndStateVersion() throws {
+        let payload = Data(
+            #"""
+            {
+              "type": "hello.ok",
+              "protocol": 3,
+              "server": { "name": "openclaw-gateway" },
+              "features": { "push": true },
+              "snapshot": {
+                "presence": [],
+                "health": { "status": "ok" },
+                "stateVersion": { "presence": 11, "health": 7 },
+                "uptimeMs": 9001,
+                "configPath": "/tmp/openclaw.json",
+                "stateDir": "/tmp/openclaw-state",
+                "sessionDefaults": { "fastMode": true },
+                "authMode": "token",
+                "updateAvailable": { "version": "2026.3.13" }
+              },
+              "canvasHostUrl": "https://canvas.openclaw.ai",
+              "auth": { "mode": "token" },
+              "policy": { "sessionPatch": true }
+            }
+            """#.utf8
+        )
+
+        let decoded = try JSONDecoder().decode(HelloOk.self, from: payload)
+
+        #expect(decoded._protocol == 3)
+        #expect(decoded.canvashosturl == "https://canvas.openclaw.ai")
+        #expect(decoded.snapshot.stateversion.presence == 11)
+        #expect(decoded.snapshot.stateversion.health == 7)
+        #expect(decoded.snapshot.sessiondefaults?["fastMode"] == AnyCodable(true))
+        #expect(decoded.snapshot.updateavailable?["version"] == AnyCodable("2026.3.13"))
+    }
+
+    @Test
+    func responseFrameDecodesStructuredErrorPayload() throws {
+        let payload = Data(
+            #"""
+            {
+              "type": "res",
+              "id": "req-2",
+              "ok": false,
+              "payload": null,
+              "error": {
+                "code": "UNAVAILABLE",
+                "message": "busy",
+                "retryable": true,
+                "retryAfterMs": 250,
+                "details": {
+                  "queueDepth": 2
+                }
+              }
+            }
+            """#.utf8
+        )
+
+        let decoded = try JSONDecoder().decode(ResponseFrame.self, from: payload)
+
+        #expect(decoded.ok == false)
+        #expect(decoded.error?["code"] == AnyCodable("UNAVAILABLE"))
+        #expect(decoded.error?["retryable"] == AnyCodable(true))
+        #expect(decoded.error?["retryAfterMs"] == AnyCodable(250))
+        #expect(decoded.error?["details"] == AnyCodable(["queueDepth": AnyCodable(2)]))
+    }
+
+    @Test
+    func pushTestResultRoundTripPreservesTransport() throws {
+        let result = PushTestResult(
+            ok: true,
+            status: 200,
+            apnsid: "apns-1",
+            reason: nil,
+            tokensuffix: "cafe",
+            topic: "ai.openclaw.mobile",
+            environment: "sandbox",
+            transport: "relay"
+        )
+
+        let encoded = try JSONEncoder().encode(result)
+        let decoded = try JSONDecoder().decode(PushTestResult.self, from: encoded)
+
+        #expect(decoded.transport == "relay")
+        #expect(decoded.tokensuffix == "cafe")
+    }
+
+    @Test
+    func sessionsPatchDecodeIncludesFastModeAndSpawnedWorkspaceDir() throws {
+        let payload = Data(
+            #"""
+            {
+              "key": "session-main",
+              "fastMode": true,
+              "spawnedWorkspaceDir": "/tmp/workspace",
+              "label": "Main Session",
+              "groupActivation": "foreground"
+            }
+            """#.utf8
+        )
+
+        let decoded = try JSONDecoder().decode(SessionsPatchParams.self, from: payload)
+
+        #expect(decoded.key == "session-main")
+        #expect(decoded.fastmode == AnyCodable(true))
+        #expect(decoded.spawnedworkspacedir == AnyCodable("/tmp/workspace"))
+        #expect(decoded.groupactivation == AnyCodable("foreground"))
     }
 
     @Test
