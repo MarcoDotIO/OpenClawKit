@@ -36,6 +36,10 @@ private struct OpenAIResponsesRequest: Encodable, Sendable {
         let effort: String
     }
 
+    struct Text: Encodable, Sendable {
+        let verbosity: String
+    }
+
     let model: String
     let input: [InputItem]
     let instructions: String?
@@ -43,6 +47,7 @@ private struct OpenAIResponsesRequest: Encodable, Sendable {
     let store: Bool?
     let serviceTier: String?
     let reasoning: Reasoning?
+    let text: Text?
 
     private enum CodingKeys: String, CodingKey {
         case model
@@ -52,6 +57,7 @@ private struct OpenAIResponsesRequest: Encodable, Sendable {
         case store
         case serviceTier = "service_tier"
         case reasoning
+        case text
     }
 }
 
@@ -155,6 +161,21 @@ public struct OpenAIResponsesModelProvider: ModelProvider {
         request: ModelGenerationRequest,
         resolved: OpenAIKitResolvedRequest
     ) async throws -> ModelGenerationResponse {
+        let configuredFastMode = self.configuration.fastMode
+        let reasoningEffort = OpenAIFastModeResolution.reasoningEffort(
+            request: request,
+            configuredFastMode: configuredFastMode
+        )
+        let serviceTier = OpenAIFastModeResolution.serviceTier(
+            providerID: self.id,
+            baseURL: resolved.baseURL,
+            request: request,
+            configuredFastMode: configuredFastMode
+        )
+        let textVerbosity = OpenAIFastModeResolution.textVerbosity(
+            request: request,
+            configuredFastMode: configuredFastMode
+        )
         let endpoint = self.resolveEndpoint(baseURL: resolved.baseURL)
         let payload = OpenAIResponsesRequest(
             model: resolved.modelID,
@@ -162,8 +183,9 @@ public struct OpenAIResponsesModelProvider: ModelProvider {
             instructions: ModelGenerationRequest.normalized(request.systemPrompt),
             stream: request.policy.streamTokens || request.policy.codexTransport != .auto,
             store: request.policy.storeResponse,
-            serviceTier: request.policy.serviceTier?.rawValue,
-            reasoning: request.policy.reasoningEffort.map { .init(effort: $0.rawValue) }
+            serviceTier: serviceTier,
+            reasoning: reasoningEffort.map { .init(effort: $0.rawValue) },
+            text: textVerbosity.map { .init(verbosity: $0) }
         )
 
         var urlRequest = URLRequest(url: endpoint)
@@ -199,14 +221,30 @@ public struct OpenAIResponsesModelProvider: ModelProvider {
         request: ModelGenerationRequest,
         resolved: OpenAIKitResolvedRequest
     ) -> Bool {
+        let configuredFastMode = self.configuration.fastMode
+        let requiresAdvancedPayload =
+            OpenAIFastModeResolution.reasoningEffort(
+                request: request,
+                configuredFastMode: configuredFastMode
+            ) != nil ||
+            OpenAIFastModeResolution.serviceTier(
+                providerID: self.id,
+                baseURL: resolved.baseURL,
+                request: request,
+                configuredFastMode: configuredFastMode
+            ) != nil ||
+            OpenAIFastModeResolution.textVerbosity(
+                request: request,
+                configuredFastMode: configuredFastMode
+            ) != nil
+
         guard resolved.clientConfiguration != nil else {
             return false
         }
         return request.attachments.isEmpty &&
             request.policy.streamTokens == false &&
             request.policy.storeResponse == nil &&
-            request.policy.serviceTier == nil &&
-            request.policy.reasoningEffort == nil &&
+            requiresAdvancedPayload == false &&
             request.policy.codexTransport == .auto
     }
     #endif

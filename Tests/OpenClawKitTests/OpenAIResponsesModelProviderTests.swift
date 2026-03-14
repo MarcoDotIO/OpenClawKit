@@ -275,6 +275,105 @@ struct OpenAIResponsesModelProviderTests {
         }
     }
 
+    @Test
+    func fastModeInjectsOpenAIResponsesDefaultsForPublicAPI() async throws {
+        let transport = MockResponsesTransport(
+            response: HTTPResponseData(
+                statusCode: 200,
+                headers: [:],
+                body: Data(
+                    """
+                    {
+                      "model": "gpt-5.4",
+                      "output_text": "fast-output"
+                    }
+                    """.utf8
+                )
+            )
+        )
+        let provider = OpenAIResponsesModelProvider(
+            id: "openai",
+            configuration: ProviderServiceConfig(
+                enabled: true,
+                apiStyle: .custom,
+                authMode: .apiKey,
+                modelID: "gpt-5.4",
+                fastMode: true,
+                apiKey: "openai-key",
+                baseURL: "https://api.openai.com/v1"
+            ),
+            transport: transport,
+            responsesClientFactory: { _, _ in
+                Issue.record("Fast mode should force the local advanced adapter path")
+                return MockResponsesClient(response: try Self.decodeResponseObject("{\"id\":\"unused\",\"object\":\"response\",\"output_text\":\"unused\"}"))
+            }
+        )
+
+        let result = try await provider.generate(
+            ModelGenerationRequest(
+                sessionKey: "main",
+                prompt: "hello"
+            )
+        )
+
+        #expect(result.text == "fast-output")
+        let body = try #require(await transport.bodyString())
+        #expect(body.contains("\"service_tier\":\"priority\""))
+        #expect(body.contains("\"effort\":\"low\""))
+        #expect(body.contains("\"verbosity\":\"low\""))
+    }
+
+    @Test
+    func fastModeSkipsServiceTierForCodexAndPreservesRequestOverrides() async throws {
+        let transport = MockResponsesTransport(
+            response: HTTPResponseData(
+                statusCode: 200,
+                headers: [:],
+                body: Data(
+                    """
+                    {
+                      "model": "gpt-5.4",
+                      "output_text": "codex-output"
+                    }
+                    """.utf8
+                )
+            )
+        )
+        let provider = OpenAIResponsesModelProvider(
+            id: "openai-codex",
+            configuration: ProviderServiceConfig(
+                enabled: true,
+                apiStyle: .custom,
+                authMode: .bearerToken,
+                modelID: "gpt-5.4",
+                fastMode: true,
+                accessToken: "codex-token",
+                baseURL: "https://chatgpt.com/backend-api"
+            ),
+            transport: transport,
+            responsesClientFactory: { _, _ in
+                Issue.record("Codex fast mode should use the local advanced adapter path")
+                return MockResponsesClient(response: try Self.decodeResponseObject("{\"id\":\"unused\",\"object\":\"response\",\"output_text\":\"unused\"}"))
+            }
+        )
+
+        _ = try await provider.generate(
+            ModelGenerationRequest(
+                sessionKey: "main",
+                prompt: "ship it",
+                policy: ModelGenerationPolicy(
+                    reasoningEffort: .high,
+                    fastMode: true
+                )
+            )
+        )
+
+        let body = try #require(await transport.bodyString())
+        #expect(body.contains("\"effort\":\"high\""))
+        #expect(body.contains("\"verbosity\":\"low\""))
+        #expect(body.contains("service_tier") == false)
+    }
+
     private static func decodeResponseObject(_ json: String) throws -> ResponseObject {
         try JSONDecoder().decode(ResponseObject.self, from: Data(json.utf8))
     }

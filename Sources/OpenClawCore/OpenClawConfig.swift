@@ -1279,6 +1279,7 @@ public struct ProviderServiceConfig: Codable, Sendable, Equatable {
     public var apiStyle: ProviderServiceAPIStyle
     public var authMode: ProviderServiceAuthMode
     public var modelID: String
+    public var fastMode: Bool?
     public var apiKey: String?
     public var accessToken: String?
     public var baseURL: String
@@ -1317,6 +1318,7 @@ public struct ProviderServiceConfig: Codable, Sendable, Equatable {
         apiStyle: ProviderServiceAPIStyle = .openAICompletions,
         authMode: ProviderServiceAuthMode = .apiKey,
         modelID: String = "gpt-4.1-mini",
+        fastMode: Bool? = nil,
         apiKey: String? = nil,
         accessToken: String? = nil,
         baseURL: String = "https://api.openai.com/v1",
@@ -1335,6 +1337,7 @@ public struct ProviderServiceConfig: Codable, Sendable, Equatable {
         self.apiStyle = apiStyle
         self.authMode = authMode
         self.modelID = modelID
+        self.fastMode = fastMode
         self.apiKey = apiKey
         self.accessToken = accessToken
         self.baseURL = baseURL
@@ -1355,6 +1358,7 @@ public struct ProviderServiceConfig: Codable, Sendable, Equatable {
         case apiStyle
         case authMode
         case modelID
+        case fastMode
         case apiKey
         case accessToken
         case baseURL
@@ -1376,6 +1380,7 @@ public struct ProviderServiceConfig: Codable, Sendable, Equatable {
         self.apiStyle = try container.decodeIfPresent(ProviderServiceAPIStyle.self, forKey: .apiStyle) ?? .openAICompletions
         self.authMode = try container.decodeIfPresent(ProviderServiceAuthMode.self, forKey: .authMode) ?? .apiKey
         self.modelID = try container.decodeIfPresent(String.self, forKey: .modelID) ?? "gpt-4.1-mini"
+        self.fastMode = try container.decodeIfPresent(Bool.self, forKey: .fastMode)
         self.apiKey = try container.decodeIfPresent(String.self, forKey: .apiKey)
         self.accessToken = try container.decodeIfPresent(String.self, forKey: .accessToken)
         self.baseURL = try container.decodeIfPresent(String.self, forKey: .baseURL) ?? "https://api.openai.com/v1"
@@ -1396,6 +1401,7 @@ public struct ProviderServiceConfig: Codable, Sendable, Equatable {
 public struct OpenAIModelConfig: Codable, Sendable, Equatable {
     public var enabled: Bool
     public var modelID: String
+    public var fastMode: Bool?
     public var apiKey: String?
     public var baseURL: String
 
@@ -1408,11 +1414,13 @@ public struct OpenAIModelConfig: Codable, Sendable, Equatable {
     public init(
         enabled: Bool = false,
         modelID: String = "gpt-4.1-mini",
+        fastMode: Bool? = nil,
         apiKey: String? = nil,
         baseURL: String = "https://api.openai.com/v1"
     ) {
         self.enabled = enabled
         self.modelID = modelID
+        self.fastMode = fastMode
         self.apiKey = apiKey
         self.baseURL = baseURL
     }
@@ -1452,6 +1460,7 @@ public struct OpenAICompatibleModelConfig: Codable, Sendable, Equatable {
 public struct AnthropicModelConfig: Codable, Sendable, Equatable {
     public var enabled: Bool
     public var modelID: String
+    public var fastMode: Bool?
     public var apiKey: String?
     public var baseURL: String
     public var apiVersion: String
@@ -1468,6 +1477,7 @@ public struct AnthropicModelConfig: Codable, Sendable, Equatable {
     public init(
         enabled: Bool = false,
         modelID: String = "claude-3-5-haiku-latest",
+        fastMode: Bool? = nil,
         apiKey: String? = nil,
         baseURL: String = "https://api.anthropic.com/v1",
         apiVersion: String = "2023-06-01",
@@ -1475,6 +1485,7 @@ public struct AnthropicModelConfig: Codable, Sendable, Equatable {
     ) {
         self.enabled = enabled
         self.modelID = modelID
+        self.fastMode = fastMode
         self.apiKey = apiKey
         self.baseURL = baseURL
         self.apiVersion = apiVersion

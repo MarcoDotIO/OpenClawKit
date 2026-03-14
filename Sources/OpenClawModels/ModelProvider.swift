@@ -49,6 +49,8 @@ public struct ModelGenerationPolicy: Sendable, Equatable {
     public let reasoningEffort: ModelReasoningEffort?
     /// Optional provider service tier hint.
     public let serviceTier: ModelServiceTier?
+    /// Optional fast-mode override.
+    public let fastMode: Bool?
     /// Requests provider-side response persistence when supported.
     public let storeResponse: Bool?
     /// Preferred transport for Codex response APIs.
@@ -89,6 +91,7 @@ public struct ModelGenerationPolicy: Sendable, Equatable {
         localRuntimeHints: [String: String] = [:],
         reasoningEffort: ModelReasoningEffort? = nil,
         serviceTier: ModelServiceTier? = nil,
+        fastMode: Bool? = nil,
         storeResponse: Bool? = nil,
         codexTransport: CodexTransportPreference = .auto,
         thinkingLevel: ThinkLevel? = nil,
@@ -109,6 +112,7 @@ public struct ModelGenerationPolicy: Sendable, Equatable {
         self.localRuntimeHints = localRuntimeHints
         self.reasoningEffort = reasoningEffort
         self.serviceTier = serviceTier
+        self.fastMode = fastMode
         self.storeResponse = storeResponse
         self.codexTransport = codexTransport
         self.thinkingLevel = thinkingLevel

@@ -62,6 +62,7 @@ public struct AgentRunRequest: Sendable {
     public let verboseLevel: VerboseLevel?
     public let responseUsage: UsageDisplayLevel?
     public let elevatedLevel: ElevatedLevel?
+    public let fastMode: Bool?
     public let workspaceRootPath: String?
     public let attachments: [MediaAttachment]
 
@@ -86,6 +87,7 @@ public struct AgentRunRequest: Sendable {
         verboseLevel: VerboseLevel? = nil,
         responseUsage: UsageDisplayLevel? = nil,
         elevatedLevel: ElevatedLevel? = nil,
+        fastMode: Bool? = nil,
         workspaceRootPath: String? = nil,
         attachments: [MediaAttachment] = []
     ) {
@@ -100,6 +102,7 @@ public struct AgentRunRequest: Sendable {
         self.verboseLevel = verboseLevel
         self.responseUsage = responseUsage
         self.elevatedLevel = elevatedLevel
+        self.fastMode = fastMode
         self.workspaceRootPath = workspaceRootPath
         self.attachments = attachments
     }
@@ -788,6 +791,7 @@ public actor EmbeddedAgentRuntime {
                     from: request.thinkingLevel,
                     reasoningLevel: request.reasoningLevel
                 ),
+                fastMode: request.fastMode,
                 thinkingLevel: request.thinkingLevel,
                 reasoningLevel: request.reasoningLevel,
                 verboseLevel: request.verboseLevel,
