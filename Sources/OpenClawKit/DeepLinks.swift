@@ -98,7 +98,9 @@ public struct AgentDeepLink: Codable, Sendable, Equatable {
     }
 }
 
+/// Parser for the `openclaw://` deep-link surface.
 public enum DeepLinkParser {
+    /// Parses a deep-link URL into the normalized route model.
     public static func parse(_ url: URL) -> DeepLinkRoute? {
         guard let scheme = url.scheme?.lowercased(),
               scheme == "openclaw"

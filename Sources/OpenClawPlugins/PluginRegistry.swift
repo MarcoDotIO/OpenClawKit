@@ -268,4 +268,3 @@ public struct PluginAPI: Sendable {
         await self.registerServiceFn(service)
     }
 }
-

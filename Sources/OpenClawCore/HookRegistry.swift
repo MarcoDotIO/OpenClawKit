@@ -78,4 +78,3 @@ public actor HookRegistry {
         return results
     }
 }
-

@@ -1,12 +1,15 @@
 import Foundation
 import Security
 
+/// Minimal generic-password Keychain helpers used by shared Apple-platform integrations.
 public enum GenericPasswordKeychainStore {
+    /// Loads a UTF-8 string from the generic-password Keychain class.
     public static func loadString(service: String, account: String) -> String? {
         guard let data = self.loadData(service: service, account: account) else { return nil }
         return String(data: data, encoding: .utf8)
     }
 
+    /// Saves a UTF-8 string to the generic-password Keychain class.
     @discardableResult
     public static func saveString(
         _ value: String,
@@ -17,6 +20,7 @@ public enum GenericPasswordKeychainStore {
         self.saveData(Data(value.utf8), service: service, account: account, accessible: accessible)
     }
 
+    /// Deletes an existing generic-password item if it exists.
     @discardableResult
     public static func delete(service: String, account: String) -> Bool {
         let query = self.baseQuery(service: service, account: account)

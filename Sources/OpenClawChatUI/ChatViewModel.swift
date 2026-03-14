@@ -12,28 +12,51 @@ import UIKit
 
 private let chatUILogger = Logger(subsystem: "ai.openclaw", category: "OpenClawChatUI")
 
+/// Observable view model for the shared SwiftUI chat experience.
+///
+/// Create one instance per active chat surface, then bind its published state to
+/// your SwiftUI views and call ``load()``, ``send()``, and the selection helpers
+/// in response to user actions.
 @MainActor
 @Observable
 public final class OpenClawChatViewModel {
+    /// Sentinel value used when the active session should inherit the default model.
     public static let defaultModelSelectionID = "__default__"
 
+    /// Fully decoded conversation transcript for the active session.
     public private(set) var messages: [OpenClawChatMessage] = []
+    /// Draft input text that will be sent on the next user action.
     public var input: String = ""
+    /// Currently selected thinking level for the session.
     public private(set) var thinkingLevel: String
+    /// Selected model identifier or ``defaultModelSelectionID`` when inheriting defaults.
     public private(set) var modelSelectionID: String = "__default__"
+    /// Available model choices fetched from the transport.
     public private(set) var modelChoices: [OpenClawChatModelChoice] = []
+    /// Indicates whether the initial bootstrap or a full refresh is in progress.
     public private(set) var isLoading = false
+    /// Indicates whether a message send is currently in flight.
     public private(set) var isSending = false
+    /// Indicates whether an abort request is currently being processed.
     public private(set) var isAborting = false
+    /// Most recent user-facing error text.
     public var errorText: String?
+    /// Pending attachments staged for the next send.
     public var attachments: [OpenClawPendingAttachment] = []
+    /// Latest health result reported by the transport.
     public private(set) var healthOK: Bool = false
+    /// Number of runs still pending completion or timeout cleanup.
     public private(set) var pendingRunCount: Int = 0
 
+    /// Active session key.
     public private(set) var sessionKey: String
+    /// Server-side session identifier when the transport exposes one.
     public private(set) var sessionId: String?
+    /// Streaming assistant text currently being assembled.
     public private(set) var streamingAssistantText: String?
+    /// Pending tool-call state derived from transport events.
     public private(set) var pendingToolCalls: [OpenClawChatPendingToolCall] = []
+    /// Recent sessions fetched from the transport.
     public private(set) var sessions: [OpenClawChatSessionEntry] = []
     private let transport: any OpenClawChatTransport
     private var sessionDefaults: OpenClawChatSessionsDefaults?
@@ -41,13 +64,13 @@ public final class OpenClawChatViewModel {
     private let onThinkingLevelChanged: (@MainActor @Sendable (String) -> Void)?
 
     @ObservationIgnored
-    private nonisolated(unsafe) var eventTask: Task<Void, Never>?
+    nonisolated(unsafe) private var eventTask: Task<Void, Never>?
     private var pendingRuns = Set<String>() {
         didSet { self.pendingRunCount = self.pendingRuns.count }
     }
 
     @ObservationIgnored
-    private nonisolated(unsafe) var pendingRunTimeoutTasks: [String: Task<Void, Never>] = [:]
+    nonisolated(unsafe) private var pendingRunTimeoutTasks: [String: Task<Void, Never>] = [:]
     private let pendingRunTimeoutMs: UInt64 = 120_000
     // Session switches can overlap in-flight picker patches, so stale completions
     // must compare against the latest request and latest desired value for that session.
@@ -70,6 +93,12 @@ public final class OpenClawChatViewModel {
 
     private var lastHealthPollAt: Date?
 
+    /// Creates a chat view model backed by the provided transport.
+    /// - Parameters:
+    ///   - sessionKey: Initial session key to display.
+    ///   - transport: Transport implementation used for history, send, and event APIs.
+    ///   - initialThinkingLevel: Optional initial thinking level override.
+    ///   - onThinkingLevelChanged: Optional callback invoked after the model applies a new thinking level.
     public init(
         sessionKey: String,
         transport: any OpenClawChatTransport,
@@ -102,38 +131,47 @@ public final class OpenClawChatViewModel {
         }
     }
 
+    /// Starts the initial bootstrap flow for the current session.
     public func load() {
         Task { await self.bootstrap() }
     }
 
+    /// Reloads history, health, session, and model data from the transport.
     public func refresh() {
         Task { await self.bootstrap() }
     }
 
+    /// Sends the current draft and any staged attachments.
     public func send() {
         Task { await self.performSend() }
     }
 
+    /// Requests that the current in-flight run be aborted.
     public func abort() {
         Task { await self.performAbort() }
     }
 
+    /// Refreshes the recent session list shown by the picker.
     public func refreshSessions(limit: Int? = nil) {
         Task { await self.fetchSessions(limit: limit) }
     }
 
+    /// Switches the view model to a different session key.
     public func switchSession(to sessionKey: String) {
         Task { await self.performSwitchSession(to: sessionKey) }
     }
 
+    /// Applies a new thinking level to the active session.
     public func selectThinkingLevel(_ level: String) {
         Task { await self.performSelectThinkingLevel(level) }
     }
 
+    /// Applies a new model selection to the active session.
     public func selectModel(_ selectionID: String) {
         Task { await self.performSelectModel(selectionID) }
     }
 
+    /// Session choices shown by the UI, with the main session pinned to the top.
     public var sessionChoices: [OpenClawChatSessionEntry] {
         let now = Date().timeIntervalSince1970 * 1000
         let cutoff = now - (24 * 60 * 60 * 1000)
@@ -183,10 +221,12 @@ public final class OpenClawChatViewModel {
         return trimmed == "onboarding" || trimmed.hasSuffix(":onboarding")
     }
 
+    /// Indicates whether the model picker should currently be shown.
     public var showsModelPicker: Bool {
         !self.modelChoices.isEmpty
     }
 
+    /// User-facing label for the default model picker row.
     public var defaultModelLabel: String {
         guard let defaultModelID = self.normalizedModelSelectionID(self.sessionDefaults?.model) else {
             return "Default"
@@ -194,18 +234,22 @@ public final class OpenClawChatViewModel {
         return "Default: \(self.modelLabel(for: defaultModelID))"
     }
 
+    /// Adds file-based attachments to the draft.
     public func addAttachments(urls: [URL]) {
         Task { await self.loadAttachments(urls: urls) }
     }
 
+    /// Adds an in-memory image attachment to the draft.
     public func addImageAttachment(data: Data, fileName: String, mimeType: String) {
         Task { await self.addImageAttachment(url: nil, data: data, fileName: fileName, mimeType: mimeType) }
     }
 
+    /// Removes one staged attachment from the draft.
     public func removeAttachment(_ id: OpenClawPendingAttachment.ID) {
         self.attachments.removeAll { $0.id == id }
     }
 
+    /// Indicates whether the current draft is ready to send.
     public var canSend: Bool {
         let trimmed = self.input.trimmingCharacters(in: .whitespacesAndNewlines)
         return !self.isSending && self.pendingRunCount == 0 && (!trimmed.isEmpty || !self.attachments.isEmpty)

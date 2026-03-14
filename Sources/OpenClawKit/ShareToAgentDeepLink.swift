@@ -1,10 +1,15 @@
 import Foundation
 
+/// Shared content payload used when building a share-to-agent deep link.
 public struct SharedContentPayload: Sendable, Equatable {
+    /// Shared title, when available.
     public let title: String?
+    /// Shared URL, when available.
     public let url: URL?
+    /// Shared text body, when available.
     public let text: String?
 
+    /// Creates a share payload from optional title, URL, and text values.
     public init(title: String?, url: URL?, text: String?) {
         self.title = title
         self.url = url
@@ -12,7 +17,9 @@ public struct SharedContentPayload: Sendable, Equatable {
     }
 }
 
+/// Helpers for turning shared content into an `openclaw://agent` deep link.
 public enum ShareToAgentDeepLink {
+    /// Builds a deep-link URL for the shared content when there is anything to send.
     public static func buildURL(from payload: SharedContentPayload, instruction: String? = nil) -> URL? {
         let message = self.buildMessage(from: payload, instruction: instruction)
         guard !message.isEmpty else { return nil }
@@ -27,6 +34,7 @@ public enum ShareToAgentDeepLink {
         return components.url
     }
 
+    /// Builds the text payload inserted into the deep link.
     public static func buildMessage(from payload: SharedContentPayload, instruction: String? = nil) -> String {
         let title = self.clean(payload.title)
         let text = self.clean(payload.text)

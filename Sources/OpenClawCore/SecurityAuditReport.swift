@@ -227,7 +227,8 @@ public enum SecurityAuditRunner {
                 severity: .warning,
                 summary: "Configuration includes plaintext secrets",
                 detail: "Found non-empty secret values in config keys: \(exposedKeys.sorted().joined(separator: ", "))",
-                recommendation: "Move sensitive values to CredentialStore/Keychain-backed storage or auth-profile storage and avoid committing plaintext values."
+                recommendation:
+                    "Move sensitive values to CredentialStore/Keychain-backed storage or auth-profile storage and avoid committing plaintext values."
             ),
         ]
     }

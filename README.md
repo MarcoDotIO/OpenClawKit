@@ -5,6 +5,7 @@
 # OpenClawKit
 
 [![CI](https://github.com/MarcoDotIO/OpenClawKit/actions/workflows/ci.yml/badge.svg)](https://github.com/MarcoDotIO/OpenClawKit/actions/workflows/ci.yml)
+[![Documentation](https://github.com/MarcoDotIO/OpenClawKit/actions/workflows/docs.yml/badge.svg)](https://github.com/MarcoDotIO/OpenClawKit/actions/workflows/docs.yml)
 [![Security](https://github.com/MarcoDotIO/OpenClawKit/actions/workflows/security.yml/badge.svg)](https://github.com/MarcoDotIO/OpenClawKit/actions/workflows/security.yml)
 [![Release](https://github.com/MarcoDotIO/OpenClawKit/actions/workflows/release.yml/badge.svg)](https://github.com/MarcoDotIO/OpenClawKit/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -12,6 +13,9 @@
 OpenClawKit is a Swift-native agent SDK for Apple platforms and Linux services.
 It provides a complete runtime surface: protocol contracts, model routing, channels,
 skills, memory, observability, security, iOS app integrations, and release-grade tooling.
+
+Public SDK documentation is published as a Swift-DocC site on GitHub Pages, with
+stable companion notes in `docs/`.
 
 ## 2026.2.4 Highlights
 
@@ -422,19 +426,17 @@ Scripts/validate-apple-matrix.sh --platform ios
 
 CI workflows:
 
-- `ci.yml` - Swift validation, iOS build, and Apple platform matrix checks
+- `ci.yml` - Swift validation, linting, iOS build, and Apple platform matrix checks
+- `docs.yml` - Swift-DocC build validation and GitHub Pages deployment
 - `security.yml` - secret/security scanning
 - `release.yml` - changelog-gated tagged releases
 
 ## Documentation
 
+- GitHub Pages DocC site: `https://marcodotio.github.io/OpenClawKit/`
 - [Architecture](docs/architecture.md)
 - [API Surface](docs/api-surface.md)
 - [Testing Guide](docs/testing.md)
-- [2026.2.4 Parity Manifest](docs/parity-2026.2.4.md)
-- [2026.3.11 Parity Manifest](docs/parity-2026.3.11.md)
-- [2026.2.1 Parity Manifest](docs/parity-2026.2.1.md)
-- [2026.2.1 Roadmap](docs/roadmap-2026.2.1.md)
 - [Changelog](CHANGELOG.md)
 
 Protocol generation:

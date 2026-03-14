@@ -4,6 +4,7 @@ import Foundation
 import UIKit
 #endif
 
+/// Shared instance and device metadata used by gateway and device-auth handshakes.
 public enum InstanceIdentity {
     private static let suiteName = "ai.openclaw.shared"
     private static let instanceIdKey = "instanceId"
@@ -23,6 +24,7 @@ public enum InstanceIdentity {
     }
 #endif
 
+    /// Stable per-installation identifier persisted in shared defaults.
     public static let instanceId: String = {
         let defaults = Self.defaults
         if let existing = defaults.string(forKey: instanceIdKey)?
@@ -37,6 +39,7 @@ public enum InstanceIdentity {
         return id
     }()
 
+    /// User-facing device or host name used in client identification.
     public static let displayName: String = {
 #if canImport(UIKit)
         let name = Self.readMainActor {
@@ -53,6 +56,7 @@ public enum InstanceIdentity {
 #endif
     }()
 
+    /// Hardware model identifier when the platform exposes one.
     public static let modelIdentifier: String? = {
 #if canImport(UIKit)
         var systemInfo = utsname()
@@ -76,6 +80,7 @@ public enum InstanceIdentity {
 #endif
     }()
 
+    /// Broad device family label such as `iPhone`, `iPad`, or `Mac`.
     public static let deviceFamily: String = {
 #if canImport(UIKit)
         return Self.readMainActor {
@@ -90,6 +95,7 @@ public enum InstanceIdentity {
 #endif
     }()
 
+    /// Operating system name and version string used during gateway connect.
     public static let platformString: String = {
         let v = ProcessInfo.processInfo.operatingSystemVersion
 #if canImport(UIKit)

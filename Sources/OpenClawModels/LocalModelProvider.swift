@@ -46,9 +46,13 @@ public protocol LocalModelEngine: Sendable {
 }
 
 public extension LocalModelEngine {
+    /// Default no-op runtime switch implementation for engines that expose only one backend.
     func switchRuntime(from _: String?, to _: String, configuration _: LocalModelConfig) async throws {}
+    /// Default no-op cancellation implementation.
     func cancelGeneration(token _: String?) async {}
+    /// Default no-op state save implementation.
     func saveState() async throws -> Data? { nil }
+    /// Default no-op state restore implementation.
     func restoreState(_: Data) async throws {}
 }
 

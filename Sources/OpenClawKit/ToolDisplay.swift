@@ -23,6 +23,7 @@ public struct ToolDisplaySummary: Sendable, Equatable {
     }
 }
 
+/// Registry that maps raw tool invocations into user-facing display summaries.
 public enum ToolDisplayRegistry {
     private struct ToolDisplayActionSpec: Decodable {
         let label: String?
@@ -45,6 +46,7 @@ public enum ToolDisplayRegistry {
 
     private static let config: ToolDisplayConfig = loadConfig()
 
+    /// Resolves a tool invocation into a display-ready summary.
     public static func resolve(name: String?, args: AnyCodable?, meta: String? = nil) -> ToolDisplaySummary {
         let trimmedName = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "tool"
         let key = trimmedName.lowercased()

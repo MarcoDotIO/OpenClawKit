@@ -386,6 +386,7 @@ public struct LocalStorageConnectorAdapter: PersonalDataConnectorAdapter {
 
 /// Convenience registry for Apple's personal-data connector adapters.
 public enum AppleConnectorAdapters {
+    /// Returns the default set of connector adapters for Apple platform integrations.
     public static func defaults() -> [any PersonalDataConnectorAdapter] {
         [
             EventKitConnectorAdapter(),

@@ -81,4 +81,3 @@ struct AgentRuntimeE2ETests {
         #expect(replayed.map(\.event.name) == byRun.map(\.event.name))
     }
 }
-

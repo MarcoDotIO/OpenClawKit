@@ -1,6 +1,8 @@
 import Foundation
 
+/// Clamp helpers for capture duration and frame-rate values.
 public enum CaptureRateLimits {
+    /// Clamps a capture duration into the allowed range.
     public static func clampDurationMs(
         _ ms: Int?,
         defaultMs: Int = 10_000,
@@ -11,6 +13,7 @@ public enum CaptureRateLimits {
         return min(maxMs, max(minMs, value))
     }
 
+    /// Clamps an FPS value into the allowed range.
     public static func clampFps(
         _ fps: Double?,
         defaultFps: Double = 10,

@@ -102,7 +102,11 @@ struct ProviderCatalogModelFilteringTests {
 
         #expect(
             error
-                == "Unknown model: openai/gpt-5.3-codex-spark. gpt-5.3-codex-spark is only supported via openai-codex OAuth. Use openai-codex/gpt-5.3-codex-spark."
+                == """
+                Unknown model: openai/gpt-5.3-codex-spark. \
+                gpt-5.3-codex-spark is only supported via openai-codex OAuth. \
+                Use openai-codex/gpt-5.3-codex-spark.
+                """
         )
     }
 }

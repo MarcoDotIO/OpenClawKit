@@ -120,6 +120,7 @@ public actor WASMSkillExecutor {
         return nil
     }
 
+    /// Default exec allowlist for process-backed WASM runtimes.
     public static func defaultExecAllowlist() -> ExecCommandAllowlist {
         ExecCommandAllowlist(
             patterns: [

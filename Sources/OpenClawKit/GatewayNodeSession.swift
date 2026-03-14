@@ -55,7 +55,7 @@ func canonicalizeCanvasHostUrl(raw: String?, activeURL: URL?) -> String? {
     return parsed.string ?? trimmed
 }
 
-
+/// High-level node-to-gateway session wrapper used by shared app surfaces.
 public actor GatewayNodeSession {
     private let logger = Logger(subsystem: "ai.openclaw", category: "node.gateway")
     private let decoder = JSONDecoder()
@@ -154,6 +154,7 @@ public actor GatewayNodeSession {
     private var serverEventSubscribers: [UUID: AsyncStream<EventFrame>.Continuation] = [:]
     private var canvasHostUrl: String?
 
+    /// Creates an empty node session that can be connected later.
     public init() {}
 
     private func connectOptionsKey(_ options: GatewayConnectOptions) -> String {
@@ -192,6 +193,7 @@ public actor GatewayNodeSession {
         ].joined(separator: "|")
     }
 
+    /// Connects the session to a gateway endpoint and installs invoke/event handlers.
     public func connect(
         url: URL,
         token: String?,
@@ -257,6 +259,7 @@ public actor GatewayNodeSession {
         }
     }
 
+    /// Disconnects the underlying gateway channel and clears connection state.
     public func disconnect() async {
         await self.channel?.shutdown()
         self.channel = nil
@@ -269,10 +272,12 @@ public actor GatewayNodeSession {
         self.resetConnectionState()
     }
 
+    /// Returns the currently scoped canvas host URL when one has been advertised by the gateway.
     public func currentCanvasHostUrl() -> String? {
         self.canvasHostUrl
     }
 
+    /// Refreshes the scoped canvas capability token exposed by the node gateway.
     public func refreshNodeCanvasCapability(timeoutMs: Int = 8_000) async -> Bool {
         guard let channel = self.channel else { return false }
         do {
@@ -313,6 +318,7 @@ public actor GatewayNodeSession {
         }
     }
 
+    /// Returns the current remote address in host:port form.
     public func currentRemoteAddress() -> String? {
         guard let url = self.activeURL else { return nil }
         guard let host = url.host else { return url.absoluteString }
@@ -323,6 +329,7 @@ public actor GatewayNodeSession {
         return "\(host):\(port)"
     }
 
+    /// Sends a fire-and-forget node event to the connected gateway.
     public func sendEvent(event: String, payloadJSON: String?) async {
         guard let channel = self.channel else { return }
         let params: [String: AnyCodable] = [
@@ -336,6 +343,7 @@ public actor GatewayNodeSession {
         }
     }
 
+    /// Performs a request/response gateway RPC using JSON-encoded parameters.
     public func request(method: String, paramsJSON: String?, timeoutSeconds: Int = 15) async throws -> Data {
         guard let channel = self.channel else {
             throw NSError(domain: "Gateway", code: 11, userInfo: [
@@ -350,6 +358,7 @@ public actor GatewayNodeSession {
             timeoutMs: Double(timeoutSeconds * 1000))
     }
 
+    /// Subscribes to server-side event frames forwarded from the gateway channel.
     public func subscribeServerEvents(bufferingNewest: Int = 200) -> AsyncStream<EventFrame> {
         let id = UUID()
         let session = self

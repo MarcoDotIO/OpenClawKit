@@ -2,6 +2,10 @@
 
 `OpenClawSDK` provides high-level app entry points that compose lower-level modules.
 
+For end-to-end integration guides and symbol documentation, prefer the published
+Swift-DocC site. This file is the quick in-repo index for the highest-level SDK
+entry points.
+
 ## Configuration and Session Storage
 
 - `loadConfig(from:cacheTTLms:)`
@@ -51,3 +55,5 @@
 - `SecurityAuditReport`
 - `PortInUseError`
 - `ProcessResult`
+- `OpenClawChatViewModel`
+- `OpenClawChatTransport`

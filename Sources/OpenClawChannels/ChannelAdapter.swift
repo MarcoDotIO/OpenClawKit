@@ -103,6 +103,7 @@ public protocol ChannelAdapter: Sendable {
 }
 
 public extension ChannelAdapter {
+    /// Default no-op typing indicator implementation for channels without typing support.
     func sendTypingIndicator(accountID _: String?, peerID _: String) async throws {}
 }
 

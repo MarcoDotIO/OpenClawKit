@@ -1,0 +1,33 @@
+included:
+  - Sources
+  - Tests
+  - Examples
+excluded:
+  - .build
+  - .cursor
+  - .swiftpm
+  - internal-docs
+only_rules:
+  - duplicate_imports
+  - empty_count
+  - explicit_init
+  - first_where
+  - line_length
+  - missing_docs
+  - modifier_order
+  - trailing_newline
+  - trailing_whitespace
+  - unused_import
+line_length:
+  warning: 160
+  error: 200
+  ignores_urls: true
+missing_docs:
+  warning:
+    - open
+    - public
+  excludes_extensions: true
+  excludes_inherited_types: true
+  excludes_trivial_init: false
+trailing_whitespace:
+  ignores_empty_lines: true

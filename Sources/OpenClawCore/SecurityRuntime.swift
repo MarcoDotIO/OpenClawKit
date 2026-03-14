@@ -74,4 +74,3 @@ public actor SecurityRuntime {
         self.execApprovals[command] == true
     }
 }
-

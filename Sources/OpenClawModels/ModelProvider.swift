@@ -287,6 +287,7 @@ public extension ModelProvider {
         }
     }
 
+    /// Default no-op cancellation implementation for providers without token-based cancellation.
     func cancelGeneration(token _: String?) async {}
 }
 

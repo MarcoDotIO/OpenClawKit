@@ -19,9 +19,12 @@ public typealias GatewaySkillInvokeHandler = @Sendable (GatewaySkillInvokeParams
 
 /// Long-running agent execution tracked by the gateway server.
 public struct GatewayAgentExecution: Sendable {
+    /// Stable run identifier exposed through `agent.wait`.
     public let runID: String
+    /// Task that resolves once the agent run finishes.
     public let task: Task<GatewayAgentWaitResult, Error>
 
+    /// Creates a tracked gateway agent execution.
     public init(runID: String, task: Task<GatewayAgentWaitResult, Error>) {
         self.runID = runID
         self.task = task
@@ -30,12 +33,18 @@ public struct GatewayAgentExecution: Sendable {
 
 /// Closure-backed handlers used by `GatewayServer` for higher-level runtime features.
 public struct GatewayServerHandlers: Sendable {
+    /// Handler used to start an agent run.
     public let runAgent: GatewayAgentRunHandler
+    /// Handler used to list models.
     public let listModels: GatewayModelsListHandler
+    /// Handler used to list skills.
     public let listSkills: GatewaySkillsListHandler
+    /// Handler used to invoke a skill.
     public let invokeSkill: GatewaySkillInvokeHandler
+    /// Optional browser proxy handler.
     public let browserRequest: GatewayBrowserRequestHandler?
 
+    /// Creates a set of closure-backed gateway server handlers.
     public init(
         runAgent: @escaping GatewayAgentRunHandler = { _ in
             throw OpenClawCoreError.unavailable("Agent execution is not configured for this gateway server")
@@ -70,6 +79,7 @@ public actor GatewaySecretVault {
     private let indexURL: URL?
     private var keys: Set<String>
 
+    /// Creates a metadata-aware secret vault backed by a credential store.
     public init(credentialStore: any CredentialStore, indexURL: URL? = nil) {
         self.credentialStore = credentialStore
         self.indexURL = indexURL
@@ -82,10 +92,12 @@ public actor GatewaySecretVault {
         }
     }
 
+    /// Returns the sorted list of secret keys tracked by the vault.
     public func listSecretKeys() -> [String] {
         self.keys.sorted()
     }
 
+    /// Stores or replaces a secret value.
     public func setSecret(_ value: String, for key: String) async throws {
         let normalizedKey = try Self.normalizedKey(key)
         try await self.credentialStore.saveSecret(value, for: normalizedKey)
@@ -93,6 +105,7 @@ public actor GatewaySecretVault {
         try self.persistIndexIfNeeded()
     }
 
+    /// Deletes a secret value and returns whether it existed before removal.
     public func deleteSecret(for key: String) async throws -> Bool {
         let normalizedKey = try Self.normalizedKey(key)
         let existed = self.keys.contains(normalizedKey)
@@ -132,6 +145,7 @@ public actor GatewayServer {
     private let handlers: GatewayServerHandlers
     private var agentRuns: [String: Task<GatewayAgentWaitResult, Error>] = [:]
 
+    /// Creates an in-process gateway server with session, secret, and runtime handlers.
     public init(
         sessionStore: SessionStore,
         secretVault: GatewaySecretVault,

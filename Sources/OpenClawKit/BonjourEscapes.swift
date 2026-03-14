@@ -1,5 +1,6 @@
 import Foundation
 
+/// Helpers for decoding Bonjour-escaped service names.
 public enum BonjourEscapes {
     /// mDNS / DNS-SD commonly escapes bytes in instance names as `\DDD` (decimal-encoded),
     /// e.g. spaces are `\032`.

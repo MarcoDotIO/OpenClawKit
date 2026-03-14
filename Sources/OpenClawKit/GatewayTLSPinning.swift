@@ -3,11 +3,16 @@ import Foundation
 import Security
 
 public struct GatewayTLSParams: Sendable {
+    /// Indicates whether TLS trust failures should reject the connection.
     public let required: Bool
+    /// Expected certificate fingerprint when pinning to a known endpoint.
     public let expectedFingerprint: String?
+    /// Enables trust-on-first-use behavior when no fingerprint is already stored.
     public let allowTOFU: Bool
+    /// Stable storage key used when persisting TOFU fingerprints.
     public let storeKey: String?
 
+    /// Creates one set of TLS pinning parameters.
     public init(required: Bool, expectedFingerprint: String?, allowTOFU: Bool, storeKey: String?) {
         self.required = required
         self.expectedFingerprint = expectedFingerprint
@@ -16,6 +21,7 @@ public struct GatewayTLSParams: Sendable {
     }
 }
 
+/// Keychain-backed store for persisted gateway TLS fingerprints.
 public enum GatewayTLSStore {
     private static let keychainService = "ai.openclaw.tls-pinning"
 
@@ -23,6 +29,7 @@ public enum GatewayTLSStore {
     private static let legacySuiteName = "ai.openclaw.shared"
     private static let legacyKeyPrefix = "gateway.tls."
 
+    /// Loads a stored fingerprint for a stable endpoint identifier.
     public static func loadFingerprint(stableID: String) -> String? {
         self.migrateFromUserDefaultsIfNeeded(stableID: stableID)
         let raw = GenericPasswordKeychainStore.loadString(service: self.keychainService, account: stableID)?
@@ -31,6 +38,7 @@ public enum GatewayTLSStore {
         return nil
     }
 
+    /// Saves a fingerprint for a stable endpoint identifier.
     public static func saveFingerprint(_ value: String, stableID: String) {
         _ = GenericPasswordKeychainStore.saveString(value, service: self.keychainService, account: stableID)
     }
@@ -55,6 +63,7 @@ public enum GatewayTLSStore {
     }
 }
 
+/// `URLSession` wrapper that enforces gateway TLS pinning and TOFU behavior.
 public final class GatewayTLSPinningSession: NSObject, WebSocketSessioning, URLSessionDelegate, @unchecked Sendable {
     private let params: GatewayTLSParams
     private lazy var session: URLSession = {
@@ -63,6 +72,7 @@ public final class GatewayTLSPinningSession: NSObject, WebSocketSessioning, URLS
         return URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }()
 
+    /// Creates a TLS-aware WebSocket session using the provided pinning parameters.
     public init(params: GatewayTLSParams) {
         self.params = params
         super.init()

@@ -20,4 +20,3 @@ public enum BinaryUtils {
         throw OpenClawCoreError.unavailable("Binary not found on PATH: \(name)")
     }
 }
-

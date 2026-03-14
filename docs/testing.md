@@ -14,6 +14,8 @@ swift test
   - unit-level tests for protocol, core shims, runtime primitives, diagnostics, facade helpers
 - `Tests/OpenClawKitE2ETests`
   - end-to-end tests across transport/runtime/channels/plugin flow and reconnect lifecycle
+- `Tests/OpenClawLinuxRuntimeTests`
+  - Linux-focused runtime, provider, gateway, and channel regressions exercised in CI and Docker
 
 ## Networking Concurrency Gate
 
@@ -40,61 +42,34 @@ Never commit `.env`.
 ## Recommended Local Validation Sequence
 
 1. `swift build -Xswiftc -warnings-as-errors`
-2. `Scripts/check-networking-concurrency.sh`
-3. `swift test`
-4. `./Scripts/build-ios-example.sh`
-5. `./Scripts/test-ios-example.sh`
-6. `./Scripts/build-tvos-example.sh`
-7. `Scripts/validate-apple-matrix.sh --platform macos`
-8. `Scripts/validate-apple-matrix.sh --platform ios`
+2. `Scripts/lint-swift.sh`
+3. `Scripts/check-networking-concurrency.sh`
+4. `swift test`
+5. `Scripts/build-docs-site.sh`
+6. `./Scripts/build-ios-example.sh`
+7. `./Scripts/test-ios-example.sh`
+8. `./Scripts/build-tvos-example.sh`
+9. `Scripts/validate-apple-matrix.sh --platform macos`
+10. `Scripts/validate-apple-matrix.sh --platform ios`
 
-## 2026.2.3 Parity Train Rules
+## Linux Runtime Validation
 
-The `2026.2.3` release is the SDK + control-plane parity train for the pinned
-OpenClaw `2026.3.11` snapshot in [docs/parity-2026.3.11.md](./parity-2026.3.11.md).
+The repo CI runs the Linux runtime gate on Ubuntu. To catch Linux-only failures
+before pushing, run the same scripts in Docker:
 
-For this train:
+```bash
+docker run --rm -v "$PWD:/workspace" -w /workspace swift:6.2 Scripts/build-linux-runtime.sh
+docker run --rm -v "$PWD:/workspace" -w /workspace swift:6.2 Scripts/check-networking-concurrency.sh
+docker run --rm -v "$PWD:/workspace" -w /workspace swift:6.2 Scripts/test-linux-runtime.sh
+```
 
-1. each implementation step must land as exactly one commit
-2. `swift build -Xswiftc -warnings-as-errors` must pass before the commit is created
-3. all previously passing tests must still pass
-4. tests added for the step must pass and provide targeted regression coverage for the new code introduced by the step
+## Documentation Validation
 
-Checked-in parity fixtures live under `Tests/OpenClawKitTests`; the test suite
-must not read `.cursor/**` at runtime.
+The public docs site is generated with Swift-DocC on macOS.
 
-Do not defer warning cleanup or critical regression test fixes to later commits.
+```bash
+Scripts/build-docs-site.sh
+```
 
-## 2026.2.1 Parity Coverage Highlights
-
-- Channel adapter reliability:
-  dedicated suites for Slack, Google Chat, Signal, iMessage, Microsoft Teams,
-  WebChat, and parity-expanded WhatsApp Cloud handling.
-- Provider parity reliability:
-  routing/unit tests for xAI/Grok, OpenAI-compatible packs, Anthropic-compatible
-  gateway packs, and unique protocol providers (Bedrock/Copilot/Ollama/vLLM/Qwen).
-- Config matrix reliability:
-  serialization/defaulting coverage for expanded provider-service auth/API-style
-  fields and channel config surfaces.
-- Security reliability:
-  regression coverage for parity secret detection and risky-default findings,
-  including local-runtime auth-none exemptions and AWS-region checks.
-- CI platform coverage:
-  full per-commit gate remains required, including Apple matrix validation in
-  `Scripts/validate-apple-matrix.sh` for macOS and iOS declarations.
-
-## 2026.2.2 Coverage Highlights
-
-- Config/auth compatibility:
-  regression coverage for canonical `auth` and `models.providers` encoding,
-  legacy provider-service decoding, and auth profile cooldown ordering.
-- Provider catalog parity:
-  snapshot-backed assertions for provider IDs, auth modes, base URLs, APIs, and
-  default model IDs against the pinned OpenClaw TS reference commit.
-- Apple hardware hardening:
-  credential-store coverage for device-bound Keychain accessibility and Apple
-  sample defaults that prefer Foundation Models only when runtime availability
-  allows it.
-- Example-app release scope:
-  the `2026.2.2` validation gate covers the iOS and tvOS demos only; the
-  visionOS demo is deferred from this release train.
+The script fails if the static site does not contain `index.html` and the
+`documentation/openclawkit` entry point expected by GitHub Pages.

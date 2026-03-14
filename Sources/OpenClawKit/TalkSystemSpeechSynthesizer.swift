@@ -109,7 +109,7 @@ public final class TalkSystemSpeechSynthesizer: NSObject {
 }
 
 extension TalkSystemSpeechSynthesizer: AVSpeechSynthesizerDelegate {
-    public nonisolated func speechSynthesizer(
+    nonisolated public func speechSynthesizer(
         _ synthesizer: AVSpeechSynthesizer,
         didStart utterance: AVSpeechUtterance)
     {
@@ -122,7 +122,7 @@ extension TalkSystemSpeechSynthesizer: AVSpeechSynthesizerDelegate {
         }
     }
 
-    public nonisolated func speechSynthesizer(
+    nonisolated public func speechSynthesizer(
         _ synthesizer: AVSpeechSynthesizer,
         didFinish utterance: AVSpeechUtterance)
     {
@@ -132,7 +132,7 @@ extension TalkSystemSpeechSynthesizer: AVSpeechSynthesizerDelegate {
         }
     }
 
-    public nonisolated func speechSynthesizer(
+    nonisolated public func speechSynthesizer(
         _ synthesizer: AVSpeechSynthesizer,
         didCancel utterance: AVSpeechUtterance)
     {

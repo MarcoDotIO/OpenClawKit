@@ -1,11 +1,17 @@
 import Foundation
 
+/// Persisted device-auth token entry keyed by role.
 public struct DeviceAuthEntry: Codable, Sendable {
+    /// Device-scoped auth token.
     public let token: String
+    /// Role associated with the token.
     public let role: String
+    /// Granted scopes stored with the token.
     public let scopes: [String]
+    /// Last update timestamp in milliseconds since the Unix epoch.
     public let updatedAtMs: Int
 
+    /// Creates a device-auth token entry.
     public init(token: String, role: String, scopes: [String], updatedAtMs: Int) {
         self.token = token
         self.role = role
@@ -20,15 +26,18 @@ private struct DeviceAuthStoreFile: Codable {
     var tokens: [String: DeviceAuthEntry]
 }
 
+/// File-backed storage for device-auth tokens used by gateway/device flows.
 public enum DeviceAuthStore {
     private static let fileName = "device-auth.json"
 
+    /// Loads the stored token for a device and role.
     public static func loadToken(deviceId: String, role: String) -> DeviceAuthEntry? {
         guard let store = readStore(), store.deviceId == deviceId else { return nil }
         let role = normalizeRole(role)
         return store.tokens[role]
     }
 
+    /// Stores or replaces the token for a device-role pair.
     public static func storeToken(
         deviceId: String,
         role: String,
@@ -56,6 +65,7 @@ public enum DeviceAuthStore {
         return entry
     }
 
+    /// Deletes the stored token for a device-role pair.
     public static func clearToken(deviceId: String, role: String) {
         guard var store = readStore(), store.deviceId == deviceId else { return }
         let normalizedRole = normalizeRole(role)

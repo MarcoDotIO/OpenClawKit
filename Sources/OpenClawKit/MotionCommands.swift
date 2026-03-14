@@ -1,10 +1,12 @@
 import Foundation
 
+/// Motion command identifiers supported by shared Apple integrations.
 public enum OpenClawMotionCommand: String, Codable, Sendable {
     case activity = "motion.activity"
     case pedometer = "motion.pedometer"
 }
 
+/// Motion activity query parameters shared with the generic date-range model.
 public typealias OpenClawMotionActivityParams = OpenClawDateRangeLimitParams
 
 public struct OpenClawMotionActivityEntry: Codable, Sendable, Equatable {

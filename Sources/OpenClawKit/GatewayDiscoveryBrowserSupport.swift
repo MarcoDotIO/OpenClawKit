@@ -1,7 +1,9 @@
 import Foundation
 import Network
 
+/// Bonjour browser helpers used by gateway discovery UIs.
 public enum GatewayDiscoveryBrowserSupport {
+    /// Creates and starts a Bonjour `NWBrowser` for gateway discovery.
     @MainActor
     public static func makeBrowser(
         serviceType: String,
