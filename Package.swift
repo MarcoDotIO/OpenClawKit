@@ -139,6 +139,9 @@ targets += [
             "OpenClawModels",
             "OpenClawSkills",
         ],
+        resources: [
+            .process("Resources"),
+        ],
         swiftSettings: [
             .enableUpcomingFeature("StrictConcurrency"),
         ]
