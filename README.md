@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="Resources/logo-banner.jpg" alt="OpenClawKit logo banner" width="900" />
+  <img src="Resources/logo-banner.jpg" alt="OpenClawKit logo banner, also hi random stranger :)" width="900" />
 </p>
 
 # OpenClawKit
