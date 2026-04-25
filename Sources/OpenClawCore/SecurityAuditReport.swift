@@ -217,6 +217,19 @@ public enum SecurityAuditRunner {
                 exposedKeys.append("models.providers.\(normalizedID).\(secretField)")
             }
         }
+        for (channelID, channelConfig) in config.channels.pluginChannels {
+            let normalizedID = channelID.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalizedID.isEmpty else {
+                continue
+            }
+            for (secretKey, secretValue) in channelConfig.secrets {
+                let normalizedSecretKey = secretKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                let normalizedSecretValue = secretValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !normalizedSecretKey.isEmpty, !normalizedSecretValue.isEmpty {
+                    exposedKeys.append("channels.pluginChannels.\(normalizedID).secrets.\(normalizedSecretKey)")
+                }
+            }
+        }
 
         guard !exposedKeys.isEmpty else {
             return []

@@ -191,11 +191,55 @@ public actor GatewayServer {
             case "sessions.delete":
                 let payload = try await self.handleSessionDelete(request.params, method: request.method)
                 return try self.successResponse(id: request.id, payload: payload)
+            case "message.action":
+                try self.knownUnsupported(MessageActionParams.self, from: request.params, method: request.method)
+            case "sessions.compaction.list":
+                try self.knownUnsupported(SessionsCompactionListParams.self, from: request.params, method: request.method)
+            case "sessions.compaction.get":
+                try self.knownUnsupported(SessionsCompactionGetParams.self, from: request.params, method: request.method)
+            case "sessions.compaction.branch":
+                try self.knownUnsupported(SessionsCompactionBranchParams.self, from: request.params, method: request.method)
+            case "sessions.compaction.restore":
+                try self.knownUnsupported(SessionsCompactionRestoreParams.self, from: request.params, method: request.method)
+            case "sessions.create":
+                try self.knownUnsupported(SessionsCreateParams.self, from: request.params, method: request.method)
+            case "sessions.send":
+                try self.knownUnsupported(SessionsSendParams.self, from: request.params, method: request.method)
+            case "sessions.messages.subscribe":
+                try self.knownUnsupported(SessionsMessagesSubscribeParams.self, from: request.params, method: request.method)
+            case "sessions.messages.unsubscribe":
+                try self.knownUnsupported(SessionsMessagesUnsubscribeParams.self, from: request.params, method: request.method)
+            case "sessions.abort":
+                try self.knownUnsupported(SessionsAbortParams.self, from: request.params, method: request.method)
             case "models.list":
                 return try self.successResponse(
                     id: request.id,
                     payload: GatewayModelsListResult(models: try await self.handlers.listModels())
                 )
+            case "talk.realtime.session":
+                try self.knownUnsupported(TalkRealtimeSessionParams.self, from: request.params, method: request.method)
+            case "talk.speak":
+                try self.knownUnsupported(TalkSpeakParams.self, from: request.params, method: request.method)
+            case "channels.status":
+                try self.knownUnsupported(ChannelsStatusParams.self, from: request.params, method: request.method)
+            case "channels.start":
+                try self.knownUnsupported(ChannelsStartParams.self, from: request.params, method: request.method)
+            case "channels.logout":
+                try self.knownUnsupported(ChannelsLogoutParams.self, from: request.params, method: request.method)
+            case "commands.list":
+                try self.knownUnsupported(CommandsListParams.self, from: request.params, method: request.method)
+            case "tools.catalog":
+                try self.knownUnsupported(ToolsCatalogParams.self, from: request.params, method: request.method)
+            case "tools.effective":
+                try self.knownUnsupported(ToolsEffectiveParams.self, from: request.params, method: request.method)
+            case "skills.status":
+                try self.knownUnsupported(SkillsStatusParams.self, from: request.params, method: request.method)
+            case "skills.bins":
+                try self.knownUnsupported(SkillsBinsParams.self, from: request.params, method: request.method)
+            case "skills.search":
+                try self.knownUnsupported(SkillsSearchParams.self, from: request.params, method: request.method)
+            case "skills.detail":
+                try self.knownUnsupported(SkillsDetailParams.self, from: request.params, method: request.method)
             case "skills.list":
                 return try self.successResponse(
                     id: request.id,
@@ -224,6 +268,12 @@ public actor GatewayServer {
             case "browser.request":
                 let payload = try await self.handleBrowserRequest(request.params, method: request.method)
                 return try self.successResponse(id: request.id, payload: payload)
+            case "exec.approval.get":
+                try self.knownUnsupported(ExecApprovalGetParams.self, from: request.params, method: request.method)
+            case "plugin.approval.request":
+                try self.knownUnsupported(PluginApprovalRequestParams.self, from: request.params, method: request.method)
+            case "plugin.approval.resolve":
+                try self.knownUnsupported(PluginApprovalResolveParams.self, from: request.params, method: request.method)
             default:
                 return self.errorResponse(
                     id: request.id,
@@ -238,6 +288,11 @@ public actor GatewayServer {
                 message: error.localizedDescription
             )
         }
+    }
+
+    private func knownUnsupported<T: Decodable>(_ type: T.Type, from payload: AnyCodable?, method: String) throws -> Never {
+        _ = try self.decodeParams(type, from: payload, method: method)
+        throw OpenClawCoreError.unavailable("\(method) is known but is not configured for this gateway server")
     }
 
     private func handleAgentRun(_ payload: AnyCodable?, method: String) async throws -> GatewayAgentAccepted {

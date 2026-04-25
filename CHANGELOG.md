@@ -1,5 +1,52 @@
 # Changelog
 
+## Unreleased
+
+## 2026.2.5 - 2026-04-25
+
+### Added
+
+- OpenClaw `2026.4.25` SDK/control-plane parity pinned to `.codex/openclaw`
+  commit `6b0c72bec8`, including regenerated gateway protocol models and
+  compatibility shims for existing OpenClawKit gateway payloads.
+- Generated protocol coverage for new upstream request/result surfaces:
+  message actions, session creation/send/abort, session compaction checkpoints,
+  talk realtime/speech requests, command/tool catalog requests, skill
+  search/detail requests, and approval control-plane payloads.
+- Provider catalog parity for the `2026.4.25` train, including
+  `anthropic-vertex`, `amazon-bedrock-mantle`, `arcee`, `chutes`,
+  `copilot-proxy`, `deepseek`, `fireworks`, `lmstudio`,
+  `microsoft-foundry`, `qwen`, `stepfun`, `stepfun-plan`, and
+  `tencent-tokenhub`.
+- Capability-aware provider metadata for upstream media, speech, embedding,
+  web-search, image-generation, video-generation, and music-generation plugin
+  providers that are metadata/config-visible without native Swift runtime
+  adapters.
+- Channel metadata parity for upstream plugin channels including `feishu`,
+  `irc`, `matrix`, `mattermost`, `nextcloud-talk`, `nostr`, `qqbot`,
+  `synology-chat`, `tlon`, `twitch`, `zalo`, `zalouser`, and `qa-channel`,
+  with native transport availability explicitly marked.
+
+### Changed
+
+- `openai-codex` now defaults to upstream `gpt-5.5` for the pinned parity
+  snapshot.
+- The in-process gateway server now recognizes and decodes newly known
+  control-plane methods, returning explicit unavailable responses for
+  metadata-only or unconfigured Swift behavior instead of treating them as
+  unknown requests.
+- `.codex/` is ignored so the embedded upstream reference checkout remains a
+  local-only parity input.
+
+### Tests
+
+- Added snapshot and fixture coverage for new protocol payloads, provider
+  capabilities, channel metadata, plugin-channel secret auditing, and known
+  gateway-method unavailable/error-code mapping.
+- `swift test` remains locally blocked by the machine/toolchain error
+  `no such module 'Testing'`; `swift build -Xswiftc -warnings-as-errors`
+  passes for the package source.
+
 ## 2026.2.4 - 2026-03-14
 
 ### Added

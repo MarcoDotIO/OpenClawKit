@@ -11,9 +11,11 @@ public enum ThinkLevel: String, Sendable, Equatable, CaseIterable, Codable {
     case adaptive
 
     private static let xhighModelRefs: Set<String> = [
+        "openai/gpt-5.5",
         "openai/gpt-5.4",
         "openai/gpt-5.4-pro",
         "openai/gpt-5.2",
+        "openai-codex/gpt-5.5",
         "openai-codex/gpt-5.4",
         "openai-codex/gpt-5.3-codex",
         "openai-codex/gpt-5.3-codex-spark",

@@ -538,6 +538,7 @@ public struct ChannelsConfig: Codable, Sendable, Equatable {
     public var imessage: IMessageChannelConfig
     public var msteams: MicrosoftTeamsChannelConfig
     public var webchat: WebChatChannelConfig
+    public var pluginChannels: [String: PluginChannelConfig]
 
     /// Creates channel config.
     /// - Parameter discord: Discord channel settings.
@@ -550,6 +551,7 @@ public struct ChannelsConfig: Codable, Sendable, Equatable {
     /// - Parameter imessage: iMessage channel settings.
     /// - Parameter msteams: Microsoft Teams channel settings.
     /// - Parameter webchat: WebChat channel settings.
+    /// - Parameter pluginChannels: Metadata/config blocks for upstream plugin-only channels.
     public init(
         discord: DiscordChannelConfig = DiscordChannelConfig(),
         telegram: TelegramChannelConfig = TelegramChannelConfig(),
@@ -560,7 +562,8 @@ public struct ChannelsConfig: Codable, Sendable, Equatable {
         bluebubbles: BlueBubblesChannelConfig = BlueBubblesChannelConfig(),
         imessage: IMessageChannelConfig = IMessageChannelConfig(),
         msteams: MicrosoftTeamsChannelConfig = MicrosoftTeamsChannelConfig(),
-        webchat: WebChatChannelConfig = WebChatChannelConfig()
+        webchat: WebChatChannelConfig = WebChatChannelConfig(),
+        pluginChannels: [String: PluginChannelConfig] = [:]
     ) {
         self.discord = discord
         self.telegram = telegram
@@ -572,6 +575,7 @@ public struct ChannelsConfig: Codable, Sendable, Equatable {
         self.imessage = imessage
         self.msteams = msteams
         self.webchat = webchat
+        self.pluginChannels = pluginChannels
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -585,6 +589,7 @@ public struct ChannelsConfig: Codable, Sendable, Equatable {
         case imessage
         case msteams
         case webchat
+        case pluginChannels
     }
 
     public init(from decoder: Decoder) throws {
@@ -599,6 +604,10 @@ public struct ChannelsConfig: Codable, Sendable, Equatable {
         self.imessage = try container.decodeIfPresent(IMessageChannelConfig.self, forKey: .imessage) ?? IMessageChannelConfig()
         self.msteams = try container.decodeIfPresent(MicrosoftTeamsChannelConfig.self, forKey: .msteams) ?? MicrosoftTeamsChannelConfig()
         self.webchat = try container.decodeIfPresent(WebChatChannelConfig.self, forKey: .webchat) ?? WebChatChannelConfig()
+        self.pluginChannels = try container.decodeIfPresent(
+            [String: PluginChannelConfig].self,
+            forKey: .pluginChannels
+        ) ?? [:]
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -613,6 +622,33 @@ public struct ChannelsConfig: Codable, Sendable, Equatable {
         try container.encode(self.imessage, forKey: .imessage)
         try container.encode(self.msteams, forKey: .msteams)
         try container.encode(self.webchat, forKey: .webchat)
+        try container.encode(self.pluginChannels, forKey: .pluginChannels)
+    }
+}
+
+/// Generic config block for upstream plugin-only channels.
+public struct PluginChannelConfig: Codable, Sendable, Equatable {
+    public var enabled: Bool
+    public var packageName: String?
+    public var config: [String: String]
+    public var secrets: [String: String]
+
+    /// Creates plugin-channel settings.
+    /// - Parameters:
+    ///   - enabled: Whether the host should attempt to activate this channel plugin.
+    ///   - packageName: Optional upstream package/plugin package name.
+    ///   - config: Non-secret plugin config values.
+    ///   - secrets: Secret values or secret references required by the plugin.
+    public init(
+        enabled: Bool = false,
+        packageName: String? = nil,
+        config: [String: String] = [:],
+        secrets: [String: String] = [:]
+    ) {
+        self.enabled = enabled
+        self.packageName = packageName
+        self.config = config
+        self.secrets = secrets
     }
 }
 

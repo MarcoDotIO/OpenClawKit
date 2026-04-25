@@ -18,6 +18,92 @@ public enum ChannelID: String, CaseIterable, Sendable {
     case msteams
     case line
     case webchat
+    case feishu
+    case irc
+    case matrix
+    case mattermost
+    case nextcloudTalk = "nextcloud-talk"
+    case nostr
+    case qqbot
+    case synologyChat = "synology-chat"
+    case tlon
+    case twitch
+    case zalo
+    case zalouser
+    case qaChannel = "qa-channel"
+}
+
+/// Channel metadata for upstream channel plugins and native Swift adapters.
+public struct ChannelMetadataEntry: Sendable, Equatable {
+    /// Stable channel identifier.
+    public var id: ChannelID
+    /// Human-facing channel label.
+    public var label: String
+    /// Optional upstream documentation path.
+    public var docsPath: String?
+    /// Additional accepted upstream identifiers.
+    public var aliases: [String]
+    /// Whether OpenClawKit currently provides a native Swift transport adapter.
+    public var nativeTransportAvailable: Bool
+
+    /// Creates a channel metadata entry.
+    public init(
+        id: ChannelID,
+        label: String,
+        docsPath: String? = nil,
+        aliases: [String] = [],
+        nativeTransportAvailable: Bool
+    ) {
+        self.id = id
+        self.label = label
+        self.docsPath = docsPath
+        self.aliases = aliases
+        self.nativeTransportAvailable = nativeTransportAvailable
+    }
+}
+
+/// Channel metadata catalog aligned with the pinned OpenClaw upstream plugin set.
+public enum OpenClawChannelMetadataCatalog {
+    /// Known channel metadata entries, including plugin-only channels without Swift transports.
+    public static let entries: [ChannelMetadataEntry] = [
+        native(.whatsapp, "WhatsApp", docsPath: "/channels/whatsapp"),
+        native(.telegram, "Telegram", docsPath: "/channels/telegram"),
+        native(.slack, "Slack", docsPath: "/channels/slack"),
+        native(.googlechat, "Google Chat", docsPath: "/channels/googlechat"),
+        native(.discord, "Discord", docsPath: "/channels/discord"),
+        native(.signal, "Signal", docsPath: "/channels/signal"),
+        native(.bluebubbles, "BlueBubbles", docsPath: "/channels/bluebubbles"),
+        native(.imessage, "iMessage", docsPath: "/channels/imessage"),
+        native(.msteams, "Microsoft Teams", docsPath: "/channels/msteams"),
+        native(.webchat, "WebChat", docsPath: "/channels/webchat"),
+        plugin(.line, "LINE", docsPath: "/channels/line"),
+        plugin(.feishu, "Feishu", docsPath: "/channels/feishu"),
+        plugin(.irc, "IRC", docsPath: "/channels/irc"),
+        plugin(.matrix, "Matrix", docsPath: "/channels/matrix"),
+        plugin(.mattermost, "Mattermost", docsPath: "/channels/mattermost"),
+        plugin(.nextcloudTalk, "Nextcloud Talk", docsPath: "/channels/nextcloud-talk"),
+        plugin(.nostr, "Nostr", docsPath: "/channels/nostr"),
+        plugin(.qqbot, "QQ Bot", docsPath: "/channels/qqbot"),
+        plugin(.synologyChat, "Synology Chat", docsPath: "/channels/synology-chat"),
+        plugin(.tlon, "Tlon", docsPath: "/channels/tlon"),
+        plugin(.twitch, "Twitch", docsPath: "/channels/twitch"),
+        plugin(.zalo, "Zalo", docsPath: "/channels/zalo"),
+        plugin(.zalouser, "Zalo User", docsPath: "/channels/zalouser"),
+        plugin(.qaChannel, "QA Channel", docsPath: "/channels/qa-channel"),
+    ]
+
+    /// Returns channel metadata for one identifier.
+    public static func entry(for id: ChannelID) -> ChannelMetadataEntry? {
+        self.entries.first { $0.id == id }
+    }
+
+    private static func native(_ id: ChannelID, _ label: String, docsPath: String? = nil) -> ChannelMetadataEntry {
+        ChannelMetadataEntry(id: id, label: label, docsPath: docsPath, nativeTransportAvailable: true)
+    }
+
+    private static func plugin(_ id: ChannelID, _ label: String, docsPath: String? = nil) -> ChannelMetadataEntry {
+        ChannelMetadataEntry(id: id, label: label, docsPath: docsPath, nativeTransportAvailable: false)
+    }
 }
 
 /// Normalized inbound message envelope delivered to the runtime.

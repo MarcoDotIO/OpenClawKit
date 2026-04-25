@@ -55,7 +55,14 @@ struct SecurityAuditTests {
                     botAppPassword: "teams-password",
                     mentionOnly: false
                 ),
-                webchat: WebChatChannelConfig(enabled: true, sharedSecret: nil)
+                webchat: WebChatChannelConfig(enabled: true, sharedSecret: nil),
+                pluginChannels: [
+                    "matrix": PluginChannelConfig(
+                        enabled: true,
+                        config: ["homeserver": "https://matrix.example.com"],
+                        secrets: ["accessToken": "matrix-token"]
+                    ),
+                ]
             ),
             routing: RoutingConfig(
                 defaultSessionKey: "shared",
@@ -123,6 +130,11 @@ struct SecurityAuditTests {
             report.findings
                 .first(where: { $0.id == "secrets.config.plaintext" })?
                 .detail.contains("channels.bluebubbles.password") == true
+        )
+        #expect(
+            report.findings
+                .first(where: { $0.id == "secrets.config.plaintext" })?
+                .detail.contains("channels.pluginChannels.matrix.secrets.accessToken") == true
         )
         #expect(report.findings.contains(where: { $0.id.starts(with: "plaintext.file.") }))
         #expect(report.count(for: SecurityAuditSeverity.warning) >= 1)

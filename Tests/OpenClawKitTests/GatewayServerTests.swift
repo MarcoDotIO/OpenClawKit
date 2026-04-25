@@ -384,6 +384,158 @@ struct GatewayServerTests {
     }
 
     @Test
+    func gatewayServerDecodesKnown20260425MethodsAsUnavailable() async throws {
+        let root = try self.makeTempDirectory(named: "gateway-server-20260425")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let server = GatewayServer(
+            sessionStore: SessionStore(fileURL: root.appendingPathComponent("sessions.json")),
+            secretVault: GatewaySecretVault(
+                credentialStore: FileCredentialStore(fileURL: root.appendingPathComponent("credentials.json"))
+            )
+        )
+
+        let knownRequests: [() async -> ResponseFrame] = [
+            {
+                await self.rawRequest(
+                    server,
+                    method: "message.action",
+                    params: MessageActionParams(
+                        channel: "telegram",
+                        action: "pin",
+                        params: [:],
+                        accountid: nil,
+                        requestersenderid: nil,
+                        senderisowner: nil,
+                        sessionkey: "main",
+                        sessionid: nil,
+                        agentid: nil,
+                        toolcontext: nil,
+                        idempotencykey: "idem-1"
+                    )
+                )
+            },
+            {
+                await self.rawRequest(
+                    server,
+                    method: "sessions.create",
+                    params: SessionsCreateParams(
+                        key: "main",
+                        agentid: nil,
+                        label: nil,
+                        model: nil,
+                        parentsessionkey: nil,
+                        task: nil,
+                        message: nil
+                    )
+                )
+            },
+            {
+                await self.rawRequest(
+                    server,
+                    method: "sessions.send",
+                    params: SessionsSendParams(
+                        key: "main",
+                        message: "hello",
+                        thinking: nil,
+                        attachments: nil,
+                        timeoutms: nil,
+                        idempotencykey: nil
+                    )
+                )
+            },
+            { await self.rawRequest(server, method: "sessions.abort", params: SessionsAbortParams(key: "main", runid: nil)) },
+            { await self.rawRequest(server, method: "sessions.compaction.list", params: SessionsCompactionListParams(key: "main")) },
+            {
+                await self.rawRequest(
+                    server,
+                    method: "talk.realtime.session",
+                    params: TalkRealtimeSessionParams(
+                        sessionkey: "main",
+                        provider: "openai",
+                        model: "gpt-realtime",
+                        voice: "alloy"
+                    )
+                )
+            },
+            {
+                await self.rawRequest(
+                    server,
+                    method: "talk.speak",
+                    params: TalkSpeakParams(
+                        text: "hello",
+                        voiceid: nil,
+                        modelid: nil,
+                        outputformat: nil,
+                        speed: nil,
+                        ratewpm: nil,
+                        stability: nil,
+                        similarity: nil,
+                        style: nil,
+                        speakerboost: nil,
+                        seed: nil,
+                        normalize: nil,
+                        language: nil,
+                        latencytier: nil
+                    )
+                )
+            },
+            { await self.rawRequest(server, method: "channels.status", params: ChannelsStatusParams(probe: false, timeoutms: nil)) },
+            { await self.rawRequest(server, method: "channels.start", params: ChannelsStartParams(channel: "matrix", accountid: nil)) },
+            { await self.rawRequest(server, method: "commands.list", params: CommandsListParams(agentid: nil, provider: nil, scope: nil, includeargs: true)) },
+            { await self.rawRequest(server, method: "tools.catalog", params: ToolsCatalogParams(agentid: nil, includeplugins: true)) },
+            { await self.rawRequest(server, method: "tools.effective", params: ToolsEffectiveParams(agentid: nil, sessionkey: "main")) },
+            { await self.rawRequest(server, method: "skills.search", params: SkillsSearchParams(query: "swift", limit: 5)) },
+            { await self.rawRequest(server, method: "skills.detail", params: SkillsDetailParams(slug: "hello")) },
+            { await self.rawRequest(server, method: "exec.approval.get", params: ExecApprovalGetParams(id: "approval-1")) },
+            {
+                await self.rawRequest(
+                    server,
+                    method: "plugin.approval.request",
+                    params: PluginApprovalRequestParams(
+                        pluginid: "demo",
+                        title: "Approve tool",
+                        description: "Needs access",
+                        severity: "medium",
+                        toolname: nil,
+                        toolcallid: nil,
+                        agentid: nil,
+                        sessionkey: "main",
+                        turnsourcechannel: nil,
+                        turnsourceto: nil,
+                        turnsourceaccountid: nil,
+                        turnsourcethreadid: nil,
+                        timeoutms: nil,
+                        twophase: nil
+                    )
+                )
+            },
+            { await self.rawRequest(server, method: "plugin.approval.resolve", params: PluginApprovalResolveParams(id: "approval-1", decision: "allow")) },
+        ]
+
+        for request in knownRequests {
+            let response = await request()
+            #expect(response.ok == false)
+            #expect(response.error?.code == .unavailable)
+        }
+
+        let invalidKnown = await server.handle(
+            RequestFrame(
+                type: "req",
+                id: UUID().uuidString,
+                method: "sessions.send",
+                params: AnyCodable(["message": AnyCodable("missing key")])
+            )
+        )
+        #expect(invalidKnown.ok == false)
+        #expect(invalidKnown.error?.code == .invalidRequest)
+
+        let unknown = await self.rawRequest(server, method: "newer.unknown.method", params: EmptyPayload())
+        #expect(unknown.ok == false)
+        #expect(unknown.error?.code == .invalidRequest)
+    }
+
+    @Test
     func gatewayServerNormalizesSessionControlsAndAgentWaitWithoutTimeout() async throws {
         let root = try self.makeTempDirectory(named: "gateway-server-controls")
         defer { try? FileManager.default.removeItem(at: root) }

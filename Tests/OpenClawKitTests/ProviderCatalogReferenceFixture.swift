@@ -1,4 +1,5 @@
 import OpenClawCore
+import OpenClawModels
 
 struct ProviderCatalogSnapshotEntry: Sendable, Equatable {
     let providerID: String
@@ -6,10 +7,27 @@ struct ProviderCatalogSnapshotEntry: Sendable, Equatable {
     let api: ModelAPI
     let baseURL: String
     let defaultModelID: String
+    let capabilities: [ProviderCapability]
+
+    init(
+        providerID: String,
+        auth: ModelProviderAuthMode?,
+        api: ModelAPI,
+        baseURL: String,
+        defaultModelID: String,
+        capabilities: [ProviderCapability] = [.text]
+    ) {
+        self.providerID = providerID
+        self.auth = auth
+        self.api = api
+        self.baseURL = baseURL
+        self.defaultModelID = defaultModelID
+        self.capabilities = capabilities
+    }
 }
 
 enum ProviderCatalogReferenceFixture {
-    static let referenceCommit = "61cd3a6e446c3d181a0a75861fd85d459c068a3d"
+    static let referenceCommit = "6b0c72bec8"
 
     static let entries: [ProviderCatalogSnapshotEntry] = [
         .init(providerID: "openai", auth: .apiKey, api: .openAIResponses, baseURL: "https://api.openai.com/v1", defaultModelID: "gpt-4.1-mini"),
@@ -42,9 +60,22 @@ enum ProviderCatalogReferenceFixture {
         .init(providerID: "vllm", auth: nil, api: .openAICompletions, baseURL: "http://127.0.0.1:8000/v1", defaultModelID: "qwen2.5-coder-32b-instruct"),
         .init(providerID: "sglang", auth: .apiKey, api: .openAICompletions, baseURL: "http://127.0.0.1:30000/v1", defaultModelID: "Qwen/Qwen3-8B"),
         .init(providerID: "qwen-portal", auth: .oauth, api: .openAICompletions, baseURL: "https://portal.qwen.ai/v1", defaultModelID: "coder-model"),
-        .init(providerID: "openai-codex", auth: .oauth, api: .openAICodexResponses, baseURL: "https://chatgpt.com/backend-api", defaultModelID: "gpt-5.4"),
+        .init(providerID: "openai-codex", auth: .oauth, api: .openAICodexResponses, baseURL: "https://chatgpt.com/backend-api", defaultModelID: "gpt-5.5"),
         .init(providerID: "opencode", auth: .apiKey, api: .openAICompletions, baseURL: "https://api.opencode.ai/v1", defaultModelID: "claude-opus-4-6"),
         .init(providerID: "opencode-go", auth: .apiKey, api: .openAICompletions, baseURL: "https://api.opencode.ai/v1", defaultModelID: "kimi-k2.5"),
+        .init(providerID: "anthropic-vertex", auth: .apiKey, api: .anthropicMessages, baseURL: "https://aiplatform.googleapis.com", defaultModelID: "claude-sonnet-4-6"),
+        .init(providerID: "amazon-bedrock-mantle", auth: .apiKey, api: .openAICompletions, baseURL: "https://bedrock-mantle.us-east-1.api.aws/v1", defaultModelID: "openai.gpt-oss-120b"),
+        .init(providerID: "arcee", auth: .apiKey, api: .openAICompletions, baseURL: "https://api.arcee.ai/api/v1", defaultModelID: "trinity-large-thinking"),
+        .init(providerID: "chutes", auth: .apiKey, api: .openAICompletions, baseURL: "https://llm.chutes.ai/v1", defaultModelID: "zai-org/GLM-4.7-TEE"),
+        .init(providerID: "copilot-proxy", auth: nil, api: .openAICompletions, baseURL: "http://localhost:3000/v1", defaultModelID: "gpt-5.2"),
+        .init(providerID: "deepseek", auth: .apiKey, api: .openAICompletions, baseURL: "https://api.deepseek.com", defaultModelID: "deepseek-v4-flash"),
+        .init(providerID: "fireworks", auth: .apiKey, api: .openAICompletions, baseURL: "https://api.fireworks.ai/inference/v1", defaultModelID: "accounts/fireworks/routers/kimi-k2p5-turbo"),
+        .init(providerID: "lmstudio", auth: nil, api: .openAICompletions, baseURL: "http://localhost:1234/v1", defaultModelID: "qwen/qwen3.5-9b", capabilities: [.text, .memoryEmbedding]),
+        .init(providerID: "microsoft-foundry", auth: .oauth, api: .openAIResponses, baseURL: "https://example.services.ai.azure.com/openai/v1", defaultModelID: "gpt-5"),
+        .init(providerID: "qwen", auth: .apiKey, api: .openAICompletions, baseURL: "https://coding-intl.dashscope.aliyuncs.com/v1", defaultModelID: "qwen3.5-plus"),
+        .init(providerID: "stepfun", auth: .apiKey, api: .openAICompletions, baseURL: "https://api.stepfun.ai/v1", defaultModelID: "step-3.5-flash"),
+        .init(providerID: "stepfun-plan", auth: .apiKey, api: .openAICompletions, baseURL: "https://api.stepfun.ai/step_plan/v1", defaultModelID: "step-3.5-flash"),
+        .init(providerID: "tencent-tokenhub", auth: .apiKey, api: .openAICompletions, baseURL: "https://tokenhub.tencentmaas.com/v1", defaultModelID: "hy3-preview"),
         .init(providerID: "google-vertex", auth: .oauth, api: .googleGenerativeAI, baseURL: "https://us-central1-aiplatform.googleapis.com", defaultModelID: "gemini-3-pro-preview"),
         .init(providerID: "google-antigravity", auth: .oauth, api: .googleGenerativeAI, baseURL: "https://generativelanguage.googleapis.com/v1beta", defaultModelID: "gemini-3-pro-preview"),
         .init(providerID: "google-gemini-cli", auth: .oauth, api: .googleGenerativeAI, baseURL: "https://generativelanguage.googleapis.com/v1beta", defaultModelID: "gemini-3-flash-preview"),

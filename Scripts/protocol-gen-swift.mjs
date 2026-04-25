@@ -10,10 +10,9 @@ const execFileAsync = promisify(execFile);
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..");
 const outPath = path.join(root, "Sources", "OpenClawProtocol", "GatewayModels.swift");
-const upstreamRepoPath = path.join(root, ".cursor", "openclaw");
-const upstreamTag = "v2026.3.13";
-const upstreamTagObject = "61cd3a6e446c3d181a0a75861fd85d459c068a3d";
-const upstreamCommit = "f6e5b6758e74608f825218de264c96b224fe2e81";
+const upstreamRepoPath = path.join(root, ".codex", "openclaw");
+const upstreamLabel = "OpenClaw 2026.4.25";
+const upstreamCommit = "6b0c72bec8";
 const upstreamSourcePath = path.posix.join(
   "apps",
   "shared",
@@ -37,7 +36,7 @@ async function readUpstreamSnapshot() {
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     throw new Error(
-      `Failed to read ${upstreamTag} protocol snapshot (${upstreamCommit}) from ${upstreamRepoPath}: ${detail}`,
+      `Failed to read ${upstreamLabel} protocol snapshot (${upstreamCommit}) from ${upstreamRepoPath}: ${detail}`,
     );
   }
 }
@@ -45,5 +44,5 @@ async function readUpstreamSnapshot() {
 const body = await readUpstreamSnapshot();
 await fs.writeFile(outPath, body);
 console.log(
-  `Synced ${outPath} from OpenClaw ${upstreamTag} (tag ${upstreamTagObject}, commit ${upstreamCommit})`,
+  `Synced ${outPath} from ${upstreamLabel} (${upstreamCommit})`,
 );

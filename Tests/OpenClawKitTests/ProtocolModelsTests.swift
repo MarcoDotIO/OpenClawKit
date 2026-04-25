@@ -9,6 +9,7 @@ struct ProtocolModelsTests {
     func protocolVersionAndErrorCodesAreStable() {
         #expect(GATEWAY_PROTOCOL_VERSION == 3)
         #expect(ErrorCode.notLinked.rawValue == "NOT_LINKED")
+        #expect(ErrorCode.approvalNotFound.rawValue == "APPROVAL_NOT_FOUND")
         #expect(ErrorCode.unavailable.rawValue == "UNAVAILABLE")
     }
 
@@ -393,6 +394,105 @@ struct ProtocolModelsTests {
         #expect(decoded.fastmode == AnyCodable(true))
         #expect(decoded.spawnedworkspacedir == AnyCodable("/tmp/workspace"))
         #expect(decoded.groupactivation == AnyCodable("foreground"))
+    }
+
+    @Test
+    func protocol20260425RequestTypesRoundTrip() throws {
+        let action = MessageActionParams(
+            channel: "telegram",
+            action: "react",
+            params: ["emoji": AnyCodable("claw")],
+            accountid: nil,
+            requestersenderid: "sender-1",
+            senderisowner: true,
+            sessionkey: "session-main",
+            sessionid: nil,
+            agentid: "main",
+            toolcontext: nil,
+            idempotencykey: "idem-action"
+        )
+        let encodedAction = try JSONEncoder().encode(action)
+        let decodedAction = try JSONDecoder().decode(MessageActionParams.self, from: encodedAction)
+        #expect(decodedAction.requestersenderid == "sender-1")
+        #expect(decodedAction.idempotencykey == "idem-action")
+
+        let create = SessionsCreateParams(
+            key: "session-main",
+            agentid: "main",
+            label: "Main",
+            model: "openai-codex/gpt-5.5",
+            parentsessionkey: nil,
+            task: "test",
+            message: "hello"
+        )
+        let send = SessionsSendParams(
+            key: "session-main",
+            message: "continue",
+            thinking: "adaptive",
+            attachments: [AnyCodable(["kind": AnyCodable("image")])],
+            timeoutms: 1_000,
+            idempotencykey: "idem-send"
+        )
+        let abort = SessionsAbortParams(key: "session-main", runid: "run-1")
+        let compaction = SessionsCompactionGetParams(key: "session-main", checkpointid: "checkpoint-1")
+        let realtime = TalkRealtimeSessionParams(
+            sessionkey: "session-main",
+            provider: "openai",
+            model: "gpt-realtime",
+            voice: "alloy"
+        )
+        let speak = TalkSpeakParams(
+            text: "hello",
+            voiceid: "voice-1",
+            modelid: "tts-1",
+            outputformat: "mp3",
+            speed: 1.0,
+            ratewpm: nil,
+            stability: nil,
+            similarity: nil,
+            style: nil,
+            speakerboost: nil,
+            seed: nil,
+            normalize: nil,
+            language: "en",
+            latencytier: nil
+        )
+        let commands = CommandsListParams(agentid: "main", provider: nil, scope: AnyCodable("global"), includeargs: true)
+        let tools = ToolsCatalogParams(agentid: "main", includeplugins: true)
+        let skills = SkillsSearchParams(query: "browser", limit: 10)
+        let detail = SkillsDetailParams(slug: "browser-use")
+        let execApproval = ExecApprovalGetParams(id: "exec-approval-1")
+        let pluginApproval = PluginApprovalResolveParams(id: "plugin-approval-1", decision: "allow")
+        let pluginRequest = PluginApprovalRequestParams(
+            pluginid: "demo",
+            title: "Approve tool",
+            description: "Plugin requests tool execution",
+            severity: "medium",
+            toolname: "demo.tool",
+            toolcallid: "call-1",
+            agentid: "main",
+            sessionkey: "session-main",
+            turnsourcechannel: "telegram",
+            turnsourceto: "chat-1",
+            turnsourceaccountid: "acct-1",
+            turnsourcethreadid: AnyCodable("thread-1"),
+            timeoutms: 1_000,
+            twophase: true
+        )
+
+        _ = try GatewayPayloadCodec.encode(create)
+        _ = try GatewayPayloadCodec.encode(send)
+        _ = try GatewayPayloadCodec.encode(abort)
+        _ = try GatewayPayloadCodec.encode(compaction)
+        _ = try GatewayPayloadCodec.encode(realtime)
+        _ = try GatewayPayloadCodec.encode(speak)
+        _ = try GatewayPayloadCodec.encode(commands)
+        _ = try GatewayPayloadCodec.encode(tools)
+        _ = try GatewayPayloadCodec.encode(skills)
+        _ = try GatewayPayloadCodec.encode(detail)
+        _ = try GatewayPayloadCodec.encode(execApproval)
+        _ = try GatewayPayloadCodec.encode(pluginApproval)
+        _ = try GatewayPayloadCodec.encode(pluginRequest)
     }
 
     @Test

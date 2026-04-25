@@ -11,7 +11,7 @@ in-repo companion for contributors and integrators.
    - Transport models (`RequestFrame`, `ResponseFrame`, `EventFrame`, `GatewayFrame`)
    - Protocol version and error code constants
    - Synced from the pinned upstream OpenClaw generated Swift snapshot via
-     `Scripts/protocol-gen-swift.mjs`
+     `Scripts/protocol-gen-swift.mjs` and the local `.codex/openclaw` checkout
 
 2. `OpenClawCore`
    - Cross-platform shims (crypto/network/security/process/fs)
