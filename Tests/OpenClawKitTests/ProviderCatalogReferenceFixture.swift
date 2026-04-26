@@ -70,7 +70,14 @@ enum ProviderCatalogReferenceFixture {
         .init(providerID: "copilot-proxy", auth: nil, api: .openAICompletions, baseURL: "http://localhost:3000/v1", defaultModelID: "gpt-5.2"),
         .init(providerID: "deepseek", auth: .apiKey, api: .openAICompletions, baseURL: "https://api.deepseek.com", defaultModelID: "deepseek-v4-flash"),
         .init(providerID: "fireworks", auth: .apiKey, api: .openAICompletions, baseURL: "https://api.fireworks.ai/inference/v1", defaultModelID: "accounts/fireworks/routers/kimi-k2p5-turbo"),
-        .init(providerID: "lmstudio", auth: nil, api: .openAICompletions, baseURL: "http://localhost:1234/v1", defaultModelID: "qwen/qwen3.5-9b", capabilities: [.text, .memoryEmbedding]),
+        .init(
+            providerID: "lmstudio",
+            auth: nil,
+            api: .openAICompletions,
+            baseURL: "http://localhost:1234/v1",
+            defaultModelID: "qwen/qwen3.5-9b",
+            capabilities: [.text, .memoryEmbedding]
+        ),
         .init(providerID: "microsoft-foundry", auth: .oauth, api: .openAIResponses, baseURL: "https://example.services.ai.azure.com/openai/v1", defaultModelID: "gpt-5"),
         .init(providerID: "qwen", auth: .apiKey, api: .openAICompletions, baseURL: "https://coding-intl.dashscope.aliyuncs.com/v1", defaultModelID: "qwen3.5-plus"),
         .init(providerID: "stepfun", auth: .apiKey, api: .openAICompletions, baseURL: "https://api.stepfun.ai/v1", defaultModelID: "step-3.5-flash"),

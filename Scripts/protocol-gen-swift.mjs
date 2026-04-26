@@ -41,7 +41,11 @@ async function readUpstreamSnapshot() {
   }
 }
 
-const body = await readUpstreamSnapshot();
+const upstreamBody = await readUpstreamSnapshot();
+const body = upstreamBody.replace(
+  "// swiftlint:disable file_length",
+  "// swiftlint:disable file_length missing_docs",
+);
 await fs.writeFile(outPath, body);
 console.log(
   `Synced ${outPath} from ${upstreamLabel} (${upstreamCommit})`,
