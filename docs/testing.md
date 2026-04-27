@@ -51,6 +51,8 @@ Never commit `.env`.
 8. `./Scripts/build-tvos-example.sh`
 9. `Scripts/validate-apple-matrix.sh --platform macos`
 10. `Scripts/validate-apple-matrix.sh --platform ios`
+11. `Scripts/validate-apple-matrix.sh --platform visionos`
+12. `DEVELOPER_DIR=/Applications/Xcode.app ./Scripts/build-visionos-package.sh`
 
 ## Linux Runtime Validation
 

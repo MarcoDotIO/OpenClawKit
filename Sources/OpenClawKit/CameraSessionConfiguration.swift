@@ -37,6 +37,7 @@ public enum CameraSessionConfiguration {
         session.addInput(input)
     }
 
+    #if !os(visionOS)
     /// Adds a photo output configured for high-quality captures.
     public static func addPhotoOutput(session: AVCaptureSession) throws -> AVCapturePhotoOutput {
         let output = AVCapturePhotoOutput()
@@ -73,4 +74,5 @@ public enum CameraSessionConfiguration {
         output.maxRecordedDuration = CMTime(value: Int64(durationMs), timescale: 1000)
         return output
     }
+    #endif
 }

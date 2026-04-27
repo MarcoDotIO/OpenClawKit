@@ -3,6 +3,7 @@ import Foundation
 
 /// Shared camera session assembly helpers used by photo and movie capture commands.
 public enum CameraCapturePipelineSupport {
+    #if !os(visionOS)
     /// Prepares a photo capture session and validates camera setup errors.
     public static func preparePhotoSession(
         preferFrontCamera: Bool,
@@ -143,6 +144,7 @@ public enum CameraCapturePipelineSupport {
         withExtendedLifetime(delegate) {}
         return rawData
     }
+    #endif
 
     /// Waits briefly after `startRunning()` to reduce blank first-frame captures on some devices.
     public static func warmUpCaptureSession() async {

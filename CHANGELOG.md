@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## 2026.2.5.1 - 2026-04-26
+
+### Fixed
+
+- Fixed visionOS package builds by compiling out AVFoundation photo/movie
+  capture helpers whose underlying `AVCapturePhotoOutput`,
+  `AVCaptureMovieFileOutput`, and session-preset APIs are unavailable in the
+  visionOS SDK. The shared camera command models still compile for visionOS,
+  while unsupported native capture wiring remains absent on that platform.
+
+### Tests
+
+- Added `Scripts/build-visionos-package.sh` and a `visionos` leg to the Apple
+  platform CI matrix so the `OpenClawKit` SwiftPM scheme is built against
+  `generic/platform=visionOS`.
+
 ## 2026.2.5 - 2026-04-25
 
 ### Added

@@ -96,6 +96,7 @@ jobs:
         platform:
           - macos
           - ios
+          - visionos
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -127,3 +128,7 @@ jobs:
       - name: Build iOS example
         if: matrix.platform == 'ios'
         run: Scripts/build-ios-example.sh
+
+      - name: Build visionOS package
+        if: matrix.platform == 'visionos'
+        run: Scripts/build-visionos-package.sh

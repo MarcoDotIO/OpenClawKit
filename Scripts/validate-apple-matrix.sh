@@ -9,7 +9,7 @@ if [[ "${1:-}" == "--platform" ]]; then
   platform="${2:-all}"
 fi
 
-required_platform_tokens=(".iOS(" ".macOS(" ".tvOS(" ".watchOS(")
+required_platform_tokens=(".iOS(" ".macOS(" ".tvOS(" ".visionOS(" ".watchOS(")
 for token in "${required_platform_tokens[@]}"; do
   if ! grep -Fq "${token}" "Package.swift"; then
     echo "Missing platform declaration token '${token}' in Package.swift"

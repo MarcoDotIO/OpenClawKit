@@ -22,7 +22,7 @@ The repository currently ships:
 
 Current baseline:
 
-- latest tagged release: `2026.2.5`
+- latest tagged release: `2026.2.5.1`
 - current development parity target: upstream `2026.4.25` at `.codex/openclaw` commit `6b0c72bec8`
 - direct OpenAI and Codex-backed OpenAI paths run through `OpenAIKit 3.0.0`
 - public docs site: [marcodotio.github.io/OpenClawKit](https://marcodotio.github.io/OpenClawKit/)
@@ -40,7 +40,7 @@ Add the package with Swift Package Manager:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/MarcoDotIO/OpenClawKit.git", from: "2026.2.5")
+    .package(url: "https://github.com/MarcoDotIO/OpenClawKit.git", from: "2026.2.5.1")
 ]
 ```
 

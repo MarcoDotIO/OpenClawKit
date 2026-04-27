@@ -14,6 +14,8 @@ Scripts/build-docs-site.sh
 ./Scripts/build-ios-example.sh
 ./Scripts/test-ios-example.sh
 ./Scripts/build-tvos-example.sh
+Scripts/validate-apple-matrix.sh --platform visionos
+DEVELOPER_DIR=/Applications/Xcode.app ./Scripts/build-visionos-package.sh
 ```
 
 ## Linux in Docker
