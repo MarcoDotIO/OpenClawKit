@@ -8,37 +8,75 @@ public struct BridgeBaseFrame: Codable, Sendable {
     }
 }
 
+/// Node command invocation delivered to host handlers (from a `node.invoke.request` event).
 public struct BridgeInvokeRequest: Codable, Sendable {
+    /// Frame type (`invoke`).
     public let type: String
+    /// Invocation identifier echoed in the response.
     public let id: String
+    /// Node command name, for example `camera.snap`.
     public let command: String
+    /// JSON-encoded command params.
     public let paramsJSON: String?
+    /// Target node identifier.
+    public let nodeId: String?
+    /// Session that triggered the invoke.
+    public let sessionKey: String?
+    /// Invoke timeout in milliseconds.
+    public let timeoutMs: Int?
+    /// Idempotency key for deduplicating retried invokes.
+    public let idempotencyKey: String?
 
-    public init(type: String = "invoke", id: String, command: String, paramsJSON: String? = nil) {
+    /// Creates an invoke request.
+    public init(
+        type: String = "invoke",
+        id: String,
+        command: String,
+        paramsJSON: String? = nil,
+        nodeId: String? = nil,
+        sessionKey: String? = nil,
+        timeoutMs: Int? = nil,
+        idempotencyKey: String? = nil)
+    {
         self.type = type
         self.id = id
         self.command = command
         self.paramsJSON = paramsJSON
+        self.nodeId = nodeId
+        self.sessionKey = sessionKey
+        self.timeoutMs = timeoutMs
+        self.idempotencyKey = idempotencyKey
     }
 }
 
+/// Host handler result for a ``BridgeInvokeRequest``.
 public struct BridgeInvokeResponse: Codable, Sendable {
+    /// Frame type (`invoke-res`).
     public let type: String
+    /// Invocation identifier from the request.
     public let id: String
+    /// Whether the command succeeded.
     public let ok: Bool
+    /// Structured result payload (preferred over ``payloadJSON`` when both are set).
+    public let payload: AnyCodable?
+    /// JSON-encoded result payload.
     public let payloadJSON: String?
+    /// Error when ``ok`` is `false`.
     public let error: OpenClawNodeError?
 
+    /// Creates an invoke response.
     public init(
         type: String = "invoke-res",
         id: String,
         ok: Bool,
+        payload: AnyCodable? = nil,
         payloadJSON: String? = nil,
         error: OpenClawNodeError? = nil)
     {
         self.type = type
         self.id = id
         self.ok = ok
+        self.payload = payload
         self.payloadJSON = payloadJSON
         self.error = error
     }
