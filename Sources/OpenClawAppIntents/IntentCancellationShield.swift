@@ -2,18 +2,15 @@ import Foundation
 
 /// Runs cleanup work (for example `chat.abort`) so it still completes when the caller was cancelled.
 ///
-/// Uses `withTaskCancellationShield` on OS 27 (Swift 6.4) and an unstructured task, which does not
-/// inherit cancellation, elsewhere. Local to this module until a shared helper lands in OpenClawCore.
+/// The work runs in an unstructured task, which does not inherit the caller's cancellation.
+///
+/// `withTaskCancellationShield` (Swift 6.4, OS 27) is deliberately not used: its inlined body
+/// strongly references `swift_task_cancellationShieldPush`/`Pop` in `libswift_Concurrency`, which
+/// iOS 26.4 and earlier do not export, so an app at the package's iOS 17 floor would fail to launch
+/// on those systems even though the call sits behind `#available`.
 enum IntentCancellationShield {
     static func run<T: Sendable>(_ operation: @escaping @Sendable () async throws -> T) async throws -> T {
-        #if compiler(>=6.4)
-        if #available(iOS 27.0, macOS 27.0, tvOS 27.0, watchOS 27.0, visionOS 27.0, *) {
-            return try await withTaskCancellationShield {
-                try await operation()
-            }
-        }
-        #endif
-        return try await Task {
+        try await Task {
             try await operation()
         }.value
     }
