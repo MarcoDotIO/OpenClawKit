@@ -52,7 +52,7 @@ struct SpotlightMemoryTests {
         try await indexer.reset()
     }
 
-    #if compiler(>=6.4) && canImport(FoundationModels)
+    #if compiler(>=6.4) && canImport(FoundationModels) && arch(arm64)
     @Test
     func spotlightSearchToolSchemaConversion() throws {
         guard #available(macOS 27.0, iOS 27.0, visionOS 27.0, *) else { return }

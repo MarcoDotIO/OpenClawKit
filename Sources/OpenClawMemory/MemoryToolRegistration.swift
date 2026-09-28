@@ -20,7 +20,7 @@ public enum MemoryToolRegistration {
         await registry.register(MemoryGetTool(engine: engine, configuration: configuration))
     }
 
-    /// Registers `spotlight_search` when the platform supports it (iOS, macOS and visionOS 27+).
+    /// Registers `spotlight_search` when the platform supports it (iOS, macOS and visionOS 27+ on Apple silicon).
     ///
     /// Apps must opt in: Spotlight results can include the user's personal data. The default searches
     /// the app's own CoreSpotlight items only; pass `includeSystemFiles: true` to also search files.
@@ -30,7 +30,7 @@ public enum MemoryToolRegistration {
     /// - Returns: `true` when the tool was registered.
     @discardableResult
     public static func registerSpotlightSearch(into registry: AgentToolRegistry, includeSystemFiles: Bool = false) async -> Bool {
-        #if compiler(>=6.4) && canImport(CoreSpotlight) && canImport(FoundationModels) && !os(tvOS) && !os(watchOS)
+        #if compiler(>=6.4) && canImport(CoreSpotlight) && canImport(FoundationModels) && !os(tvOS) && !os(watchOS) && arch(arm64)
         if #available(iOS 27.0, macOS 27.0, visionOS 27.0, *) {
             let tool = includeSystemFiles
                 ? SpotlightSearchAgentTool(fetchAttributes: [.title, .textContent, .path], includeFiles: true)

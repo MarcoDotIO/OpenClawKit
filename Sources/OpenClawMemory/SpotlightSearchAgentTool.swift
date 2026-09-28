@@ -1,4 +1,4 @@
-#if compiler(>=6.4) && canImport(CoreSpotlight) && canImport(FoundationModels) && !os(tvOS) && !os(watchOS)
+#if compiler(>=6.4) && canImport(CoreSpotlight) && canImport(FoundationModels) && !os(tvOS) && !os(watchOS) && arch(arm64)
 import CoreSpotlight
 import Foundation
 import FoundationModels
@@ -13,6 +13,7 @@ import OpenClawProtocol
 /// Privacy: results can include the user's personal data. The default configuration searches the
 /// app's own CoreSpotlight items only; add `.files` sources explicitly when the user opts in. The
 /// tool is OpenClaw-owned (not an upstream id): section `web`, profile `coding`, risk `low`.
+/// Apple silicon only: the SDK's x86_64 overlay does not declare `SpotlightSearchTool`.
 @available(iOS 27.0, macOS 27.0, visionOS 27.0, *)
 public struct SpotlightSearchAgentTool: AgentTool {
     /// Tool name.
