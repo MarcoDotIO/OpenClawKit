@@ -27,7 +27,7 @@ extension OpenClawConfigDocument {
         /// `explicit` ownership (required for multi-agent rosters without a legacy `default` marker).
         public var ownership: String?
         /// Defaults inherited by every agent.
-        public var defaults: AgentDefaults?
+        @ConfigIndirect public var defaults: AgentDefaults?
         /// Agents keyed by id (`^[a-z0-9_][a-z0-9_-]{0,63}$`, case-insensitive).
         public var entries: [String: AgentEntry]?
         /// Passthrough keys (the legacy `list` lands here when migration is disabled).

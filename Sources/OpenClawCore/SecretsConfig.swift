@@ -644,6 +644,25 @@ public struct SecretDefaultsConfig: Codable, Sendable, Equatable {
         self.store = store?.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    private enum CodingKeys: String, CodingKey {
+        case env
+        case file
+        case exec
+        case store
+    }
+
+    /// Decodes defaults; every alias is optional upstream (`env` falls back to `default`).
+    /// - Parameter decoder: Source decoder.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            env: container.decodeLenient(String.self, forKey: .env) ?? DEFAULT_SECRET_PROVIDER_ALIAS,
+            file: container.decodeLenient(String.self, forKey: .file),
+            exec: container.decodeLenient(String.self, forKey: .exec),
+            store: container.decodeLenient(String.self, forKey: .store)
+        )
+    }
+
     public func providerAlias(for source: SecretRefSource) -> String {
         switch source {
         case .env:

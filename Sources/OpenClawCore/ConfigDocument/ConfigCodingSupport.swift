@@ -339,6 +339,46 @@ enum ConfigTreeCoding {
     }
 }
 
+/// Heap-backed optional storage for large config sections.
+///
+/// Document types nest many optional sections; storing them inline makes the root value several
+/// kilobytes, which is expensive to copy and can exhaust small (for example cooperative-thread)
+/// stacks. This wrapper keeps value semantics (every write stores a new immutable box).
+@propertyWrapper
+public struct ConfigIndirect<Wrapped: Sendable & Equatable>: Sendable, Equatable {
+    private final class Storage: Sendable {
+        let value: Wrapped
+
+        init(_ value: Wrapped) {
+            self.value = value
+        }
+    }
+
+    private var storage: Storage?
+
+    /// Creates empty (`nil`) storage.
+    public init() {
+        self.storage = nil
+    }
+
+    /// Creates storage holding `wrappedValue`.
+    /// - Parameter wrappedValue: Initial value.
+    public init(wrappedValue: Wrapped?) {
+        self.storage = wrappedValue.map(Storage.init)
+    }
+
+    /// The stored value.
+    public var wrappedValue: Wrapped? {
+        get { self.storage?.value }
+        set { self.storage = newValue.map(Storage.init) }
+    }
+
+    /// Compares the stored values.
+    public static func == (lhs: ConfigIndirect, rhs: ConfigIndirect) -> Bool {
+        lhs.wrappedValue == rhs.wrappedValue
+    }
+}
+
 /// Stored hint that never affects equality (for example the authored order of map keys).
 public struct ConfigOrderHint: Sendable, Equatable, Hashable {
     /// Keys in authored order.

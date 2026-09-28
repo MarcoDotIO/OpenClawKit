@@ -20,91 +20,91 @@ public struct OpenClawConfigDocument: ConfigDocumentObject {
     /// `$schema`: optional JSON-schema URL for editors.
     public var schemaURL: String?
     /// `meta`: writer metadata.
-    public var meta: Meta?
+    @ConfigIndirect public var meta: Meta?
     /// `env`: shell-env import and inline environment variables.
-    public var env: Env?
+    @ConfigIndirect public var env: Env?
     /// `wizard`: onboarding wizard state.
-    public var wizard: Wizard?
+    @ConfigIndirect public var wizard: Wizard?
     /// `diagnostics`: diagnostics and OpenTelemetry export.
-    public var diagnostics: Diagnostics?
+    @ConfigIndirect public var diagnostics: Diagnostics?
     /// `logging`: log levels, files and audit logging.
-    public var logging: Logging?
+    @ConfigIndirect public var logging: Logging?
     /// `update`: self-update channel.
-    public var update: Update?
+    @ConfigIndirect public var update: Update?
     /// `telemetry`: anonymous telemetry consent.
-    public var telemetry: Telemetry?
+    @ConfigIndirect public var telemetry: Telemetry?
     /// `browser`: managed browser settings (server-only; passed through).
     public var browser: AnyCodable?
     /// `ui`: operator display preferences.
-    public var ui: UI?
+    @ConfigIndirect public var ui: UI?
     /// `secrets`: secret providers and defaults.
-    public var secrets: Secrets?
+    @ConfigIndirect public var secrets: Secrets?
     /// `auth`: auth-profile metadata (secrets live in the gateway's auth stores, not here).
-    public var auth: Auth?
+    @ConfigIndirect public var auth: Auth?
     /// `accessGroups`: named sender/channel audiences.
     public var accessGroups: [String: AccessGroup]?
     /// `acp`: agent client protocol settings (server-only; passed through).
     public var acp: AnyCodable?
     /// `models`: model providers and catalog refresh.
-    public var models: Models?
+    @ConfigIndirect public var models: Models?
     /// `nodeHost`: CLI node-host settings.
-    public var nodeHost: NodeHost?
+    @ConfigIndirect public var nodeHost: NodeHost?
     /// `agents`: agent roster and defaults.
-    public var agents: Agents?
+    @ConfigIndirect public var agents: Agents?
     /// `worktreeRoot`: absolute or `~` path for agent worktrees.
     public var worktreeRoot: String?
     /// `worktreeAcceleration`: copy-on-write worktree acceleration (default `true`).
     public var worktreeAcceleration: Bool?
     /// `tools`: tool policy and tool configuration.
-    public var tools: Tools?
+    @ConfigIndirect public var tools: Tools?
     /// `security`: audit suppressions and install policy.
-    public var security: Security?
+    @ConfigIndirect public var security: Security?
     /// `bindings`: ordered route and ACP bindings.
     public var bindings: [AgentBinding]?
     /// `broadcast`: multi-agent broadcast groups.
-    public var broadcast: Broadcast?
+    @ConfigIndirect public var broadcast: Broadcast?
     /// `attachments`: attachment retention.
-    public var attachments: Attachments?
+    @ConfigIndirect public var attachments: Attachments?
     /// `messages`: reply presentation, queueing and acknowledgements.
-    public var messages: Messages?
+    @ConfigIndirect public var messages: Messages?
     /// `tts`: text-to-speech defaults.
-    public var tts: TTS?
+    @ConfigIndirect public var tts: TTS?
     /// `commands`: slash-command settings.
-    public var commands: Commands?
+    @ConfigIndirect public var commands: Commands?
     /// `approvals`: exec/plugin approval forwarding.
-    public var approvals: Approvals?
+    @ConfigIndirect public var approvals: Approvals?
     /// `session`: session scoping, reset and maintenance.
-    public var session: Session?
+    @ConfigIndirect public var session: Session?
     /// `cron`: scheduled jobs.
-    public var cron: Cron?
+    @ConfigIndirect public var cron: Cron?
     /// `transcripts`: meeting transcript capture (metadata only).
-    public var transcripts: Transcripts?
+    @ConfigIndirect public var transcripts: Transcripts?
     /// `hooks`: webhook ingress and internal hooks.
-    public var hooks: Hooks?
+    @ConfigIndirect public var hooks: Hooks?
     /// `channels`: channel defaults and plugin-owned channel blocks.
-    public var channels: Channels?
+    @ConfigIndirect public var channels: Channels?
     /// `discovery`: mDNS and wide-area discovery.
-    public var discovery: Discovery?
+    @ConfigIndirect public var discovery: Discovery?
     /// `talk`: Talk speech and realtime settings.
-    public var talk: Talk?
+    @ConfigIndirect public var talk: Talk?
     /// `gateway`: gateway listener, auth and control-plane settings.
-    public var gateway: Gateway?
+    @ConfigIndirect public var gateway: Gateway?
     /// `cloudWorkers`: cloud worker profiles (metadata only).
-    public var cloudWorkers: CloudWorkers?
+    @ConfigIndirect public var cloudWorkers: CloudWorkers?
     /// `desktop`: remote desktop host (metadata only).
-    public var desktop: Desktop?
+    @ConfigIndirect public var desktop: Desktop?
     /// `memory`: memory search.
-    public var memory: Memory?
+    @ConfigIndirect public var memory: Memory?
     /// `mcp`: MCP servers.
-    public var mcp: MCP?
+    @ConfigIndirect public var mcp: MCP?
     /// `skills`: skill loading and entries.
-    public var skills: Skills?
+    @ConfigIndirect public var skills: Skills?
     /// `plugins`: plugin loading and entries.
-    public var plugins: Plugins?
+    @ConfigIndirect public var plugins: Plugins?
     /// `surfaces`: per-surface silent-reply policy.
     public var surfaces: [String: Surface]?
     /// `proxy`: operator-managed SSRF forward proxy.
-    public var proxy: Proxy?
+    @ConfigIndirect public var proxy: Proxy?
     /// Root keys this type does not type (only keys present in the source).
     public var additionalProperties: [String: AnyCodable] = [:]
 
