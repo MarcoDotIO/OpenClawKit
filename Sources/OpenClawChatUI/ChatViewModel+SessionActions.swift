@@ -84,6 +84,28 @@ extension OpenClawChatViewModel {
         Task { await self.fetchSessions(limit: limit, sessionSnapshot: context) }
     }
 
+    /// Rows added per ``loadMoreSessions()`` page.
+    nonisolated public static var sessionListPageSize: Int {
+        100
+    }
+
+    /// Fetches one more page of sessions after a truncated `sessions.list` response.
+    ///
+    /// `sessions.list` pages are requested by growing the row limit (the transport contract has no offset), and
+    /// later automatic refreshes keep at least the paged-in rows.
+    public func loadMoreSessions() {
+        guard !self.isLoadingMoreSessions else { return }
+        let base = max(self.sessions.count, self.requestedSessionListLimit ?? Self.sessionListFetchLimit)
+        let nextLimit = base + Self.sessionListPageSize
+        self.requestedSessionListLimit = nextLimit
+        self.isLoadingMoreSessions = true
+        let context = self.currentSessionSnapshot()
+        Task {
+            defer { self.isLoadingMoreSessions = false }
+            await self.fetchSessions(limit: nextLimit, sessionSnapshot: context)
+        }
+    }
+
     func generatedNewSessionKey(agentID explicitAgentID: String? = nil) -> String {
         let baseKey = "ios-\(UUID().uuidString.lowercased())"
         guard let agentID = explicitAgentID ??
@@ -236,6 +258,31 @@ extension OpenClawChatViewModel {
         return (response?.groups ?? []).sorted { lhs, rhs in
             lhs.position == rhs.position ? lhs.name < rhs.name : lhs.position < rhs.position
         }
+    }
+
+    /// Persists a new group order: `sessions.groups.put` with the full catalog in display order.
+    ///
+    /// Names that are no longer in the catalog are dropped and catalog names missing from `orderedNames` keep
+    /// their relative order at the end, so a stale drag cannot delete a group. Same read-modify-write tradeoff as
+    /// ``createSessionGroup(named:using:)``.
+    @discardableResult
+    func reorderSessionGroups(
+        _ orderedNames: [String],
+        using routeLease: OpenClawChatSessionGroupsRouteLease) async throws -> [OpenClawChatSessionGroup]
+    {
+        let current = try await self.fetchSessionGroups(using: routeLease).map(\.name)
+        let names = Self.reorderedGroupCatalog(current: current, requested: orderedNames)
+        guard names != current else { return try await self.fetchSessionGroups(using: routeLease) }
+        let response = try await routeLease.putGroups(names: names)
+        self.sessionGroupsRevision += 1
+        return response.groups
+    }
+
+    nonisolated static func reorderedGroupCatalog(current: [String], requested: [String]) -> [String] {
+        let known = Set(current)
+        var seen = Set<String>()
+        let ordered = requested.filter { known.contains($0) && seen.insert($0).inserted }
+        return ordered + current.filter { !seen.contains($0) }
     }
 
     @discardableResult
