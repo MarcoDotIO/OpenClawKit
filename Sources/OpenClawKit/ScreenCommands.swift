@@ -177,3 +177,36 @@ public struct OpenClawScreenRecordParams: Codable, Sendable, Equatable {
         self.includeAudio = includeAudio
     }
 }
+
+/// Result payload of `screen.record` (shared by every recorder backend).
+public struct OpenClawScreenRecordPayload: Codable, Sendable, Equatable {
+    /// Container format (`mp4`).
+    public var format: String
+    /// Base64-encoded clip bytes.
+    public var base64: String
+    /// Requested (clamped) duration in milliseconds.
+    public var durationMs: Int?
+    /// Requested frame rate.
+    public var fps: Double?
+    /// Display index that was recorded.
+    public var screenIndex: Int?
+    /// Whether the clip has an audio track.
+    public var hasAudio: Bool
+
+    /// Creates a record payload.
+    public init(
+        format: String = "mp4",
+        base64: String,
+        durationMs: Int? = nil,
+        fps: Double? = nil,
+        screenIndex: Int? = nil,
+        hasAudio: Bool)
+    {
+        self.format = format
+        self.base64 = base64
+        self.durationMs = durationMs
+        self.fps = fps
+        self.screenIndex = screenIndex
+        self.hasAudio = hasAudio
+    }
+}
