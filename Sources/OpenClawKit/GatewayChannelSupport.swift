@@ -2,6 +2,16 @@ import CryptoKit
 import Foundation
 import OpenClawProtocol
 
+/// Why a ``GatewayChannelActor`` stopped reconnecting automatically.
+public enum GatewayReconnectPauseReason: String, Sendable, Equatable {
+    /// A non-recoverable auth rejection (bad credentials, pairing required, rate limited, ...).
+    /// `AUTH_RATE_LIMITED` with a `retryAfterMs` hint resumes once after that delay.
+    case authFailure
+    /// The gateway certificate no longer matches the stored pin; see
+    /// ``GatewayChannelActor/pendingTLSPinRotationRequest()``.
+    case tlsPinMismatch
+}
+
 /// Reads an integer from a gateway detail value: integers, integral doubles, or numeric strings.
 func gatewayIntValue(_ value: OpenClawProtocol.AnyCodable?) -> Int? {
     guard let value else { return nil }
