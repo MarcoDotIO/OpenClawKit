@@ -116,9 +116,8 @@ struct OpenClawAppIntentsGatewayHostTests {
             "runId": AnyCodable("r1"), "stream": AnyCodable("tool"), "seq": AnyCodable(1), "ts": AnyCodable(1),
             "data": AnyCodable(["phase": AnyCodable("start"), "name": AnyCodable("exec"), "toolCallId": AnyCodable("t1")]),
         ])))
-        // Events for other runs and sessions are ignored.
+        // Events for other runs are ignored, even in the same session.
         await host.ingest(self.chatEvent(["runId": "other", "sessionKey": "main", "state": "final"]))
-        await host.ingest(self.chatEvent(["runId": "r1", "sessionKey": "other", "state": "final"]))
         await host.ingest(self.chatEvent(["runId": "r1", "sessionKey": "main", "state": "delta", "deltaText": "Hel"]))
         await host.ingest(.event(self.chatEvent(["runId": "r1", "sessionKey": "main", "state": "delta", "deltaText": "lo"])))
         await host.ingest(self.chatEvent(
@@ -142,6 +141,30 @@ struct OpenClawAppIntentsGatewayHostTests {
         #expect(send.params["agentId"]?.stringValue == "coder")
         #expect(send.params["thinking"]?.stringValue == "low")
         #expect(send.params["idempotencyKey"]?.stringValue?.isEmpty == false)
+    }
+
+    @Test
+    func canonicalSessionKeysStillMatchOurRun() async throws {
+        let requester = FakeIntentGatewayRequester()
+        await requester.respond(to: "chat.send", json: #"{"status":"started"}"#)
+        let host = GatewayOpenClawIntentHost(requester: requester)
+        let stream = try await host.send(prompt: "hi", sessionKey: "main", agentId: nil)
+        // Before a run id is known, alias keys match ("agent:main:main" for "main") ...
+        await host.ingest(self.chatEvent(["runId": "r9", "sessionKey": "agent:main:main", "state": "delta", "deltaText": "A"]))
+        // ... then the adopted run id decides, whatever key the gateway publishes.
+        await host.ingest(self.chatEvent(["runId": "r8", "sessionKey": "agent:main:main", "state": "final"]))
+        await host.ingest(self.chatEvent(["runId": "r9", "sessionKey": "agent:other:x", "state": "delta", "deltaText": "B"]))
+        await host.ingest(self.chatEvent(["runId": "r9", "sessionKey": "agent:main:main", "state": "final"]))
+        let events = try await self.collect(stream)
+        #expect(events.last?.phase == .completed)
+        #expect(events.last?.text == "AB")
+        #expect(events.last?.runId == "r9")
+
+        let second = try await host.send(prompt: "again", sessionKey: "main", agentId: nil)
+        await host.ingest(self.chatEvent(["runId": "r10", "sessionKey": "agent:main:main", "state": "status"]))
+        await host.abort(sessionKey: "main")
+        #expect(await requester.requests(for: "chat.abort").last?.params["runId"]?.stringValue == "r10")
+        withExtendedLifetime(second) {}
     }
 
     @Test

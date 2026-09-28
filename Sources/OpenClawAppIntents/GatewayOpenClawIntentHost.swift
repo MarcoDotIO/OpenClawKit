@@ -256,7 +256,7 @@ public actor GatewayOpenClawIntentHost: OpenClawIntentHost {
             guard var watcher = self.watchers[id] else { continue }
             if watcher.runId == nil, let runId {
                 watcher.runId = runId
-                self.activeRunBySession[sessionKey] = runId
+                self.activeRunBySession[watcher.sessionKey] = runId
             }
             switch state {
             case "status":
@@ -322,14 +322,24 @@ public actor GatewayOpenClawIntentHost: OpenClawIntentHost {
         }
     }
 
+    /// Watchers an event belongs to. Once a run id is known it alone decides (the gateway may
+    /// publish canonical keys such as `agent:main:main` for an alias like `main`, and events of our
+    /// own run must never be dropped on a key mismatch); before that, keys match exactly or as an
+    /// alias suffix.
     private func matchingWatchers(sessionKey: String, runId: String?) -> [UUID] {
         self.watchers.compactMap { id, watcher in
-            guard watcher.sessionKey == sessionKey else { return nil }
-            if let expected = watcher.runId, let runId, expected != runId {
-                return nil
+            if let expected = watcher.runId {
+                return runId == expected ? id : nil
             }
-            return id
+            return Self.sessionKeysMatch(watcher.sessionKey, sessionKey) ? id : nil
         }
+    }
+
+    static func sessionKeysMatch(_ lhs: String, _ rhs: String) -> Bool {
+        let left = lhs.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let right = rhs.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !left.isEmpty, !right.isEmpty else { return false }
+        return left == right || left.hasSuffix(":" + right) || right.hasSuffix(":" + left)
     }
 
     private func emit(_ id: UUID, phase: OpenClawRunPhase) {
