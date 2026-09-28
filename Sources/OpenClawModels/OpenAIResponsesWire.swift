@@ -706,6 +706,7 @@ struct OpenAIResponsesEngine: Sendable {
         }
         let model = settings.modelDefinition(for: modelID)
         try ProviderRequestValidation.validate(request, providerID: settings.providerID, model: model)
+        let request = MediaInputPreparation.apply(request, limits: model?.mediaInput?.image)
         let fastEnabled = FastModeResolution.resolve(request: request, configured: settings.configuredFastMode, model: model)
         if fastEnabled == true, let fastModel = FastModeModelSwap.fastModelID(providerID: settings.providerID, modelID: modelID, api: api) {
             modelID = fastModel

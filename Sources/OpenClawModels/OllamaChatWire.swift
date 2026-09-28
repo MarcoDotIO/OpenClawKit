@@ -269,6 +269,7 @@ struct OllamaChatEngine: Sendable {
         let modelID = settings.resolvedModelID(for: request)
         let model = settings.modelDefinition(for: modelID)
         try ProviderRequestValidation.validate(request, providerID: settings.providerID, model: model)
+        let request = MediaInputPreparation.apply(request, limits: model?.mediaInput?.image)
         let base = settings.resolvedBaseURLString(for: request, defaultBaseURL: OllamaChatWire.defaultBaseURL)
         guard let url = URL(string: OllamaChatWire.chatURL(baseURL: base)), url.scheme != nil else {
             throw OpenClawCoreError.invalidConfiguration("\(settings.providerID) base URL is invalid")

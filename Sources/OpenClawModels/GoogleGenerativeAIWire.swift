@@ -436,6 +436,7 @@ struct GoogleGenerativeAIEngine: Sendable {
         let modelID = request.resolvedModelID ?? ModelGenerationRequest.normalized(settings.defaultModelID) ?? self.fallbackModelID
         let model = settings.modelDefinition(for: modelID)
         try ProviderRequestValidation.validate(request, providerID: settings.providerID, model: model)
+        let request = MediaInputPreparation.apply(request, limits: model?.mediaInput?.image)
         var baseString = settings.resolvedBaseURLString(for: request, defaultBaseURL: "https://generativelanguage.googleapis.com/v1beta")
         if settings.api == .googleVertex || baseString.contains("{location}") || baseString.contains("{region}") {
             let location = settings.region

@@ -722,6 +722,7 @@ struct OpenAIChatCompletionsEngine: Sendable {
         var modelID = settings.resolvedModelID(for: request)
         let model = settings.modelDefinition(for: modelID)
         try ProviderRequestValidation.validate(request, providerID: settings.providerID, model: model)
+        let request = MediaInputPreparation.apply(request, limits: model?.mediaInput?.image)
         let baseURLString = settings.resolvedBaseURLString(for: request, defaultBaseURL: self.defaultBaseURL)
         let baseURL = try settings.resolvedBaseURL(for: request, defaultBaseURL: self.defaultBaseURL)
         if FastModeResolution.resolve(request: request, configured: settings.configuredFastMode, model: model) == true,

@@ -661,6 +661,7 @@ struct AnthropicMessagesEngine: Sendable {
         var modelID = settings.resolvedModelID(for: request)
         let model = settings.modelDefinition(for: modelID)
         try ProviderRequestValidation.validate(request, providerID: settings.providerID, model: model)
+        let request = MediaInputPreparation.apply(request, limits: model?.mediaInput?.image)
         let baseURLString = settings.resolvedBaseURLString(for: request, defaultBaseURL: AnthropicMessagesWire.defaultBaseURL)
         let credential = try self.credential(for: request)
         let usesOAuth = settings.authMode == .oauthToken || settings.authMode == .bearerToken

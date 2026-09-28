@@ -90,6 +90,7 @@ public struct BedrockConverseModelProvider: ModelProvider {
         let modelID = self.settings.resolvedModelID(for: request)
         let model = self.settings.modelDefinition(for: modelID)
         try ProviderRequestValidation.validate(request, providerID: self.id, model: model)
+        let request = MediaInputPreparation.apply(request, limits: model?.mediaInput?.image)
         let baseURL = try self.settings.resolvedBaseURL(for: request)
         let endpoint = baseURL
             .appendingPathComponent("model")
