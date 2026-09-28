@@ -1,5 +1,10 @@
 import Foundation
 import OpenClawCore
+import OpenClawProtocol
+
+/// Runs the tool named by a `command-dispatch: tool` skill with `{ "command": <raw args> }` and
+/// returns its text output.
+public typealias SkillCommandToolDispatcher = @Sendable (_ toolName: String, _ arguments: [String: AnyCodable]) async throws -> String
 
 /// Result payload from a matched skill invocation.
 public struct SkillInvocationResult: Sendable, Equatable {
@@ -204,6 +209,7 @@ public actor SkillInvocationEngine {
     private let executors: [any SkillExecutor]
     private let defaultInvocationTimeoutMs: Int
     private let connectorPermissionPolicy: ConnectorPermissionPolicy
+    private let commandToolDispatcher: SkillCommandToolDispatcher?
 
     /// Creates a skill invocation engine.
     /// - Parameters:
@@ -212,15 +218,21 @@ public actor SkillInvocationEngine {
     ///   - invocationTimeoutMs: Default skill invocation timeout in milliseconds.
     ///   - connectorPermissionPolicy: Permission policy for declared skill connectors.
     ///   - executors: Optional explicit executor chain override.
+    ///   - registry: Registry to resolve skills from (defaults to one rooted at `workspaceRoot`).
+    ///   - commandToolDispatcher: Runs the tool named by `command-dispatch: tool` skills (for example
+    ///     backed by an `AgentToolRegistry`); without it such commands fail as unavailable.
     public init(
         workspaceRoot: URL,
         processRunner: ProcessRunner = ProcessRunner(),
         invocationTimeoutMs: Int = 30_000,
         connectorPermissionPolicy: ConnectorPermissionPolicy = ConnectorPermissionPolicy(),
-        executors: [any SkillExecutor]? = nil
+        executors: [any SkillExecutor]? = nil,
+        registry: SkillRegistry? = nil,
+        commandToolDispatcher: SkillCommandToolDispatcher? = nil
     ) {
         self.workspaceRoot = workspaceRoot.standardizedFileURL
-        self.registry = SkillRegistry(workspaceRoot: self.workspaceRoot)
+        self.registry = registry ?? SkillRegistry(workspaceRoot: self.workspaceRoot)
+        self.commandToolDispatcher = commandToolDispatcher
         self.defaultInvocationTimeoutMs = max(1, invocationTimeoutMs)
         self.connectorPermissionPolicy = connectorPermissionPolicy
         if let executors, !executors.isEmpty {
@@ -323,10 +335,8 @@ public actor SkillInvocationEngine {
                 rawArgs = String(parts[2])
             }
         } else if parts.count >= 2 {
-            rawArgs = String(parts[1])
-            if parts.count >= 3 {
-                rawArgs += " " + String(parts[2])
-            }
+            // Keep the argument text exactly as typed (raw tool dispatch forwards it verbatim).
+            rawArgs = String(message[head.endIndex...])
         }
 
         guard let skill = self.resolveSkill(named: requestedSkillName, in: skills) else {
@@ -366,11 +376,39 @@ public actor SkillInvocationEngine {
 
     private func resolveSkill(named name: String, in skills: [SkillDefinition]) -> SkillDefinition? {
         let lookup = Self.normalizedSkillLookup(name)
-        return skills.first { Self.normalizedSkillLookup($0.name) == lookup }
+        if let direct = skills.first(where: { Self.normalizedSkillLookup($0.name) == lookup }) {
+            return direct
+        }
+        // Fall back to the sanitized, de-duplicated command names shown in `commands.list`.
+        let requested = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let specs = SkillCommandNaming.commandSpecs(for: skills)
+        guard let spec = specs.first(where: { $0.name.lowercased() == requested }) else {
+            return nil
+        }
+        return skills.first { $0.name == spec.skillName && $0.filePath == spec.skillFile }
+    }
+
+    private func dispatchToTool(_ dispatch: SkillCommandDispatch, match: InvocationMatch) async throws -> SkillInvocationResult {
+        guard let dispatcher = self.commandToolDispatcher else {
+            throw OpenClawCoreError.unavailable(
+                "Skill '\(match.skill.name)' dispatches to tool '\(dispatch.toolName)' but no tool dispatcher is configured"
+            )
+        }
+        let startedAt = Date()
+        let output = try await dispatcher(dispatch.toolName, ["command": AnyCodable(match.input)])
+        return SkillInvocationResult(
+            skillName: match.skill.name,
+            output: output.trimmingCharacters(in: .whitespacesAndNewlines),
+            executorID: "tool:\(dispatch.toolName)",
+            durationMs: Int(max(0, Date().timeIntervalSince(startedAt) * 1_000))
+        )
     }
 
     private func execute(match: InvocationMatch) async throws -> SkillInvocationResult {
         try await self.connectorPermissionPolicy.enforce(skill: match.skill)
+        if match.explicitCommand, let dispatch = match.skill.commandDispatch {
+            return try await self.dispatchToTool(dispatch, match: match)
+        }
         guard let entrypoint = try await self.registry.resolveEntrypoint(for: match.skill) else {
             throw OpenClawCoreError.invalidConfiguration(
                 "Skill '\(match.skill.name)' is missing an entrypoint"

@@ -22,8 +22,8 @@ public struct ConversationMemoryEntry: Codable, Sendable, Equatable {
     public let role: ConversationMemoryRole
     /// Message body.
     public let text: String
-    /// Epoch timestamp in milliseconds.
-    public let createdAtMs: Int
+    /// Epoch timestamp in milliseconds (`Int64` so 32-bit watchOS does not overflow).
+    public let createdAtMs: Int64
 
     /// Creates a conversation memory entry.
     /// - Parameters:
@@ -43,7 +43,7 @@ public struct ConversationMemoryEntry: Codable, Sendable, Equatable {
         peerID: String,
         role: ConversationMemoryRole,
         text: String,
-        createdAtMs: Int = Int(Date().timeIntervalSince1970 * 1000)
+        createdAtMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
     ) {
         self.id = id
         self.sessionKey = sessionKey

@@ -58,9 +58,31 @@ public struct MemorySearchResult: Sendable, Equatable {
     }
 }
 
-/// Actor-backed in-memory document index with simple token scoring.
-public actor MemoryIndex {
+/// Document-level memory search backend (in-memory index, Spotlight, …).
+public protocol MemorySearchBackend: Actor {
+    /// Inserts or replaces documents.
+    /// - Parameters:
+    ///   - docs: Documents.
+    ///   - sessionKey: Optional session the documents belong to.
+    func upsert(_ docs: [MemoryDocument], sessionKey: String?) async throws
+
+    /// Deletes documents.
+    /// - Parameter ids: Document identifiers.
+    func delete(ids: [String]) async throws
+
+    /// Searches documents.
+    /// - Parameters:
+    ///   - query: Query text.
+    ///   - maxResults: Maximum results.
+    ///   - minScore: Minimum score.
+    /// - Returns: Ranked results.
+    func search(query: String, maxResults: Int, minScore: Double) async throws -> [MemorySearchResult]
+}
+
+/// Actor-backed in-memory document index, scored with BM25 (normalized to `0...1` by the best hit).
+public actor MemoryIndex: MemorySearchBackend {
     private var records: [String: MemoryDocument] = [:]
+    private var bm25 = BM25Index()
 
     /// Creates an empty memory index.
     public init() {}
@@ -69,6 +91,15 @@ public actor MemoryIndex {
     /// - Parameter record: Memory document.
     public func upsert(_ record: MemoryDocument) {
         self.records[record.id] = record
+        self.bm25.upsert(id: record.id, text: record.text)
+    }
+
+    /// Inserts or replaces documents (``MemorySearchBackend`` conformance).
+    /// - Parameters:
+    ///   - docs: Documents.
+    ///   - sessionKey: Ignored by the in-memory index.
+    public func upsert(_ docs: [MemoryDocument], sessionKey _: String?) {
+        self.sync(docs)
     }
 
     /// Fetches a document by ID.
@@ -82,53 +113,43 @@ public actor MemoryIndex {
     /// - Parameter key: Document identifier.
     public func delete(key: String) {
         self.records.removeValue(forKey: key)
+        self.bm25.remove(id: key)
+    }
+
+    /// Deletes documents (``MemorySearchBackend`` conformance).
+    /// - Parameter ids: Document identifiers.
+    public func delete(ids: [String]) {
+        for id in ids { self.delete(key: id) }
     }
 
     /// Upserts a batch of documents.
     /// - Parameter documents: Documents to upsert.
     public func sync(_ documents: [MemoryDocument]) {
         for doc in documents {
-            self.records[doc.id] = doc
+            self.upsert(doc)
         }
     }
 
-    /// Performs a token-overlap search over indexed documents.
+    /// Searches indexed documents with BM25.
     /// - Parameters:
     ///   - query: Search text.
     ///   - maxResults: Maximum number of returned results.
-    ///   - minScore: Minimum score threshold.
-    /// - Returns: Sorted search results by score descending.
+    ///   - minScore: Minimum score threshold (scores are normalized to `0...1`).
+    /// - Returns: Sorted search results by score descending (ties by id).
     public func search(
         query: String,
         maxResults: Int = 8,
         minScore: Double = 0.0
     ) -> [MemorySearchResult] {
-        let normalizedQuery = tokens(query)
-        guard !normalizedQuery.isEmpty else { return [] }
-
-        let scored = self.records.values.map { doc -> MemorySearchResult in
-            let docTokens = tokens(doc.text)
-            let common = normalizedQuery.intersection(docTokens)
-            let score = docTokens.isEmpty ? 0.0 : Double(common.count) / Double(docTokens.count)
-            return MemorySearchResult(id: doc.id, score: score, text: doc.text, source: doc.source)
+        let hits = self.bm25.search(query, limit: max(0, self.records.count))
+        guard let best = hits.first?.score, best > 0 else { return [] }
+        return hits.compactMap { hit -> MemorySearchResult? in
+            guard let doc = self.records[hit.id] else { return nil }
+            return MemorySearchResult(id: doc.id, score: hit.score / best, text: doc.text, source: doc.source)
         }
-        return scored
-            .filter { $0.score >= minScore }
-            .sorted { lhs, rhs in
-                if lhs.score == rhs.score {
-                    return lhs.id < rhs.id
-                }
-                return lhs.score > rhs.score
-            }
-            .prefix(maxResults)
-            .map { $0 }
+        .filter { $0.score >= minScore }
+        .sorted { $0.score == $1.score ? $0.id < $1.id : $0.score > $1.score }
+        .prefix(max(0, maxResults))
+        .map { $0 }
     }
-}
-
-private func tokens(_ text: String) -> Set<String> {
-    let split = text
-        .lowercased()
-        .components(separatedBy: CharacterSet.alphanumerics.inverted)
-        .filter { !$0.isEmpty }
-    return Set(split)
 }
