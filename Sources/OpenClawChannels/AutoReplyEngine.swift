@@ -238,15 +238,16 @@ public actor AutoReplyEngine {
             case .pairingRequired(let code, let created):
                 return try await self.issuePairingChallenge(message, code: code, created: created)
             }
-            if message.chatType != .direct,
-               self.groupChat.unmentionedInbound == .roomEvent,
-               (policy.groupConfig(for: message.peerID)?.requireMention ?? policy.requireMention ?? true) == false,
-               message.wasMentioned != true,
-               message.implicitMentionKinds.isEmpty,
-               !ChannelAccessPolicyEvaluator.isControlCommand(message.text)
-            {
-                message.eventKind = .roomEvent
-            }
+        }
+        // Unmentioned traffic in rooms that do not require a mention becomes an ambient room event.
+        if message.chatType != .direct,
+           self.groupChat.unmentionedInbound == .roomEvent,
+           (policy.groupConfig(for: message.peerID)?.requireMention ?? policy.requireMention ?? true) == false,
+           message.wasMentioned != true,
+           message.implicitMentionKinds.isEmpty,
+           !ChannelAccessPolicyEvaluator.isControlCommand(message.text)
+        {
+            message.eventKind = .roomEvent
         }
 
         // 2. Bot-loop protection.
