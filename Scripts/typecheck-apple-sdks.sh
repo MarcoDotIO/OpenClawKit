@@ -6,7 +6,8 @@
 #        (default: all)
 #
 # For each SDK it:
-#   1. emits an OpenClawProtocol module (Sources/OpenClawProtocol) for the minimum-OS triple;
+#   1. emits OpenClawProtocol and OpenClawCore modules (Sources/OpenClawProtocol, Sources/OpenClawCore)
+#      for the minimum-OS triple (OpenClawKit files such as the StateReporting bridge use Core types);
 #   2. typechecks Sources/OpenClawKit (minus the OpenClawKit.swift facade, which re-exports the
 #      other package modules) against it with -warnings-as-errors, using a one-line
 #      `Bundle.module` stub in place of the SwiftPM resource accessor;
@@ -55,6 +56,11 @@ while IFS= read -r -d '' file; do
   protocol_sources+=("${file}")
 done < <(find "${ROOT_DIR}/Sources/OpenClawProtocol" -name '*.swift' -print0 | sort -z)
 
+core_sources=()
+while IFS= read -r -d '' file; do
+  core_sources+=("${file}")
+done < <(find "${ROOT_DIR}/Sources/OpenClawCore" -name '*.swift' -print0 | sort -z)
+
 kit_sources=()
 while IFS= read -r -d '' file; do
   kit_sources+=("${file}")
@@ -94,6 +100,22 @@ typecheck_platform() {
     -emit-module-path "${out_dir}/OpenClawProtocol.swiftmodule" \
     "${protocol_sources[@]}" >"${log}" 2>&1; then
     echo "    [${platform}] OpenClawProtocol FAILED (${triple})"
+    report "${log}"
+    return 1
+  fi
+
+  log="${out_dir}/OpenClawCore.log"
+  if ! xcrun --sdk "${sdk}" swiftc \
+    -emit-module \
+    -module-name OpenClawCore \
+    -parse-as-library \
+    -target "${triple}" \
+    -sdk "${sdk_path}" \
+    "${common_flags[@]}" \
+    -I "${out_dir}" \
+    -emit-module-path "${out_dir}/OpenClawCore.swiftmodule" \
+    "${core_sources[@]}" >"${log}" 2>&1; then
+    echo "    [${platform}] OpenClawCore FAILED (${triple})"
     report "${log}"
     return 1
   fi
