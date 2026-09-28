@@ -123,9 +123,30 @@ public actor OpenClawConfigDocumentStore {
         }
     }
 
+    /// A load, save or refused write, reported to the store's ``Observer``.
+    ///
+    /// Hosts use it for config health reporting (for example OpenClawKit's
+    /// `OpenClawConfigStateReporter`); OpenClawCore itself never reports.
+    public enum Event: Sendable, Equatable {
+        /// The file was read and decoded (a missing file loads as an empty document).
+        case loaded(LoadedConfigDocument)
+        /// The file could not be parsed or its root is not an object.
+        case loadFailed(message: String)
+        /// A write succeeded; `appliedMigrations` lists legacy keys migrated during the write.
+        case saved(LoadedConfigDocument, appliedMigrations: [ConfigMigrationChange])
+        /// A write guard refused `document` (conflict, `$include`, future version, gateway auth removal).
+        case writeRefused(StoreError, document: OpenClawConfigDocument)
+    }
+
+    /// Receives store events synchronously on the store's executor; keep it fast and non-blocking.
+    public typealias Observer = @Sendable (Event) -> Void
+
     /// Config file location.
     public let fileURL: URL
+    /// Whether ``fileURL`` is the default location (``defaultConfigURL(environment:)``) rather than a host override.
+    public let usesDefaultLocation: Bool
     private let environment: [String: String]
+    private let observer: Observer?
     private var lastKeyOrder = ConfigKeyOrder()
 
     /// Creates a store.
@@ -133,8 +154,20 @@ public actor OpenClawConfigDocumentStore {
     ///   - fileURL: Config file; defaults to ``defaultConfigURL(environment:)``.
     ///   - environment: Environment used for path resolution and the future-version override.
     public init(fileURL: URL? = nil, environment: [String: String] = ProcessInfo.processInfo.environment) {
+        self.init(fileURL: fileURL, environment: environment, observer: nil)
+    }
+
+    /// Creates a store that reports loads, saves and refused writes.
+    /// - Parameters:
+    ///   - fileURL: Config file; defaults to ``defaultConfigURL(environment:)``.
+    ///   - environment: Environment used for path resolution and the future-version override.
+    ///   - observer: Event observer (`nil` reports nothing).
+    public init(fileURL: URL?, environment: [String: String] = ProcessInfo.processInfo.environment, observer: Observer?) {
         self.environment = environment
-        self.fileURL = fileURL ?? Self.defaultConfigURL(environment: environment)
+        let defaultURL = Self.defaultConfigURL(environment: environment)
+        self.fileURL = fileURL ?? defaultURL
+        self.usesDefaultLocation = fileURL == nil || fileURL?.standardizedFileURL.path == defaultURL.standardizedFileURL.path
+        self.observer = observer
     }
 
     // MARK: Paths
@@ -210,14 +243,23 @@ public actor OpenClawConfigDocumentStore {
     public func load(migrateLegacyKeys: Bool = true) throws -> LoadedConfigDocument {
         guard OpenClawFileSystem.fileExists(self.fileURL) else {
             self.lastKeyOrder = ConfigKeyOrder()
-            return LoadedConfigDocument(
+            let empty = LoadedConfigDocument(
                 exists: false, document: OpenClawConfigDocument(), rawData: Data(), hash: nil, issues: [], legacyIssues: [],
                 migrationChanges: [], hasIncludes: false, touchedVersion: nil, keyOrder: ConfigKeyOrder()
             )
+            self.observer?(.loaded(empty))
+            return empty
         }
-        let data = try OpenClawFileSystem.readData(self.fileURL)
-        let loaded = try Self.decodeLoaded(data, migrateLegacyKeys: migrateLegacyKeys)
+        let loaded: LoadedConfigDocument
+        do {
+            let data = try OpenClawFileSystem.readData(self.fileURL)
+            loaded = try Self.decodeLoaded(data, migrateLegacyKeys: migrateLegacyKeys)
+        } catch {
+            self.observer?(.loadFailed(message: String(describing: error)))
+            throw error
+        }
         self.lastKeyOrder = loaded.keyOrder
+        self.observer?(.loaded(loaded))
         return loaded
     }
 
@@ -285,6 +327,21 @@ public actor OpenClawConfigDocumentStore {
         expectedHash: String?,
         options: WriteOptions = WriteOptions()
     ) throws -> LoadedConfigDocument {
+        do {
+            let (saved, applied) = try self.performSave(document, expectedHash: expectedHash, options: options)
+            self.observer?(.saved(saved, appliedMigrations: applied))
+            return saved
+        } catch let error as StoreError {
+            self.observer?(.writeRefused(error, document: document))
+            throw error
+        }
+    }
+
+    private func performSave(
+        _ document: OpenClawConfigDocument,
+        expectedHash: String?,
+        options: WriteOptions
+    ) throws -> (LoadedConfigDocument, [ConfigMigrationChange]) {
         let fileManager = FileManager.default
         let exists = OpenClawFileSystem.fileExists(self.fileURL)
         let previousData = exists ? try OpenClawFileSystem.readData(self.fileURL) : nil
@@ -319,8 +376,9 @@ public actor OpenClawConfigDocumentStore {
         if let entryOrder = document.agents?.entryOrder, !entryOrder.isEmpty {
             keyOrder.set(entryOrder, at: ["agents", "entries"])
         }
+        var applied: [ConfigMigrationChange] = []
         if options.migrateLegacyKeys {
-            OpenClawConfigMigrator.migrate(&tree, keyOrder: &keyOrder)
+            applied = OpenClawConfigMigrator.migrate(&tree, keyOrder: &keyOrder)
         }
         if options.stripSDKOnlyKeys {
             OpenClawConfigDocument.stripSDKOnlyKeys(from: &tree)
@@ -336,7 +394,7 @@ public actor OpenClawConfigDocumentStore {
         try Self.atomicWrite(data, to: self.fileURL)
         let loaded = try Self.decodeLoaded(data, migrateLegacyKeys: false)
         self.lastKeyOrder = loaded.keyOrder
-        return loaded
+        return (loaded, applied)
     }
 
     private func checkFutureVersion(previousTree: [String: AnyCodable]?, tree: [String: AnyCodable], currentVersion: String) throws {
