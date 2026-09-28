@@ -398,8 +398,12 @@ enum OpenAIChatCompletionsWire {
     ) -> [String: Any]? {
         let hasMedia = content.contains { $0.mediaAttachment != nil }
         if !hasMedia {
-            let text = content.compactMap(\.text).joined()
+            let texts = content.compactMap(\.text)
+            let text = texts.joined()
             guard legacyPrompt || !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            if texts.count > 1, !legacyPrompt {
+                return ["role": "user", "content": texts.map { ["type": "text", "text": $0] }]
+            }
             return ["role": "user", "content": text]
         }
         if legacyPrompt {

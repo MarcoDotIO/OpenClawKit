@@ -86,6 +86,8 @@ struct ProviderStreamAssembler {
     private(set) var text = ""
     private(set) var reasoning = ""
     private(set) var reasoningSignature: String?
+    /// Set when several signed reasoning blocks were merged, so no single signature is valid.
+    var reasoningSignatureInvalid = false
     private var toolCallsByIndex: [Int: PartialToolCall] = [:]
     private var toolCallOrder: [Int] = []
     private(set) var usage: ModelUsage?
@@ -199,7 +201,8 @@ struct ProviderStreamAssembler {
             toolCalls: calls,
             usage: self.usage,
             stopReason: stop,
-            reasoningText: self.reasoning.isEmpty ? nil : self.reasoning
+            reasoningText: self.reasoning.isEmpty ? nil : self.reasoning,
+            reasoningSignature: self.reasoningSignatureInvalid ? nil : self.reasoningSignature
         )
     }
 }
@@ -265,7 +268,8 @@ enum ProviderStreamSupport {
             toolCalls: final?.toolCalls ?? [],
             usage: final?.usage ?? usage,
             stopReason: final?.stopReason,
-            reasoningText: reasoning.isEmpty ? nil : reasoning
+            reasoningText: reasoning.isEmpty ? nil : reasoning,
+            reasoningSignature: final?.reasoningSignature
         )
     }
 }

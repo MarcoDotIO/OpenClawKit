@@ -81,7 +81,14 @@ enum AnthropicMessagesWire {
             level = nil
         }
         let mandatory = identity.requiresMandatoryAdaptiveThinking
-        let thinkingEnabled = mandatory || (level != nil && level != .off)
+        var thinkingEnabled = mandatory || (level != nil && level != .off)
+        var forcedOff = false
+        if thinkingEnabled, !mandatory, self.activeToolTurnLacksSignedThinking(request.resolvedMessages) {
+            // The API requires the active tool turn to start with a signed thinking block when
+            // thinking is on; without one (for example after a model switch) send thinking off.
+            thinkingEnabled = false
+            forcedOff = true
+        }
         let reasoningCapable = mandatory || (model?.reasoning ?? true) || identity.supportsAdaptiveThinking
         guard reasoningCapable else {
             return ThinkingPlan(thinking: nil, outputEffort: nil, thinkingEnabled: false)
@@ -97,10 +104,25 @@ enum AnthropicMessagesWire {
                 thinkingEnabled: true
             )
         }
-        if level == .off {
+        if level == .off || forcedOff {
             return ThinkingPlan(thinking: ["type": "disabled"], outputEffort: nil, thinkingEnabled: false)
         }
         return ThinkingPlan(thinking: nil, outputEffort: nil, thinkingEnabled: false)
+    }
+
+    /// Whether the transcript ends in a tool turn whose assistant message has no signed thinking.
+    static func activeToolTurnLacksSignedThinking(_ messages: [ModelMessage]) -> Bool {
+        guard case .toolResult? = messages.last else { return false }
+        guard let assistant = messages.last(where: { $0.role == .assistant }), case .assistant(let parts) = assistant else {
+            return false
+        }
+        guard parts.contains(where: { if case .toolCall = $0 { return true } else { return false } }) else { return false }
+        return !parts.contains { part in
+            if case .thinking(_, let signature) = part, let signature, !signature.isEmpty, signature != "reasoning_content" {
+                return true
+            }
+            return false
+        }
     }
 
     static func buildPayload(request: ModelGenerationRequest, context: BuildContext) -> [String: Any] {
@@ -411,6 +433,8 @@ enum AnthropicMessagesWire {
         let root = try ProviderWireJSON.decode(data)
         var text = ""
         var reasoning = ""
+        var signatures: [String] = []
+        var thinkingBlocks = 0
         var toolCalls: [ModelToolCall] = []
         for block in root[wireKey: "content"]?.arrayValue ?? [] {
             switch block.wireString("type") {
@@ -419,8 +443,12 @@ enum AnthropicMessagesWire {
                     text += value
                 }
             case "thinking"?:
+                thinkingBlocks += 1
                 if let value = block[wireKey: "thinking"]?.stringValue {
                     reasoning += value
+                }
+                if let signature = block.wireString("signature") {
+                    signatures.append(signature)
                 }
             case "tool_use"?:
                 guard let name = block.wireString("name") else { continue }
@@ -447,7 +475,8 @@ enum AnthropicMessagesWire {
             toolCalls: toolCalls,
             usage: self.usage(root[wireKey: "usage"]),
             stopReason: stopReason,
-            reasoningText: reasoning.isEmpty ? nil : reasoning
+            reasoningText: reasoning.isEmpty ? nil : reasoning,
+            reasoningSignature: thinkingBlocks == 1 ? signatures.first : nil
         )
     }
 
@@ -455,6 +484,7 @@ enum AnthropicMessagesWire {
 
     struct StreamState {
         var toolIndexByBlock: [Int: Int] = [:]
+        var thinkingBlocks = 0
         var inputTokens = 0
         var cacheReadTokens = 0
         var cacheWriteTokens = 0
@@ -493,8 +523,15 @@ enum AnthropicMessagesWire {
                     chunks.append(chunk)
                 }
             case "thinking"?:
+                state.thinkingBlocks += 1
+                if state.thinkingBlocks > 1 {
+                    assembler.reasoningSignatureInvalid = true
+                }
                 if let thinking = block?[wireKey: "thinking"]?.stringValue, let chunk = assembler.appendReasoning(thinking) {
                     chunks.append(chunk)
+                }
+                if let signature = block?.wireString("signature") {
+                    assembler.setReasoningSignature(signature)
                 }
             default:
                 break

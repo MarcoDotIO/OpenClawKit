@@ -504,6 +504,81 @@ struct ProviderContractV2Tests {
         #expect(request.value(forHTTPHeaderField: "anthropic-beta") == nil)
     }
 
+    @Test
+    func anthropicThinkingSignatureRoundTripsIntoTheNextTurn() async throws {
+        let transport = ContractV2StubTransport(body: """
+        {"stop_reason":"tool_use","content":[{"type":"thinking","thinking":"plan","signature":"sig-1"},
+        {"type":"tool_use","id":"toolu_1","name":"get_weather","input":{"city":"Bern"}}]}
+        """)
+        let provider = ProviderServiceAnthropicModelProvider(
+            id: "anthropic",
+            configuration: ProviderServiceConfig(
+                enabled: true,
+                apiStyle: .anthropicMessages,
+                modelID: "claude-sonnet-4-6",
+                apiKey: "k",
+                baseURL: "https://api.anthropic.com"
+            ),
+            transport: transport
+        )
+        let thinkingPolicy = ModelGenerationPolicy(thinkingLevel: .high)
+        let first = try await provider.generate(
+            ModelGenerationRequest(sessionKey: "s", prompt: "", policy: thinkingPolicy, messages: [.user("go")], tools: [weatherTool])
+        )
+        #expect(first.reasoningSignature == "sig-1")
+        #expect(first.assistantContent.first == .thinking("plan", signature: "sig-1"))
+
+        let transcript: [ModelMessage] = [
+            .user("go"),
+            first.assistantMessage,
+            .toolResult(ModelToolResult(toolCallID: "toolu_1", toolName: "get_weather", content: [.text("sunny")])),
+        ]
+        _ = try? await provider.generate(
+            ModelGenerationRequest(sessionKey: "s", prompt: "", policy: thinkingPolicy, messages: transcript, tools: [weatherTool])
+        )
+        let body = try #require(await transport.lastBodyObject())
+        let assistant = try #require(body["messages"]?.arrayValue?[1][wireKey: "content"]?.arrayValue)
+        #expect(assistant.first?.wireString("type") == "thinking")
+        #expect(assistant.first?.wireString("signature") == "sig-1")
+        #expect(body["thinking"]?.wireString("type") == "adaptive")
+
+        // Without a signed thinking block the active tool turn must be sent with thinking disabled.
+        _ = try? await provider.generate(
+            ModelGenerationRequest(sessionKey: "s", prompt: "", policy: thinkingPolicy, messages: toolTranscript, tools: [weatherTool])
+        )
+        #expect(await transport.lastBodyObject()?["thinking"]?.wireString("type") == "disabled")
+    }
+
+    @Test
+    func geminiThoughtSignaturesAreReplayedWithFunctionCalls() async throws {
+        let transport = ContractV2StubTransport(body: """
+        {"candidates":[{"content":{"parts":[{"functionCall":{"name":"get_weather","args":{"city":"Rome"}},"thoughtSignature":"ts-1"}]}}]}
+        """)
+        let provider = GoogleGenerativeAIModelProvider(
+            id: "google",
+            configuration: ProviderServiceConfig(enabled: true, apiStyle: .custom, modelID: "gemini-3-pro-preview", apiKey: "g"),
+            transport: transport
+        )
+        let first = try await provider.generate(ModelGenerationRequest(sessionKey: "s", prompt: "", messages: [.user("go")], tools: [weatherTool]))
+        let call = try #require(first.toolCalls.first)
+        _ = try await provider.generate(
+            ModelGenerationRequest(
+                sessionKey: "s",
+                prompt: "",
+                messages: [
+                    .user("go"),
+                    first.assistantMessage,
+                    .toolResult(ModelToolResult(toolCallID: call.id, toolName: call.name, content: [.text("warm")])),
+                    .assistant(content: [.toolCall(ModelToolCall(id: "foreign", name: "get_weather", argumentsJSON: "{}"))]),
+                ],
+                tools: [weatherTool]
+            )
+        )
+        let contents = try #require(await transport.lastBodyObject()?["contents"]?.arrayValue)
+        #expect(contents[1][wireKey: "parts"]?.arrayValue?.first?.wireString("thoughtSignature") == "ts-1")
+        #expect(contents[3][wireKey: "parts"]?.arrayValue?.first?.wireString("thoughtSignature") == "skip_thought_signature_validator")
+    }
+
     // MARK: - Google
 
     @Test

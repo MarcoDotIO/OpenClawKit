@@ -357,6 +357,9 @@ public struct ModelGenerationResponse: Sendable, Equatable {
     public let stopReason: ModelStopReason
     /// Provider reasoning text, when exposed.
     public let reasoningText: String?
+    /// Opaque signature of the reasoning block (Anthropic thinking signatures), required to replay
+    /// thinking before tool use on the next turn.
+    public let reasoningSignature: String?
 
     /// Creates a model generation response.
     /// - Parameters:
@@ -367,6 +370,7 @@ public struct ModelGenerationResponse: Sendable, Equatable {
     ///   - usage: Optional token accounting.
     ///   - stopReason: Stop reason; defaults to `.toolUse` when `toolCalls` is non-empty, else `.stop`.
     ///   - reasoningText: Optional reasoning text.
+    ///   - reasoningSignature: Optional opaque reasoning signature.
     public init(
         text: String,
         providerID: String,
@@ -374,7 +378,8 @@ public struct ModelGenerationResponse: Sendable, Equatable {
         toolCalls: [ModelToolCall] = [],
         usage: ModelUsage? = nil,
         stopReason: ModelStopReason? = nil,
-        reasoningText: String? = nil
+        reasoningText: String? = nil,
+        reasoningSignature: String? = nil
     ) {
         self.text = text
         self.providerID = providerID
@@ -383,13 +388,14 @@ public struct ModelGenerationResponse: Sendable, Equatable {
         self.usage = usage
         self.stopReason = stopReason ?? (toolCalls.isEmpty ? .stop : .toolUse)
         self.reasoningText = reasoningText
+        self.reasoningSignature = reasoningSignature
     }
 
     /// Assistant content parts in transcript order: reasoning, text, then tool calls.
     public var assistantContent: [ModelAssistantPart] {
         var parts: [ModelAssistantPart] = []
         if let reasoningText, !reasoningText.isEmpty {
-            parts.append(.thinking(reasoningText, signature: nil))
+            parts.append(.thinking(reasoningText, signature: self.reasoningSignature))
         }
         if !self.text.isEmpty {
             parts.append(.text(self.text))
@@ -440,6 +446,8 @@ public struct ModelStreamChunk: Sendable, Equatable {
     public let stopReason: ModelStopReason?
     /// Complete tool calls, usually on the `.final` chunk.
     public let toolCalls: [ModelToolCall]
+    /// Opaque reasoning signature, usually on the `.final` chunk.
+    public let reasoningSignature: String?
 
     /// Creates a text chunk (v1 initializer).
     /// - Parameters:
@@ -458,6 +466,7 @@ public struct ModelStreamChunk: Sendable, Equatable {
     ///   - usage: Usage update.
     ///   - stopReason: Stop reason.
     ///   - toolCalls: Complete tool calls.
+    ///   - reasoningSignature: Opaque reasoning signature.
     public init(
         kind: Kind,
         text: String = "",
@@ -465,7 +474,8 @@ public struct ModelStreamChunk: Sendable, Equatable {
         toolCallDelta: ModelToolCallDelta? = nil,
         usage: ModelUsage? = nil,
         stopReason: ModelStopReason? = nil,
-        toolCalls: [ModelToolCall] = []
+        toolCalls: [ModelToolCall] = [],
+        reasoningSignature: String? = nil
     ) {
         self.text = text
         self.isFinal = kind == .final
@@ -475,6 +485,7 @@ public struct ModelStreamChunk: Sendable, Equatable {
         self.usage = usage
         self.stopReason = stopReason
         self.toolCalls = toolCalls
+        self.reasoningSignature = reasoningSignature
     }
 
     /// Creates a `.reasoning` chunk.
@@ -509,7 +520,8 @@ public struct ModelStreamChunk: Sendable, Equatable {
             text: text,
             usage: response.usage,
             stopReason: response.stopReason,
-            toolCalls: response.toolCalls
+            toolCalls: response.toolCalls,
+            reasoningSignature: response.reasoningSignature
         )
     }
 }

@@ -31,7 +31,7 @@ enum GoogleGenerativeAIWire {
                 payload["systemInstruction"] = ["parts": [["text": systemPrompt]]]
             }
         } else {
-            payload["contents"] = self.buildContents(request.resolvedMessages)
+            payload["contents"] = self.buildContents(request.resolvedMessages, modelID: context.modelID)
             if let systemPrompt {
                 payload["systemInstruction"] = ["parts": [["text": systemPrompt]]]
             }
@@ -194,7 +194,11 @@ enum GoogleGenerativeAIWire {
         }
     }
 
-    private static func buildContents(_ messages: [ModelMessage]) -> [[String: Any]] {
+    /// Dummy signature Google documents for replaying function calls whose thought signature is unknown.
+    static let skipThoughtSignatureValidator = "skip_thought_signature_validator"
+
+    private static func buildContents(_ messages: [ModelMessage], modelID: String) -> [[String: Any]] {
+        let requiresSignatures = modelID.lowercased().contains("gemini-3")
         var contents: [[String: Any]] = []
         var toolNamesByID: [String: String] = [:]
         func append(role: String, parts: [[String: Any]]) {
@@ -227,7 +231,13 @@ enum GoogleGenerativeAIWire {
                         }
                     case .toolCall(let call):
                         toolNamesByID[call.id] = call.name
-                        converted.append(["functionCall": ["name": call.name, "args": ProviderWireJSON.argumentsObject(call.argumentsJSON)]])
+                        var part: [String: Any] = ["functionCall": ["name": call.name, "args": ProviderWireJSON.argumentsObject(call.argumentsJSON)]]
+                        if let signature = GoogleThoughtSignatureCache.shared.signature(forCallID: call.id) {
+                            part["thoughtSignature"] = signature
+                        } else if requiresSignatures {
+                            part["thoughtSignature"] = self.skipThoughtSignatureValidator
+                        }
+                        converted.append(part)
                     }
                 }
                 append(role: "model", parts: converted)
@@ -316,7 +326,11 @@ enum GoogleGenerativeAIWire {
             if let call = part[wireKey: "functionCall"] ?? part[wireKey: "function_call"], let name = call.wireString("name") {
                 let index = assembler.nextToolCallIndex
                 let arguments = call[wireKey: "args"]?.dictionaryValue.map(ProviderWireJSON.compactText) ?? "{}"
-                chunks.append(assembler.appendToolCall(index: index, id: call.wireString("id"), name: name, argumentsDelta: arguments))
+                let callID = call.wireString("id") ?? ProviderToolCallIDs.synthesize(index: index)
+                if let signature = part.wireString("thoughtSignature") ?? part.wireString("thought_signature") {
+                    GoogleThoughtSignatureCache.shared.store(signature, forCallID: callID)
+                }
+                chunks.append(assembler.appendToolCall(index: index, id: callID, name: name, argumentsDelta: arguments))
                 continue
             }
             guard let text = part[wireKey: "text"]?.stringValue else { continue }
@@ -478,5 +492,39 @@ struct GoogleGenerativeAIEngine: Sendable {
         )
         urlRequest.httpBody = try ProviderWireJSON.encode(GoogleGenerativeAIWire.buildPayload(request: request, context: context))
         return Prepared(urlRequest: urlRequest, modelID: modelID)
+    }
+}
+
+/// In-process cache of Gemini thought signatures keyed by tool-call id.
+///
+/// Gemini 3 requires the `thoughtSignature` of each function call to be replayed with it; the SDK
+/// tool-call contract carries only id, name and arguments, so signatures are remembered here for
+/// the lifetime of the process (bounded). Unknown signatures on Gemini 3 replays fall back to the
+/// documented `skip_thought_signature_validator` value.
+final class GoogleThoughtSignatureCache: @unchecked Sendable {
+    static let shared = GoogleThoughtSignatureCache()
+
+    private let lock = NSLock()
+    private var signatures: [String: String] = [:]
+    private var order: [String] = []
+    private let capacity = 1_024
+
+    func store(_ signature: String, forCallID callID: String) {
+        self.lock.lock()
+        defer { self.lock.unlock() }
+        if self.signatures[callID] == nil {
+            self.order.append(callID)
+        }
+        self.signatures[callID] = signature
+        while self.order.count > self.capacity {
+            let evicted = self.order.removeFirst()
+            self.signatures.removeValue(forKey: evicted)
+        }
+    }
+
+    func signature(forCallID callID: String) -> String? {
+        self.lock.lock()
+        defer { self.lock.unlock() }
+        return self.signatures[callID]
     }
 }

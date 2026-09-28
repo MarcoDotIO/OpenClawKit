@@ -141,6 +141,8 @@ enum BedrockConverseWire {
         let root = try ProviderWireJSON.decode(data)
         var text = ""
         var reasoning = ""
+        var reasoningBlocks = 0
+        var signature: String?
         var toolCalls: [ModelToolCall] = []
         for block in root[wireKey: "output"]?[wireKey: "message"]?[wireKey: "content"]?.arrayValue ?? [] {
             if let value = block[wireKey: "text"]?.stringValue {
@@ -153,8 +155,10 @@ enum BedrockConverseWire {
                         argumentsJSON: OpenAIChatCompletionsWire.argumentsString(toolUse[wireKey: "input"])
                     )
                 )
-            } else if let value = block[wireKey: "reasoningContent"]?[wireKey: "reasoningText"]?.wireString("text") {
+            } else if let reasoningText = block[wireKey: "reasoningContent"]?[wireKey: "reasoningText"], let value = reasoningText.wireString("text") {
                 reasoning += value
+                reasoningBlocks += 1
+                signature = reasoningText.wireString("signature")
             }
         }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -196,7 +200,8 @@ enum BedrockConverseWire {
             toolCalls: toolCalls,
             usage: usage,
             stopReason: stopReason,
-            reasoningText: reasoning.isEmpty ? nil : reasoning
+            reasoningText: reasoning.isEmpty ? nil : reasoning,
+            reasoningSignature: reasoningBlocks == 1 ? signature : nil
         )
     }
 }
