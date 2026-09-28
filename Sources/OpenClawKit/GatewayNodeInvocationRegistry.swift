@@ -109,7 +109,7 @@ struct GatewayNodeInvocationRegistry {
         }
     }
 
-    var count: Int {
+    var activeCount: Int {
         self.invocations.count
     }
 }

@@ -1428,7 +1428,7 @@ extension GatewayNodeSession {
     }
 
     func _test_activeInvokeCount() -> Int {
-        self.activeInvokes.count
+        self.activeInvokes.activeCount
     }
     #endif
 
