@@ -15,11 +15,15 @@ import Foundation
 // tvOS ships the overlay modules but Foundation Models is unavailable there.
 #if compiler(>=6.4) && canImport(FoundationModels) && !os(tvOS)
 import FoundationModels
+// The overlays are imported explicitly: cross-import overlay discovery differs between SwiftPM and
+// xcodebuild (macOS xcodebuild does not load them implicitly).
 #if canImport(_Vision_FoundationModels)
 import Vision
+import _Vision_FoundationModels
 #endif
 #if canImport(_CoreSpotlight_FoundationModels)
 import CoreSpotlight
+import _CoreSpotlight_FoundationModels
 #endif
 
 /// Apple-native Foundation Models tools (Vision and Spotlight) for OS 27 sessions.
