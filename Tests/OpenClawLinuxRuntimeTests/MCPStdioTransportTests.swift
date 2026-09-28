@@ -83,7 +83,8 @@ struct MCPStdioTransportTests {
         let transport = try MCPStdioTransport(
             serverName: "stubborn",
             config: self.config("trap '' TERM; while true; do sleep 1; done"),
-            allowlist: ExecCommandAllowlist(patterns: ["/bin/*"]),
+            // /bin/sh resolves to /usr/bin/dash on Debian/Ubuntu; the allowlist matches the real path.
+            allowlist: ExecCommandAllowlist(patterns: ["/bin/*", "/usr/bin/*"]),
             shutdownGraceSeconds: 0.2
         )
         try await transport.start()
@@ -99,7 +100,7 @@ struct MCPStdioTransportTests {
         let transport = try MCPStdioTransport(
             serverName: "quitter",
             config: self.config("read -r line; exit 3"),
-            allowlist: ExecCommandAllowlist(patterns: ["/bin/*"])
+            allowlist: ExecCommandAllowlist(patterns: ["/bin/*", "/usr/bin/*"])
         )
         let client = MCPClient(serverName: "quitter", transport: transport, requestTimeoutMs: 5_000, connectionTimeoutMs: 5_000)
         await #expect(throws: MCPTransportError.self) {

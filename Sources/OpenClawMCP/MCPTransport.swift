@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// Errors raised by MCP transports and the client.
 public enum MCPTransportError: Error, LocalizedError, Sendable, Equatable {
