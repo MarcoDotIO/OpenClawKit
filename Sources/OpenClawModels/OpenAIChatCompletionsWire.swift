@@ -71,7 +71,7 @@ struct OpenAIChatCompletionsCompat: Sendable, Equatable {
             supportsDeveloperRole: compat?.supportsDeveloperRole ?? false,
             supportsReasoningEffort: compat?.supportsReasoningEffort
                 ?? (!isZai && !isTogether && !isMistral && endpoint != .xaiNative && !proxyLike),
-            supportsUsageInStreaming: compat?.supportsUsageInStreaming ?? true,
+            supportsUsageInStreaming: compat?.supportsUsageInStreaming ?? !isNonStandard,
             supportsStrictMode: compat?.supportsStrictMode ?? (!isZai && !isNonStandard),
             supportsJSONSchemaResponseFormat: compat?.supportsJSONSchemaResponseFormat ?? true,
             supportsTemperature: supportsTemperature,
@@ -331,7 +331,12 @@ enum OpenAIChatCompletionsWire {
                     lastRole = .user
                 }
             case .assistant(let parts):
-                if let assistant = self.assistantMessage(parts, compat: compat, reasoningEnabled: reasoningEnabled, modelReasoning: context.model?.reasoning ?? false) {
+                if let assistant = self.assistantMessage(
+                    parts,
+                    compat: compat,
+                    reasoningEnabled: reasoningEnabled,
+                    modelReasoning: context.model?.reasoning ?? false
+                ) {
                     messages.append(assistant)
                     lastRole = .assistant
                 }

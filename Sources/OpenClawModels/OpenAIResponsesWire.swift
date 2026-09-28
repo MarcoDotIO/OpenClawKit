@@ -425,6 +425,9 @@ enum OpenAIResponsesWire {
             text = outputText
         }
         var stopReason = self.stopReason(root)
+        if stopReason == .stop, !toolCalls.isEmpty {
+            stopReason = .toolUse
+        }
         if text.isEmpty, toolCalls.isEmpty, let refusal {
             text = refusal
             stopReason = .refusal
@@ -745,10 +748,18 @@ struct OpenAIResponsesEngine: Sendable {
         var urlRequest = settings.makeJSONRequest(url: endpoint, request: request, model: model, streaming: streaming)
         try self.applyAuth(to: &urlRequest, request: request, api: api, chatGPT: chatGPT)
         var headers = settings.mergedHeaders(for: request, model: model)
-        if let organizationID = ProviderRequestResolution.metadataValue(request.metadata, settings.metadata, keys: ["openai.organizationID", "openai.organizationId"]) {
+        if let organizationID = ProviderRequestResolution.metadataValue(
+            request.metadata,
+            settings.metadata,
+            keys: ["openai.organizationID", "openai.organizationId"]
+        ) {
             headers["OpenAI-Organization"] = organizationID
         }
-        if let projectID = ProviderRequestResolution.metadataValue(request.metadata, settings.metadata, keys: ["openai.projectID", "openai.projectId"]) {
+        if let projectID = ProviderRequestResolution.metadataValue(
+            request.metadata,
+            settings.metadata,
+            keys: ["openai.projectID", "openai.projectId"]
+        ) {
             headers["OpenAI-Project"] = projectID
         }
         if let organizationID = ModelGenerationRequest.normalized(settings.organizationID) {

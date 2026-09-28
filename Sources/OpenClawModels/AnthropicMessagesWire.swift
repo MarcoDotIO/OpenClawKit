@@ -692,7 +692,8 @@ struct AnthropicMessagesEngine: Sendable {
                 urlRequest.setValue(credential, forHTTPHeaderField: "x-api-key")
             }
         }
-        urlRequest.setValue(ModelGenerationRequest.normalized(settings.apiVersion) ?? AnthropicMessagesWire.defaultAPIVersion, forHTTPHeaderField: "anthropic-version")
+        let apiVersion = ModelGenerationRequest.normalized(settings.apiVersion) ?? AnthropicMessagesWire.defaultAPIVersion
+        urlRequest.setValue(apiVersion, forHTTPHeaderField: "anthropic-version")
         if let organizationID = ModelGenerationRequest.normalized(settings.organizationID) {
             urlRequest.setValue(organizationID, forHTTPHeaderField: "x-organization-id")
         }
