@@ -1,17 +1,27 @@
+import Foundation
+
+/// Builds the agent prompt for a Talk Mode turn.
 public enum TalkPromptBuilder: Sendable {
+    /// Builds the prompt for one transcribed utterance.
+    /// - Parameters:
+    ///   - transcript: The user's transcribed speech.
+    ///   - interruptedAtSeconds: Playback position where the previous reply was interrupted.
+    ///   - includeVoiceDirectiveHint: Whether to describe the optional JSON voice directive line.
+    /// - Returns: The prompt text.
     public static func build(
         transcript: String,
         interruptedAtSeconds: Double?,
-        includeVoiceDirectiveHint: Bool = true
-    ) -> String {
+        includeVoiceDirectiveHint: Bool = true) -> String
+    {
         var lines: [String] = [
             "Talk Mode active. Reply in a concise, spoken tone.",
         ]
 
         if includeVoiceDirectiveHint {
-            lines.append(
-                "You may optionally prefix the response with JSON (first line) to set ElevenLabs voice (id or alias), e.g. {\"voice\":\"<id>\",\"once\":true}."
-            )
+            let directiveHint =
+                "You may optionally prefix the response with JSON (first line) to set ElevenLabs voice " +
+                "(id or alias), e.g. {\"voice\":\"<id>\",\"once\":true}."
+            lines.append(directiveHint)
         }
 
         if let interruptedAtSeconds {

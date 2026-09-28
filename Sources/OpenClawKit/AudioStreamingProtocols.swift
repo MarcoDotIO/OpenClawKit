@@ -1,26 +1,41 @@
 import Foundation
 
-#if canImport(ElevenLabsKit)
-import ElevenLabsKit
+// OpenClawKit ships its own playback seams instead of depending on ElevenLabsKit (upstream's
+// `Talk` trait). Hosts that use ElevenLabsKit players can conform them to these protocols with a
+// small adapter that maps ElevenLabsKit's result into `StreamingPlaybackResult`.
 
-/// Result returned after streaming playback completes.
-public typealias StreamingPlaybackResult = ElevenLabsKit.StreamingPlaybackResult
-/// Player surface used for encoded audio streams.
-public typealias StreamingAudioPlayer = ElevenLabsKit.StreamingAudioPlayer
-/// Player surface used for raw PCM audio streams.
-public typealias PCMStreamingAudioPlayer = ElevenLabsKit.PCMStreamingAudioPlayer
-#else
-/// Result returned after a streaming playback attempt.
+/// Result returned after a streaming or buffered playback attempt.
+///
+/// Mirrors the upstream OpenClaw (ElevenLabsKit) result shape: `finished` is `true` only when
+/// every queued sample drained; `interruptedAt` carries the playback position when playback was
+/// stopped or failed part way through.
 public struct StreamingPlaybackResult: Sendable, Equatable {
-    /// Total duration that was played when the player reports it.
+    /// Whether playback drained every queued sample. `false` when stopped, interrupted, or failed.
+    public var finished: Bool
+    /// Playback position, in seconds, at which playback was interrupted, when the player reports it.
+    public var interruptedAt: Double?
+    /// Total duration that was played, in seconds, when the player reports it.
     public var durationSeconds: Double?
 
-    /// Creates a playback result with an optional duration.
-    public init(durationSeconds: Double? = nil) {
+    /// Creates a playback result.
+    /// - Parameters:
+    ///   - finished: Whether playback drained every queued sample.
+    ///   - interruptedAt: Playback position in seconds when playback was interrupted.
+    ///   - durationSeconds: Total played duration in seconds, when known.
+    public init(finished: Bool, interruptedAt: Double? = nil, durationSeconds: Double? = nil) {
+        self.finished = finished
+        self.interruptedAt = interruptedAt
         self.durationSeconds = durationSeconds
     }
+
+    /// Creates a completed playback result with an optional duration.
+    ///
+    /// Kept for source compatibility with 2026.2.x callers; the result reports `finished == true`.
+    /// - Parameter durationSeconds: Total played duration in seconds, when known.
+    public init(durationSeconds: Double? = nil) {
+        self.init(finished: true, interruptedAt: nil, durationSeconds: durationSeconds)
+    }
 }
-#endif
 
 /// Playback contract for encoded audio streams.
 @MainActor
@@ -31,7 +46,7 @@ public protocol StreamingAudioPlaying {
     func stop() -> Double?
 }
 
-/// Playback contract for PCM audio streams.
+/// Playback contract for PCM audio streams (little-endian Int16 mono).
 @MainActor
 public protocol PCMStreamingAudioPlaying {
     /// Starts playback for a PCM stream at the provided sample rate.
@@ -40,7 +55,18 @@ public protocol PCMStreamingAudioPlaying {
     func stop() -> Double?
 }
 
-#if canImport(ElevenLabsKit)
-extension StreamingAudioPlayer: StreamingAudioPlaying {}
-extension PCMStreamingAudioPlayer: PCMStreamingAudioPlaying {}
-#endif
+/// Playback contract for complete, container-encoded audio clips (MP3, WAV, FLAC, AAC).
+@MainActor
+public protocol TalkBufferedAudioPlaying {
+    /// Plays one complete clip and returns when it finishes, fails, or is stopped.
+    func play(data: Data) async -> StreamingPlaybackResult
+    /// Stops playback and returns the playback position when available.
+    func stop() -> Double?
+    /// Installs a handler for normalized (0...1) output levels; `nil` means not playing.
+    func setLevelHandler(_ handler: (@MainActor (Double?) -> Void)?)
+}
+
+extension TalkBufferedAudioPlaying {
+    /// Level metering is a UI nicety; test doubles and custom players may skip it.
+    public func setLevelHandler(_: (@MainActor (Double?) -> Void)?) {}
+}

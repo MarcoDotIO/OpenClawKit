@@ -61,6 +61,46 @@ public struct TalkDirectiveParseResult: Equatable, Sendable {
     }
 }
 
+/// Resolves Talk voice aliases (`voiceAliases` in the provider config) to provider voice ids.
+public enum TalkVoiceAliases {
+    /// Normalizes an alias map: lower-cased trimmed keys, trimmed values; empty or non-string entries drop.
+    /// - Parameter value: The raw `voiceAliases` object.
+    /// - Returns: The normalized alias map.
+    public static func normalizedMap(_ value: AnyCodable?) -> [String: String] {
+        value?.dictionaryValue?.reduce(into: [:]) { result, entry in
+            let key = entry.key.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let value = entry.value.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !key.isEmpty, !value.isEmpty else { return }
+            result[key] = value
+        } ?? [:]
+    }
+
+    /// Resolves a requested voice: an alias maps to its id, a known id passes through, and
+    /// anything that looks like a provider voice id passes through unchanged.
+    /// - Parameters:
+    ///   - value: Requested voice (alias or id).
+    ///   - aliases: Normalized alias map from ``normalizedMap(_:)``.
+    /// - Returns: The voice id, or `nil` for an unknown short name.
+    public static func resolve(_ value: String?, aliases: [String: String]) -> String? {
+        let trimmed = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if let mapped = aliases[trimmed.lowercased()] {
+            return mapped
+        }
+        if aliases.values.contains(where: { $0.caseInsensitiveCompare(trimmed) == .orderedSame }) {
+            return trimmed
+        }
+        return self.isLikelyID(trimmed) ? trimmed : nil
+    }
+
+    /// Whether `value` looks like a provider voice id: at least 10 letters, digits, `-`, or `_`.
+    /// - Parameter value: Candidate voice id.
+    public static func isLikelyID(_ value: String) -> Bool {
+        guard value.count >= 10 else { return false }
+        return value.allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }
+    }
+}
+
 /// Parser for the leading JSON talk directive block.
 public enum TalkDirectiveParser {
     /// Parses a leading JSON directive block and returns the stripped body text.
