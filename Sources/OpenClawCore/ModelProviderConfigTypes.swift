@@ -6,16 +6,110 @@ public enum ModelsConfigMode: String, Codable, Sendable, Equatable, CaseIterable
     case replace
 }
 
-/// Canonical model API contract identifiers aligned with the TypeScript SDK.
+/// Canonical model API contract identifiers aligned with upstream `MODEL_DATA_APIS`
+/// (`packages/llm-core/src/model-data.ts`).
+///
+/// Decoding accepts legacy identifiers and maps them to their canonical replacement:
+/// `openai-codex-responses` (removed upstream) becomes ``openAIChatGPTResponses`` and `openai`
+/// (doctor migration for `models.providers.*.api`) becomes ``openAICompletions``. Encoding always
+/// writes the canonical identifier. Config containers decode this field leniently: an unknown
+/// identifier yields `nil` plus a ``ConfigDecodeIssue`` instead of failing the whole config.
+///
+/// - Note: 2026.3.0 added `openai-chatgpt-responses`, `google-vertex`, `pi-messages` and
+///   `azure-openai-responses`. Exhaustive `switch` statements over `ModelAPI` need the new cases.
 public enum ModelAPI: String, Codable, Sendable, Equatable, CaseIterable {
+    /// OpenAI Chat Completions compatible API.
     case openAICompletions = "openai-completions"
+    /// OpenAI Responses API.
     case openAIResponses = "openai-responses"
-    case openAICodexResponses = "openai-codex-responses"
+    /// OpenAI Responses API through the ChatGPT (OAuth) route. Replaces `openai-codex-responses`.
+    case openAIChatGPTResponses = "openai-chatgpt-responses"
+    /// Anthropic Messages API.
     case anthropicMessages = "anthropic-messages"
+    /// Google Generative Language (Gemini) API.
     case googleGenerativeAI = "google-generative-ai"
+    /// Google Vertex AI API.
+    case googleVertex = "google-vertex"
+    /// GitHub Copilot API.
     case githubCopilot = "github-copilot"
+    /// Amazon Bedrock Converse streaming API.
     case bedrockConverseStream = "bedrock-converse-stream"
+    /// Ollama native API.
     case ollama
+    /// Pi messages API.
+    case piMessages = "pi-messages"
+    /// Azure OpenAI Responses API.
+    case azureOpenAIResponses = "azure-openai-responses"
+
+    /// Removed `openai-codex-responses` identifier; it now resolves to ``openAIChatGPTResponses``.
+    @available(*, deprecated, renamed: "openAIChatGPTResponses")
+    public static var openAICodexResponses: ModelAPI {
+        .openAIChatGPTResponses
+    }
+
+    /// Legacy identifiers accepted while decoding, keyed by the lowercased legacy value.
+    public static let legacyAliases: [String: ModelAPI] = [
+        "openai-codex-responses": .openAIChatGPTResponses,
+        "openai": .openAICompletions,
+    ]
+
+    /// Resolves a raw identifier, accepting surrounding whitespace, any casing, and legacy aliases.
+    /// - Parameter raw: Raw identifier from config or the wire.
+    public init?(normalizing raw: String) {
+        let key = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if let api = ModelAPI(rawValue: key) {
+            self = api
+        } else if let api = Self.legacyAliases[key] {
+            self = api
+        } else {
+            return nil
+        }
+    }
+
+    /// Returns the upstream validation message for a legacy identifier, or `nil` when the value is
+    /// not a legacy identifier.
+    /// - Parameter raw: Raw identifier from config.
+    /// - Returns: Migration guidance for legacy identifiers.
+    public static func legacyValidationMessage(for raw: String) -> String? {
+        let key = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard let replacement = Self.legacyAliases[key] else { return nil }
+        if key == "openai-codex-responses" {
+            return "\"openai-codex-responses\" is a removed api id; use \"\(replacement.rawValue)\""
+        }
+        return "\"\(key)\" is a legacy api id; use \"\(replacement.rawValue)\""
+    }
+
+    /// Decodes an identifier, accepting legacy aliases.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let raw = try container.decode(String.self)
+        guard let api = ModelAPI(normalizing: raw) else {
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Unknown model api \"\(raw)\""
+            )
+        }
+        self = api
+    }
+
+    /// Decodes an optional `api` field leniently, recording unknown and legacy identifiers.
+    static func decodeLenient<K: CodingKey>(from container: KeyedDecodingContainer<K>, forKey key: K) -> ModelAPI? {
+        guard let raw = container.decodeLenient(String.self, forKey: key) else {
+            return nil
+        }
+        guard let api = ModelAPI(normalizing: raw) else {
+            container.recordConfigIssue(
+                "Unknown model api \"\(raw)\"; the value is ignored.",
+                kind: .unknownEnumValue,
+                forKey: key
+            )
+            return nil
+        }
+        if let message = Self.legacyValidationMessage(for: raw) {
+            container.recordConfigIssue(message, kind: .legacyKey, forKey: key)
+        }
+        return api
+    }
 }
 
 /// Authentication modes supported by canonical model-provider configs.
@@ -27,9 +121,22 @@ public enum ModelProviderAuthMode: String, Codable, Sendable, Equatable, CaseIte
 }
 
 /// Input modality flags declared by model definitions.
+///
+/// Config decoders drop unknown modality strings instead of failing (see ``ConfigDecodeIssue``).
+///
+/// - Note: 2026.3.0 added `video`, `audio` and `document`. `document` appears in catalog rows
+///   only; runtimes filter it out of provider requests.
 public enum ModelInputType: String, Codable, Sendable, Equatable, CaseIterable {
+    /// Text input.
     case text
+    /// Image input.
     case image
+    /// Video input.
+    case video
+    /// Audio input.
+    case audio
+    /// Document input (catalog metadata only).
+    case document
 }
 
 /// Compatibility field used by some providers when specifying max-token limits.
@@ -38,11 +145,24 @@ public enum ModelCompatMaxTokensField: String, Codable, Sendable, Equatable, Cas
     case maxTokens = "max_tokens"
 }
 
-/// Thinking payload format used by reasoning providers.
+/// Thinking payload format used by reasoning providers (upstream `MODEL_DATA_THINKING_FORMATS`).
+///
+/// An unknown value decodes to `nil` plus a ``ConfigDecodeIssue``.
 public enum ModelCompatThinkingFormat: String, Codable, Sendable, Equatable, CaseIterable {
+    /// OpenAI reasoning payloads.
     case openAI = "openai"
+    /// Z.AI thinking payloads.
     case zai
+    /// Qwen thinking payloads.
     case qwen
+    /// OpenRouter reasoning payloads.
+    case openrouter
+    /// DeepSeek reasoning payloads.
+    case deepseek
+    /// Together reasoning payloads.
+    case together
+    /// Qwen chat-template thinking switch.
+    case qwenChatTemplate = "qwen-chat-template"
 }
 
 /// Provider-specific compatibility flags carried alongside model definitions.
@@ -89,6 +209,43 @@ public struct ModelCompatConfig: Codable, Sendable, Equatable {
         self.requiresThinkingAsText = requiresThinkingAsText
         self.requiresMistralToolIDs = requiresMistralToolIDs
         self.requiresOpenAIAnthropicToolPayload = requiresOpenAIAnthropicToolPayload
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case supportsStore
+        case supportsDeveloperRole
+        case supportsReasoningEffort
+        case supportsUsageInStreaming
+        case supportsTools
+        case supportsStrictMode
+        case maxTokensField
+        case thinkingFormat
+        case requiresToolResultName
+        case requiresAssistantAfterToolResult
+        case requiresThinkingAsText
+        case requiresMistralToolIDs
+        case requiresOpenAIAnthropicToolPayload
+    }
+
+    /// Decodes compat flags; unknown `maxTokensField`/`thinkingFormat` values decode to `nil`.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.supportsStore = try container.decodeIfPresent(Bool.self, forKey: .supportsStore)
+        self.supportsDeveloperRole = try container.decodeIfPresent(Bool.self, forKey: .supportsDeveloperRole)
+        self.supportsReasoningEffort = try container.decodeIfPresent(Bool.self, forKey: .supportsReasoningEffort)
+        self.supportsUsageInStreaming = try container.decodeIfPresent(Bool.self, forKey: .supportsUsageInStreaming)
+        self.supportsTools = try container.decodeIfPresent(Bool.self, forKey: .supportsTools)
+        self.supportsStrictMode = try container.decodeIfPresent(Bool.self, forKey: .supportsStrictMode)
+        self.maxTokensField = container.decodeLenient(ModelCompatMaxTokensField.self, forKey: .maxTokensField)
+        self.thinkingFormat = container.decodeLenient(ModelCompatThinkingFormat.self, forKey: .thinkingFormat)
+        self.requiresToolResultName = try container.decodeIfPresent(Bool.self, forKey: .requiresToolResultName)
+        self.requiresAssistantAfterToolResult = try container.decodeIfPresent(Bool.self, forKey: .requiresAssistantAfterToolResult)
+        self.requiresThinkingAsText = try container.decodeIfPresent(Bool.self, forKey: .requiresThinkingAsText)
+        self.requiresMistralToolIDs = try container.decodeIfPresent(Bool.self, forKey: .requiresMistralToolIDs)
+        self.requiresOpenAIAnthropicToolPayload = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .requiresOpenAIAnthropicToolPayload
+        )
     }
 }
 
@@ -186,15 +343,15 @@ public struct ModelDefinitionConfig: Codable, Sendable, Equatable {
         let id = try container.decode(String.self, forKey: .id)
         self.id = id
         self.name = try container.decodeIfPresent(String.self, forKey: .name) ?? id
-        self.api = try container.decodeIfPresent(ModelAPI.self, forKey: .api)
+        self.api = ModelAPI.decodeLenient(from: container, forKey: .api)
         self.fastMode = try container.decodeIfPresent(Bool.self, forKey: .fastMode)
         self.reasoning = try container.decodeIfPresent(Bool.self, forKey: .reasoning) ?? false
-        self.input = try container.decodeIfPresent([ModelInputType].self, forKey: .input) ?? [.text]
+        self.input = container.decodeLossyArrayIfPresent(ModelInputType.self, forKey: .input) ?? [.text]
         self.cost = try container.decodeIfPresent(ModelCostConfig.self, forKey: .cost) ?? ModelCostConfig()
         self.contextWindow = max(0, try container.decodeIfPresent(Int.self, forKey: .contextWindow) ?? 0)
         self.maxTokens = max(0, try container.decodeIfPresent(Int.self, forKey: .maxTokens) ?? 0)
         self.headers = try container.decodeIfPresent([String: String].self, forKey: .headers) ?? [:]
-        self.compat = try container.decodeIfPresent(ModelCompatConfig.self, forKey: .compat)
+        self.compat = container.decodeLenient(ModelCompatConfig.self, forKey: .compat)
     }
 }
 
@@ -290,18 +447,18 @@ public struct ModelProviderConfig: Codable, Sendable, Equatable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let legacyContainer = try decoder.container(keyedBy: LegacyCodingKeys.self)
-        let legacyAPIStyle = try legacyContainer.decodeIfPresent(ProviderServiceAPIStyle.self, forKey: .apiStyle)
-        let legacyAuthMode = try legacyContainer.decodeIfPresent(ProviderServiceAuthMode.self, forKey: .authMode)
+        let legacyAPIStyle = legacyContainer.decodeLenient(ProviderServiceAPIStyle.self, forKey: .apiStyle)
+        let legacyAuthMode = legacyContainer.decodeLenient(ProviderServiceAuthMode.self, forKey: .authMode)
         let legacyModelID = try legacyContainer.decodeIfPresent(String.self, forKey: .modelID)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let legacyAccessToken = try legacyContainer.decodeIfPresent(String.self, forKey: .accessToken)
 
-        let resolvedAPI = try container.decodeIfPresent(ModelAPI.self, forKey: .api)
+        let resolvedAPI = ModelAPI.decodeLenient(from: container, forKey: .api)
             ?? legacyAPIStyle.map(ModelAPI.init(legacyStyle:))
-        let resolvedAuth = try container.decodeIfPresent(ModelProviderAuthMode.self, forKey: .auth)
+        let resolvedAuth = container.decodeLenient(ModelProviderAuthMode.self, forKey: .auth)
             ?? legacyAuthMode.flatMap(ModelProviderAuthMode.init(legacyMode:))
         let resolvedHeaders = try container.decodeIfPresent([String: String].self, forKey: .headers) ?? [:]
-        let decodedModels = try container.decodeIfPresent([ModelDefinitionConfig].self, forKey: .models) ?? []
+        let decodedModels = container.decodeLossyArrayIfPresent(ModelDefinitionConfig.self, forKey: .models) ?? []
         let fallbackModelID = legacyModelID.flatMap { $0.isEmpty ? nil : $0 }
 
         self.enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
@@ -436,11 +593,11 @@ extension ModelAPI {
 
     var legacyStyle: ProviderServiceAPIStyle {
         switch self {
-        case .openAICompletions, .openAIResponses, .openAICodexResponses, .githubCopilot:
+        case .openAICompletions, .openAIResponses, .openAIChatGPTResponses, .azureOpenAIResponses, .githubCopilot:
             return .openAICompletions
         case .anthropicMessages:
             return .anthropicMessages
-        case .googleGenerativeAI:
+        case .googleGenerativeAI, .googleVertex, .piMessages:
             return .custom
         case .bedrockConverseStream:
             return .bedrockConverse

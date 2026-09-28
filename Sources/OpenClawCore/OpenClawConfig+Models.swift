@@ -98,7 +98,7 @@ public struct ModelsConfig: Codable, Sendable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.defaultProviderID = try container.decodeIfPresent(String.self, forKey: .defaultProviderID) ?? "echo"
         self.systemPrompt = try container.decodeIfPresent(String.self, forKey: .systemPrompt)
-        self.mode = try container.decodeIfPresent(ModelsConfigMode.self, forKey: .mode) ?? .merge
+        self.mode = container.decodeLenient(ModelsConfigMode.self, forKey: .mode) ?? .merge
         self.openAI = try container.decodeIfPresent(OpenAIModelConfig.self, forKey: .openAI) ?? OpenAIModelConfig()
         self.openAICompatible = try container.decodeIfPresent(OpenAICompatibleModelConfig.self, forKey: .openAICompatible) ?? OpenAICompatibleModelConfig()
         self.anthropic = try container.decodeIfPresent(AnthropicModelConfig.self, forKey: .anthropic) ?? AnthropicModelConfig()
@@ -264,8 +264,8 @@ public struct ProviderServiceConfig: Codable, Sendable, Equatable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
-        self.apiStyle = try container.decodeIfPresent(ProviderServiceAPIStyle.self, forKey: .apiStyle) ?? .openAICompletions
-        self.authMode = try container.decodeIfPresent(ProviderServiceAuthMode.self, forKey: .authMode) ?? .apiKey
+        self.apiStyle = container.decodeLenient(ProviderServiceAPIStyle.self, forKey: .apiStyle) ?? .openAICompletions
+        self.authMode = container.decodeLenient(ProviderServiceAuthMode.self, forKey: .authMode) ?? .apiKey
         self.modelID = try container.decodeIfPresent(String.self, forKey: .modelID) ?? "gpt-4.1-mini"
         self.fastMode = try container.decodeIfPresent(Bool.self, forKey: .fastMode)
         self.apiKey = try container.decodeIfPresent(String.self, forKey: .apiKey)

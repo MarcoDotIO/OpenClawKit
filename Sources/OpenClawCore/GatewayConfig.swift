@@ -5,12 +5,46 @@ public enum GatewayMode: String, Codable, Sendable, Equatable, CaseIterable {
     case remote
 }
 
+/// Gateway listener bind mode.
+///
+/// Decoding also accepts upstream host aliases: `0.0.0.0`, `::`, `[::]` and `*` mean ``lan``;
+/// `127.0.0.1`, `localhost`, `::1` and `[::1]` mean ``loopback``.
 public enum GatewayBindMode: String, Codable, Sendable, Equatable, CaseIterable {
     case auto
     case lan
     case loopback
     case custom
     case tailnet
+
+    /// Resolves a bind mode or host alias, accepting surrounding whitespace and any casing.
+    /// - Parameter raw: Raw bind value from config.
+    public init?(normalizing raw: String) {
+        let key = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch key {
+        case "0.0.0.0", "::", "[::]", "*":
+            self = .lan
+        case "127.0.0.1", "localhost", "::1", "[::1]":
+            self = .loopback
+        default:
+            guard let mode = GatewayBindMode(rawValue: key) else {
+                return nil
+            }
+            self = mode
+        }
+    }
+
+    /// Decodes a bind mode, accepting the host aliases handled by ``init(normalizing:)``.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let raw = try container.decode(String.self)
+        guard let mode = GatewayBindMode(normalizing: raw) else {
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Invalid gateway bind value: \(raw)"
+            )
+        }
+        self = mode
+    }
 }
 
 public struct GatewayControlUIConfig: Codable, Sendable, Equatable {
@@ -136,7 +170,7 @@ public struct GatewayAuthConfig: Codable, Sendable, Equatable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.mode = try container.decodeIfPresent(GatewayAuthMode.self, forKey: .mode) ?? .token
+        self.mode = container.decodeLenient(GatewayAuthMode.self, forKey: .mode) ?? .token
         self.token = try container.decodeIfPresent(SecretInput.self, forKey: .token)
         self.password = try container.decodeIfPresent(SecretInput.self, forKey: .password)
         self.allowTailscale = try container.decodeIfPresent(Bool.self, forKey: .allowTailscale)
@@ -560,7 +594,7 @@ public struct GatewayConfig: Codable, Sendable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let host = try container.decodeIfPresent(String.self, forKey: .host) ?? "127.0.0.1"
         let port = try container.decodeIfPresent(Int.self, forKey: .port) ?? 18_789
-        let mode = try container.decodeIfPresent(GatewayMode.self, forKey: .mode) ?? .local
+        let mode = container.decodeLenient(GatewayMode.self, forKey: .mode) ?? .local
         let decodedAuth = try container.decodeIfPresent(GatewayAuthConfig.self, forKey: .auth)
         let legacyAuthMode = try container.decodeIfPresent(String.self, forKey: .authMode)
         let normalizedAuth = decodedAuth
@@ -575,11 +609,11 @@ public struct GatewayConfig: Codable, Sendable, Equatable {
             port: port,
             authMode: decodedAuth?.mode.rawValue ?? legacyAuthMode ?? GatewayAuthMode.token.rawValue,
             mode: mode,
-            bind: try container.decodeIfPresent(GatewayBindMode.self, forKey: .bind),
+            bind: container.decodeLenient(GatewayBindMode.self, forKey: .bind),
             customBindHost: try container.decodeIfPresent(String.self, forKey: .customBindHost),
             controlUi: try container.decodeIfPresent(GatewayControlUIConfig.self, forKey: .controlUi),
             auth: normalizedAuth,
-            tailscale: try container.decodeIfPresent(GatewayTailscaleConfig.self, forKey: .tailscale),
+            tailscale: container.decodeLenient(GatewayTailscaleConfig.self, forKey: .tailscale),
             remote: try container.decodeIfPresent(GatewayRemoteConfig.self, forKey: .remote),
             http: try container.decodeIfPresent(GatewayHTTPConfig.self, forKey: .http),
             push: try container.decodeIfPresent(GatewayPushConfig.self, forKey: .push),

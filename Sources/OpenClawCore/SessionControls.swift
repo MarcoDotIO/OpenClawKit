@@ -389,10 +389,20 @@ public enum GroupActivation: String, Sendable, Equatable, CaseIterable, Codable 
 }
 
 /// Preferred execution host for shell/process work.
+///
+/// Mirrors upstream `ExecTarget` (`auto | sandbox | gateway | node`). `auto` lets the runtime pick
+/// the host.
+///
+/// - Note: 2026.3.0 added `auto`. Exhaustive `switch` statements over `ExecHost` need the new case.
 public enum ExecHost: String, Sendable, Equatable, CaseIterable, Codable {
+    /// Run in the agent sandbox.
     case sandbox
+    /// Run on the gateway host.
     case gateway
+    /// Run on a paired node.
     case node
+    /// Let the runtime choose the host.
+    case auto
 }
 
 /// Execution security mode for command dispatch.
@@ -407,6 +417,114 @@ public enum ExecAsk: String, Sendable, Equatable, CaseIterable, Codable {
     case off = "off"
     case onMiss = "on-miss"
     case always = "always"
+}
+
+/// Security/ask pair (plus auto-review flag) that an ``ExecMode`` expands to.
+public struct ExecModePolicy: Sendable, Equatable {
+    /// Command security mode.
+    public var security: ExecSecurity
+    /// Interactive approval behavior.
+    public var ask: ExecAsk
+    /// Whether approvals are routed through automatic review first.
+    public var autoReview: Bool
+
+    /// Creates an exec policy triple.
+    /// - Parameters:
+    ///   - security: Command security mode.
+    ///   - ask: Interactive approval behavior.
+    ///   - autoReview: Whether approvals are routed through automatic review first.
+    public init(security: ExecSecurity, ask: ExecAsk, autoReview: Bool = false) {
+        self.security = security
+        self.ask = ask
+        self.autoReview = autoReview
+    }
+}
+
+/// Canonical exec approval mode (upstream `tools.exec.mode`, `src/infra/exec-approvals-core.ts`).
+///
+/// A mode is a display projection of an ``ExecSecurity``/``ExecAsk`` pair; ``policy`` expands it
+/// and ``from(security:ask:)`` / ``exact(security:ask:)`` project a pair back to a mode.
+public enum ExecMode: String, Sendable, Equatable, CaseIterable, Codable {
+    /// Deny every command.
+    case deny
+    /// Run allowlisted commands without prompting.
+    case allowlist
+    /// Run allowlisted commands and ask on a miss.
+    case ask
+    /// Like `ask`, with automatic review before prompting.
+    case auto
+    /// Run every command without prompting.
+    case full
+
+    /// Decodes a mode, accepting surrounding whitespace and any casing.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let raw = try container.decode(String.self)
+        guard let mode = Self.normalize(raw) else {
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Invalid ExecMode value: \(raw)"
+            )
+        }
+        self = mode
+    }
+
+    /// Normalizes a raw mode string (upstream `normalizeExecMode`).
+    /// - Parameter raw: Raw user or config value.
+    /// - Returns: Canonical mode, or `nil` when unknown.
+    public static func normalize(_ raw: String?) -> ExecMode? {
+        guard let raw else { return nil }
+        return ExecMode(rawValue: raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+    }
+
+    /// Projects a security/ask pair onto the closest mode (upstream `resolveExecModeFromPolicy`).
+    /// - Parameters:
+    ///   - security: Command security mode.
+    ///   - ask: Interactive approval behavior.
+    /// - Returns: The display mode for the pair.
+    public static func from(security: ExecSecurity, ask: ExecAsk) -> ExecMode {
+        if security == .deny {
+            return .deny
+        }
+        if security == .allowlist && ask == .off {
+            return .allowlist
+        }
+        if security == .full && ask != .always {
+            return .full
+        }
+        return .ask
+    }
+
+    /// Projects a pair onto a mode only when the mode preserves it exactly
+    /// (upstream `resolveExactExecModeFromPolicy`).
+    ///
+    /// Returns `nil` for pairs that no mode expresses: `ask == .always`, and `full` with `on-miss`.
+    /// - Parameters:
+    ///   - security: Command security mode.
+    ///   - ask: Interactive approval behavior.
+    /// - Returns: The exact mode, or `nil`.
+    public static func exact(security: ExecSecurity, ask: ExecAsk) -> ExecMode? {
+        if ask == .always || (security == .full && ask == .onMiss) {
+            return nil
+        }
+        return Self.from(security: security, ask: ask)
+    }
+
+    /// Security/ask pair this mode expands to (upstream `resolveExecPolicyForMode`).
+    public var policy: ExecModePolicy {
+        switch self {
+        case .deny:
+            return ExecModePolicy(security: .deny, ask: .off)
+        case .allowlist:
+            return ExecModePolicy(security: .allowlist, ask: .off)
+        case .ask:
+            return ExecModePolicy(security: .allowlist, ask: .onMiss)
+        case .auto:
+            return ExecModePolicy(security: .allowlist, ask: .onMiss, autoReview: true)
+        case .full:
+            return ExecModePolicy(security: .full, ask: .off)
+        }
+    }
 }
 
 /// Session controls resolved from persisted state and agent defaults.

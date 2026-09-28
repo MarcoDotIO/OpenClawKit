@@ -199,6 +199,6 @@ public struct AdaptiveRoutingConfig: Codable, Sendable, Equatable {
             1
         )
         self.decisionWindow = max(1, try container.decodeIfPresent(Int.self, forKey: .decisionWindow) ?? 500)
-        self.objective = try container.decodeIfPresent(AdaptiveRoutingObjective.self, forKey: .objective) ?? .balanced
+        self.objective = container.decodeLenient(AdaptiveRoutingObjective.self, forKey: .objective) ?? .balanced
     }
 }

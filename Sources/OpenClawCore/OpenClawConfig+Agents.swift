@@ -98,21 +98,21 @@ public struct AgentsConfig: Codable, Sendable, Equatable {
         let skillInvocationTimeoutMs = try container.decodeIfPresent(Int.self, forKey: .skillInvocationTimeoutMs) ?? 30_000
         let agentIDs = try container.decodeIfPresent([String].self, forKey: .agentIDs) ?? []
         let routeAgentMap = try container.decodeIfPresent([String: String].self, forKey: .routeAgentMap) ?? [:]
-        let thinkingLevel = try container.decodeIfPresent(ThinkLevel.self, forKey: .thinkingLevel)
-        let verboseLevel = try container.decodeIfPresent(VerboseLevel.self, forKey: .verboseLevel)
-        let reasoningLevel = try container.decodeIfPresent(ReasoningLevel.self, forKey: .reasoningLevel)
-        let responseUsage = try container.decodeIfPresent(UsageDisplayLevel.self, forKey: .responseUsage)
-        let elevatedLevel = try container.decodeIfPresent(ElevatedLevel.self, forKey: .elevatedLevel)
-        let groupActivation = try container.decodeIfPresent(GroupActivation.self, forKey: .groupActivation)
+        let thinkingLevel = container.decodeLenient(ThinkLevel.self, forKey: .thinkingLevel)
+        let verboseLevel = container.decodeLenient(VerboseLevel.self, forKey: .verboseLevel)
+        let reasoningLevel = container.decodeLenient(ReasoningLevel.self, forKey: .reasoningLevel)
+        let responseUsage = container.decodeLenient(UsageDisplayLevel.self, forKey: .responseUsage)
+        let elevatedLevel = container.decodeLenient(ElevatedLevel.self, forKey: .elevatedLevel)
+        let groupActivation = container.decodeLenient(GroupActivation.self, forKey: .groupActivation)
         let groupActivationNeedsSystemIntro = try container.decodeIfPresent(
             Bool.self,
             forKey: .groupActivationNeedsSystemIntro
         ) ?? false
-        let sendPolicy = try container.decodeIfPresent(SendPolicy.self, forKey: .sendPolicy)
+        let sendPolicy = container.decodeLenient(SendPolicy.self, forKey: .sendPolicy)
         let modelOverride = try container.decodeIfPresent(String.self, forKey: .modelOverride)
-        let execHost = try container.decodeIfPresent(ExecHost.self, forKey: .execHost)
-        let execSecurity = try container.decodeIfPresent(ExecSecurity.self, forKey: .execSecurity)
-        let execAsk = try container.decodeIfPresent(ExecAsk.self, forKey: .execAsk)
+        let execHost = container.decodeLenient(ExecHost.self, forKey: .execHost)
+        let execSecurity = container.decodeLenient(ExecSecurity.self, forKey: .execSecurity)
+        let execAsk = container.decodeLenient(ExecAsk.self, forKey: .execAsk)
         let execNode = try container.decodeIfPresent(String.self, forKey: .execNode)
         self.init(
             defaultAgentID: defaultAgentID,

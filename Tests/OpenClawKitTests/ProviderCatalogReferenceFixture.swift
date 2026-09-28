@@ -60,7 +60,7 @@ enum ProviderCatalogReferenceFixture {
         .init(providerID: "vllm", auth: nil, api: .openAICompletions, baseURL: "http://127.0.0.1:8000/v1", defaultModelID: "qwen2.5-coder-32b-instruct"),
         .init(providerID: "sglang", auth: .apiKey, api: .openAICompletions, baseURL: "http://127.0.0.1:30000/v1", defaultModelID: "Qwen/Qwen3-8B"),
         .init(providerID: "qwen-portal", auth: .oauth, api: .openAICompletions, baseURL: "https://portal.qwen.ai/v1", defaultModelID: "coder-model"),
-        .init(providerID: "openai-codex", auth: .oauth, api: .openAICodexResponses, baseURL: "https://chatgpt.com/backend-api", defaultModelID: "gpt-5.5"),
+        .init(providerID: "openai-codex", auth: .oauth, api: .openAIChatGPTResponses, baseURL: "https://chatgpt.com/backend-api", defaultModelID: "gpt-5.5"),
         .init(providerID: "opencode", auth: .apiKey, api: .openAICompletions, baseURL: "https://api.opencode.ai/v1", defaultModelID: "claude-opus-4-6"),
         .init(providerID: "opencode-go", auth: .apiKey, api: .openAICompletions, baseURL: "https://api.opencode.ai/v1", defaultModelID: "kimi-k2.5"),
         .init(providerID: "anthropic-vertex", auth: .apiKey, api: .anthropicMessages, baseURL: "https://aiplatform.googleapis.com", defaultModelID: "claude-sonnet-4-6"),

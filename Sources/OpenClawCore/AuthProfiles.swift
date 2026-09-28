@@ -1,10 +1,15 @@
 import Foundation
 
 /// Credential mode declared by config for one auth profile.
+///
+/// - Note: 2026.3.0 added `aws-sdk` (AWS SDK default credential chain; no secret is stored in the
+///   auth profile store). Exhaustive `switch` statements over `AuthProfileMode` need the new case.
 public enum AuthProfileMode: String, Codable, Sendable, Equatable, CaseIterable {
     case apiKey = "api_key"
     case oauth
     case token
+    /// AWS SDK default credential chain; the profile carries no stored secret.
+    case awsSDK = "aws-sdk"
 }
 
 /// Config-declared auth profile metadata aligned with the TS SDK.
@@ -79,7 +84,8 @@ public struct AuthConfig: Codable, Sendable, Equatable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.profiles = try container.decodeIfPresent([String: AuthProfileConfig].self, forKey: .profiles) ?? [:]
+        // A profile with an unknown mode is dropped (and recorded as an issue) instead of failing the config.
+        self.profiles = container.decodeLossyDictionaryIfPresent(AuthProfileConfig.self, forKey: .profiles) ?? [:]
         self.order = try container.decodeIfPresent([String: [String]].self, forKey: .order) ?? [:]
         self.cooldowns = try container.decodeIfPresent(AuthCooldownConfig.self, forKey: .cooldowns) ?? AuthCooldownConfig()
     }
@@ -562,6 +568,9 @@ public actor AuthProfileStore {
                     metadata: record.metadata
                 )
             )
+        case .awsSDK:
+            // AWS SDK profiles resolve credentials through the SDK default chain; nothing is stored.
+            return nil
         }
     }
 
@@ -884,8 +893,10 @@ public enum AuthProfileResolver {
             return 1
         case .apiKey:
             return 2
-        case nil:
+        case .awsSDK:
             return 3
+        case nil:
+            return 4
         }
     }
 

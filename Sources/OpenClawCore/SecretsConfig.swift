@@ -31,11 +31,16 @@ private enum SecretPatterns {
     }
 }
 
-/// Secret source kinds supported by OpenClaw parity config.
+/// Secret source kinds supported by OpenClaw parity config (upstream `SecretRefSource`).
+///
+/// - Note: 2026.3.0 added `store` (the host's shared secret store; in-process SDK gateways map it to
+///   the platform ``CredentialStore``). Exhaustive `switch` statements need the new case.
 public enum SecretRefSource: String, Codable, Sendable, Equatable, CaseIterable {
     case env
     case file
     case exec
+    /// Shared host secret store. Ids use the environment-variable grammar.
+    case store
 }
 
 /// Stable identifier for a secret stored in a configured provider.
@@ -89,6 +94,10 @@ public struct SecretRef: Codable, Sendable, Equatable {
         case .env:
             guard SecretPatterns.matches(SecretPatterns.envID, value: normalized.id) else {
                 return "Environment SecretRef ids must match ^[A-Z][A-Z0-9_]{0,127}$."
+            }
+        case .store:
+            guard SecretPatterns.matches(SecretPatterns.envID, value: normalized.id) else {
+                return "Store SecretRef ids must match ^[A-Z][A-Z0-9_]{0,127}$."
             }
         case .file:
             guard Self.isValidFileSecretRefID(normalized.id) else {
@@ -341,10 +350,34 @@ public struct ExecSecretProviderConfig: Codable, Sendable, Equatable {
     }
 }
 
+/// Config for a `store` secret provider (upstream `{ source: "store" }`, no other fields).
+public struct StoreSecretProviderConfig: Codable, Sendable, Equatable {
+    /// Provider source; always ``SecretRefSource/store``.
+    public var source: SecretRefSource
+
+    /// Creates a store secret provider config.
+    public init() {
+        self.source = .store
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case source
+    }
+
+    /// Decodes a store provider; the `source` field is implied.
+    public init(from decoder: Decoder) throws {
+        _ = try decoder.container(keyedBy: CodingKeys.self)
+        self.source = .store
+    }
+}
+
+/// - Note: 2026.3.0 added the `store` case. Exhaustive `switch` statements need the new case.
 public enum SecretProviderConfig: Codable, Sendable, Equatable {
     case env(EnvSecretProviderConfig)
     case file(FileSecretProviderConfig)
     case exec(ExecSecretProviderConfig)
+    /// Shared host secret store provider.
+    case store(StoreSecretProviderConfig)
 
     public var source: SecretRefSource {
         switch self {
@@ -353,6 +386,8 @@ public enum SecretProviderConfig: Codable, Sendable, Equatable {
         case .file(let config):
             return config.source
         case .exec(let config):
+            return config.source
+        case .store(let config):
             return config.source
         }
     }
@@ -371,6 +406,8 @@ public enum SecretProviderConfig: Codable, Sendable, Equatable {
             self = .file(try FileSecretProviderConfig(from: decoder))
         case .exec:
             self = .exec(try ExecSecretProviderConfig(from: decoder))
+        case .store:
+            self = .store(try StoreSecretProviderConfig(from: decoder))
         }
     }
 
@@ -382,6 +419,8 @@ public enum SecretProviderConfig: Codable, Sendable, Equatable {
             try config.encode(to: encoder)
         case .exec(let config):
             try config.encode(to: encoder)
+        case .store(let config):
+            try config.encode(to: encoder)
         }
     }
 }
@@ -390,16 +429,20 @@ public struct SecretDefaultsConfig: Codable, Sendable, Equatable {
     public var env: String
     public var file: String?
     public var exec: String?
+    /// Default provider alias for `store` secret refs.
+    public var store: String?
 
     public init(
         env: String = DEFAULT_SECRET_PROVIDER_ALIAS,
         file: String? = nil,
-        exec: String? = nil
+        exec: String? = nil,
+        store: String? = nil
     ) {
         let normalizedEnv = env.trimmingCharacters(in: .whitespacesAndNewlines)
         self.env = normalizedEnv.isEmpty ? DEFAULT_SECRET_PROVIDER_ALIAS : normalizedEnv
         self.file = file?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.exec = exec?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.store = store?.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     public func providerAlias(for source: SecretRefSource) -> String {
@@ -410,6 +453,8 @@ public struct SecretDefaultsConfig: Codable, Sendable, Equatable {
             return self.file?.isEmpty == false ? self.file! : DEFAULT_SECRET_PROVIDER_ALIAS
         case .exec:
             return self.exec?.isEmpty == false ? self.exec! : DEFAULT_SECRET_PROVIDER_ALIAS
+        case .store:
+            return self.store?.isEmpty == false ? self.store! : DEFAULT_SECRET_PROVIDER_ALIAS
         }
     }
 }
@@ -469,7 +514,8 @@ public struct SecretsConfig: Codable, Sendable, Equatable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.providers = try container.decodeIfPresent([String: SecretProviderConfig].self, forKey: .providers) ?? [:]
+        // A provider with an unknown source is dropped (and recorded as an issue) instead of failing the config.
+        self.providers = container.decodeLossyDictionaryIfPresent(SecretProviderConfig.self, forKey: .providers) ?? [:]
         self.defaults = try container.decodeIfPresent(SecretDefaultsConfig.self, forKey: .defaults) ?? SecretDefaultsConfig()
         self.resolution = try container.decodeIfPresent(SecretResolutionConfig.self, forKey: .resolution) ?? SecretResolutionConfig()
     }
