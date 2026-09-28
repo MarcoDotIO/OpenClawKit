@@ -319,12 +319,13 @@ struct OpenAIResponsesModelProviderTests {
         #expect(result.text == "fast-output")
         let body = try #require(await transport.bodyString())
         #expect(body.contains("\"service_tier\":\"priority\""))
-        #expect(body.contains("\"effort\":\"low\""))
-        #expect(body.contains("\"verbosity\":\"low\""))
+        // Upstream fast mode only sets the priority tier; effort comes from the thinking level.
+        #expect(body.contains("\"effort\"") == false)
+        #expect(body.contains("\"verbosity\"") == false)
     }
 
     @Test
-    func fastModeSkipsServiceTierForCodexAndPreservesRequestOverrides() async throws {
+    func fastModeOnChatGPTRouteUsesPriorityTierAndPreservesRequestOverrides() async throws {
         let transport = MockResponsesTransport(
             response: HTTPResponseData(
                 statusCode: 200,
@@ -370,8 +371,10 @@ struct OpenAIResponsesModelProviderTests {
 
         let body = try #require(await transport.bodyString())
         #expect(body.contains("\"effort\":\"high\""))
+        // The ChatGPT route always sends low verbosity and allows the priority tier (upstream parity).
         #expect(body.contains("\"verbosity\":\"low\""))
-        #expect(body.contains("service_tier") == false)
+        #expect(body.contains("\"service_tier\":\"priority\""))
+        #expect(await transport.lastPath == "/backend-api/codex/responses")
     }
 
     private static func decodeResponseObject(_ json: String) throws -> ResponseObject {

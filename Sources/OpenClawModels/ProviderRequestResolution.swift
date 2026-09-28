@@ -96,6 +96,25 @@ enum ProviderRequestResolution {
         }
     }
 
+    /// First non-empty metadata value for `keys`, request metadata before configured metadata.
+    static func metadataValue(
+        _ requestMetadata: [String: String],
+        _ configuredMetadata: [String: String],
+        keys: [String]
+    ) -> String? {
+        for key in keys {
+            if let value = ModelGenerationRequest.normalized(requestMetadata[key]) {
+                return value
+            }
+        }
+        for key in keys {
+            if let value = ModelGenerationRequest.normalized(configuredMetadata[key]) {
+                return value
+            }
+        }
+        return nil
+    }
+
     static func mergedHeaders(
         configured: [String: String],
         request: ModelGenerationRequest

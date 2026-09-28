@@ -14,47 +14,13 @@ public protocol BedrockHTTPTransport: Sendable {
 
 extension HTTPClient: BedrockHTTPTransport {}
 
-private struct BedrockConverseRequest: Codable, Sendable {
-    struct ContentBlock: Codable, Sendable {
-        let text: String
-    }
-
-    struct Message: Codable, Sendable {
-        let role: String
-        let content: [ContentBlock]
-    }
-
-    struct InferenceConfig: Codable, Sendable {
-        let maxTokens: Int
-
-        private enum CodingKeys: String, CodingKey {
-            case maxTokens = "maxTokens"
-        }
-    }
-
-    let messages: [Message]
-    let system: [ContentBlock]?
-    let inferenceConfig: InferenceConfig
-}
-
-private struct BedrockConverseResponse: Codable, Sendable {
-    struct ContentBlock: Codable, Sendable {
-        let text: String?
-    }
-
-    struct Message: Codable, Sendable {
-        let role: String?
-        let content: [ContentBlock]
-    }
-
-    struct Output: Codable, Sendable {
-        let message: Message?
-    }
-
-    let output: Output?
-}
-
 /// Generic Bedrock-converse provider backed by `ProviderServiceConfig`.
+///
+/// Implements model contract v2 on `POST /model/{modelId}/converse`: transcripts with `toolUse` /
+/// `toolResult` blocks, `toolConfig`, usage (including cache reads/writes) and stop reasons.
+/// Claude Opus 5, 4.8 and 4.7 (including region-prefixed inference profiles) never receive
+/// `temperature`. Requests are not SigV4-signed: `aws-sdk` auth expects a signing proxy or gateway.
+/// Streaming yields one final chunk (Converse streaming uses AWS event-stream framing).
 public struct BedrockConverseModelProvider: ModelProvider {
     /// Canonical provider identifier.
     public static let providerID = "amazon-bedrock"
@@ -63,13 +29,15 @@ public struct BedrockConverseModelProvider: ModelProvider {
     public let id: String
 
     private let configuration: ProviderServiceConfig
-    private let transport: any BedrockHTTPTransport
+    private let settings: ProviderEndpointSettings
+    private let exchange: ProviderHTTPExchange
 
     /// Creates a Bedrock-converse provider.
     /// - Parameters:
     ///   - id: Provider identifier.
     ///   - configuration: Provider service configuration.
     ///   - transport: HTTP transport implementation.
+    ///   - runtime: Canonical provider config for per-model compat, params and limits.
     public init(
         id: String = BedrockConverseModelProvider.providerID,
         configuration: ProviderServiceConfig = ProviderServiceConfig(
@@ -79,101 +47,78 @@ public struct BedrockConverseModelProvider: ModelProvider {
             modelID: "anthropic.claude-3-5-sonnet",
             baseURL: "https://bedrock-runtime.us-east-1.amazonaws.com"
         ),
-        transport: any BedrockHTTPTransport = HTTPClient()
+        transport: any BedrockHTTPTransport = ModelStreamingHTTPClient(),
+        runtime: ModelProviderRuntimeContext = .empty
     ) {
         self.id = id
         self.configuration = configuration
-        self.transport = transport
+        self.settings = ProviderEndpointSettings(providerID: id, service: configuration, api: .bedrockConverseStream, runtime: runtime)
+        self.exchange = ProviderHTTPExchange(providerID: id, send: { try await transport.data(for: $0) }, streamingTransport: nil)
     }
 
-    /// Generates text using a Bedrock converse endpoint.
+    /// Contract v2 features: tools, transcripts, images and reasoning replay (no incremental streaming).
+    public var capabilities: ModelProviderCapabilities {
+        ModelProviderCapabilities(
+            supportsStreaming: false,
+            supportsTools: true,
+            supportsParallelToolCalls: true,
+            supportsJSONSchema: false,
+            supportsImages: true,
+            supportsReasoning: true,
+            supportsTranscript: true
+        )
+    }
+
+    /// Generates a response using a Bedrock Converse endpoint.
     /// - Parameter request: Generation request payload.
     /// - Returns: Generated response payload.
     public func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
         guard self.configuration.enabled else {
             throw OpenClawCoreError.unavailable("\(self.id) model provider is disabled")
         }
-        switch self.configuration.apiStyle {
-        case .bedrockConverse, .custom:
-            break
-        default:
-            throw OpenClawCoreError.invalidConfiguration(
-                "\(self.id) requires a bedrock-converse compatible apiStyle"
-            )
+        if self.settings.runtime.api == nil {
+            switch self.configuration.apiStyle {
+            case .bedrockConverse, .custom:
+                break
+            default:
+                throw OpenClawCoreError.invalidConfiguration(
+                    "\(self.id) requires a bedrock-converse compatible apiStyle"
+                )
+            }
         }
 
-        let modelID = self.resolveModelID(request: request)
-        let endpoint = try self.resolveEndpoint(modelID: modelID)
-        let payload = BedrockConverseRequest(
-            messages: [.init(role: "user", content: [.init(text: request.prompt)])],
-            system: self.resolveSystemPrompt(request: request),
-            inferenceConfig: .init(maxTokens: self.resolveMaxTokens())
-        )
-
-        var urlRequest = URLRequest(url: endpoint)
-        urlRequest.httpMethod = "POST"
-        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let modelID = self.settings.resolvedModelID(for: request)
+        let model = self.settings.modelDefinition(for: modelID)
+        try ProviderRequestValidation.validate(request, providerID: self.id, model: model)
+        let baseURL = try self.settings.resolvedBaseURL(for: request)
+        let endpoint = baseURL
+            .appendingPathComponent("model")
+            .appendingPathComponent(modelID)
+            .appendingPathComponent("converse")
+        var urlRequest = self.settings.makeJSONRequest(url: endpoint, request: request, model: model, streaming: false)
         try self.applyAuthHeaders(to: &urlRequest, generationRequest: request)
-        if let region = self.configuration.region?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !region.isEmpty
-        {
+        if let region = ModelGenerationRequest.normalized(self.configuration.region) {
             urlRequest.setValue(region, forHTTPHeaderField: "x-amz-region")
         }
-        if let profile = self.configuration.profile?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !profile.isEmpty
-        {
+        if let profile = ModelGenerationRequest.normalized(self.configuration.profile) {
             urlRequest.setValue(profile, forHTTPHeaderField: "x-aws-profile")
         }
-        ProviderRequestResolution.applyHeaders(
-            ProviderRequestResolution.mergedHeaders(configured: self.configuration.headers, request: request),
-            request: &urlRequest
-        )
-        urlRequest.timeoutInterval = 30
-        urlRequest.httpBody = try JSONEncoder().encode(payload)
-
-        let response = try await self.transport.data(for: urlRequest)
-        guard (200..<300).contains(response.statusCode) else {
-            throw OpenClawCoreError.unavailable("\(self.id) request failed with status \(response.statusCode)")
-        }
-
-        let decoded = try JSONDecoder().decode(BedrockConverseResponse.self, from: response.body)
-        guard let text = decoded.output?.message?.content.first?.text?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !text.isEmpty
-        else {
-            throw OpenClawCoreError.unavailable("\(self.id) response did not include text content")
-        }
-        return ModelGenerationResponse(
-            text: text,
-            providerID: self.id,
-            modelID: modelID
-        )
-    }
-
-    private func resolveModelID(request: ModelGenerationRequest) -> String {
-        ProviderRequestResolution.resolveModelID(
+        ProviderRequestResolution.applyHeaders(self.settings.mergedHeaders(for: request, model: model), request: &urlRequest)
+        let payload = BedrockConverseWire.buildPayload(
             request: request,
-            configured: self.configuration.modelID,
-            fallback: "anthropic.claude-3-5-sonnet"
+            modelID: modelID,
+            model: model,
+            maxTokens: self.settings.maxTokens(for: request, model: model) ?? 8_192
         )
-    }
-
-    private func resolveSystemPrompt(request: ModelGenerationRequest) -> [BedrockConverseRequest.ContentBlock]? {
-        let systemPrompt = request.systemPrompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if systemPrompt.isEmpty {
-            return nil
-        }
-        return [.init(text: systemPrompt)]
-    }
-
-    private func resolveMaxTokens() -> Int {
-        let metadataValue = self.configuration.metadata["maxTokens"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if let parsed = Int(metadataValue), parsed > 0 {
-            return parsed
-        }
-        return 8_192
+        urlRequest.httpBody = try ProviderWireJSON.encode(payload)
+        let response = try await self.exchange.data(for: urlRequest)
+        return try BedrockConverseWire.parseResponse(response.body, providerID: self.id, modelID: modelID)
     }
 
     private func applyAuthHeaders(to request: inout URLRequest, generationRequest: ModelGenerationRequest) throws {
+        if self.settings.applyRequestAuthOverride(to: &request) {
+            return
+        }
         switch self.configuration.authMode {
         case .apiKey:
             let apiKey = try ProviderRequestResolution.resolveAPIKey(
@@ -193,16 +138,5 @@ public struct BedrockConverseModelProvider: ModelProvider {
             // aws-sdk and none rely on caller/environment provided request signing or gateway-level auth.
             break
         }
-    }
-
-    private func resolveEndpoint(modelID: String) throws -> URL {
-        let baseRaw = self.configuration.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !baseRaw.isEmpty, let baseURL = URL(string: baseRaw) else {
-            throw OpenClawCoreError.invalidConfiguration("\(self.id) base URL is invalid")
-        }
-        return baseURL
-            .appendingPathComponent("model")
-            .appendingPathComponent(modelID)
-            .appendingPathComponent("converse")
     }
 }

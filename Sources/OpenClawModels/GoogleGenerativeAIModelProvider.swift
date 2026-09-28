@@ -4,129 +4,59 @@ import FoundationNetworking
 #endif
 import OpenClawCore
 
-private struct GoogleGenerativeAIRequest: Encodable, Sendable {
-    struct Content: Encodable, Sendable {
-        let role: String
-        let parts: [GeminiInputPart]
-    }
-
-    let contents: [Content]
-}
-
-private struct GoogleGenerativeAIResponse: Decodable, Sendable {
-    struct Candidate: Decodable, Sendable {
-        struct Content: Decodable, Sendable {
-            struct Part: Decodable, Sendable {
-                let text: String?
-            }
-
-            let parts: [Part]
-        }
-
-        let content: Content?
-    }
-
-    let candidates: [Candidate]?
-}
-
 /// Generic Google Generative AI provider supporting API-key and OAuth-style auth.
+///
+/// Serves `google`/`gemini`, `google-gemini-cli`, `google-antigravity` and `google-vertex`
+/// (API `google-vertex`: a `{location}`/`{region}` placeholder in the base URL is replaced with the
+/// configured region, default `us-central1`). Implements model contract v2 like
+/// ``GeminiModelProvider``, with the system prompt sent as `systemInstruction`.
 public struct GoogleGenerativeAIModelProvider: ModelProvider {
+    /// Provider identifier.
     public let id: String
 
-    private let configuration: ProviderServiceConfig
-    private let transport: any GeminiHTTPTransport
+    private let engine: GoogleGenerativeAIEngine
 
+    /// Creates a Google Generative AI provider.
+    /// - Parameters:
+    ///   - id: Provider identifier.
+    ///   - configuration: Provider service configuration.
+    ///   - transport: HTTP transport implementation.
+    ///   - runtime: Canonical provider config and effective API (`google-generative-ai` or `google-vertex`).
     public init(
         id: String,
         configuration: ProviderServiceConfig,
-        transport: any GeminiHTTPTransport = HTTPClient()
+        transport: any GeminiHTTPTransport = ModelStreamingHTTPClient(),
+        runtime: ModelProviderRuntimeContext = .empty
     ) {
         self.id = id
-        self.configuration = configuration
-        self.transport = transport
+        self.engine = GoogleGenerativeAIEngine(
+            settings: ProviderEndpointSettings(providerID: id, service: configuration, api: .googleGenerativeAI, runtime: runtime),
+            exchange: ProviderHTTPExchange(
+                providerID: id,
+                send: { try await transport.data(for: $0) },
+                streamingTransport: transport as? any ModelHTTPStreamingTransport
+            ),
+            inlineSystemPrompt: false,
+            fallbackModelID: "gemini-2.0-flash"
+        )
     }
 
+    /// Contract v2 features of the Google Generative AI engine.
+    public var capabilities: ModelProviderCapabilities {
+        GoogleGenerativeAIEngine.capabilities
+    }
+
+    /// Generates a response via `generateContent`.
+    /// - Parameter request: Generation request.
+    /// - Returns: Generation response payload.
     public func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
-        guard self.configuration.enabled else {
-            throw OpenClawCoreError.unavailable("\(self.id) model provider is disabled")
-        }
-        let modelID = ProviderRequestResolution.resolveModelID(
-            request: request,
-            configured: self.configuration.modelID,
-            fallback: "gemini-2.0-flash"
-        )
-        var urlRequest = URLRequest(url: try self.resolveEndpoint(modelID: modelID, request: request))
-        urlRequest.httpMethod = "POST"
-        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        try self.applyAuthorization(to: &urlRequest, request: request)
-        ProviderRequestResolution.applyHeaders(
-            ProviderRequestResolution.mergedHeaders(configured: self.configuration.headers, request: request),
-            request: &urlRequest
-        )
-        let payload = GoogleGenerativeAIRequest(
-            contents: [
-                .init(
-                    role: "user",
-                    parts: GeminiMultimodalSupport.parts(prompt: request.prompt, attachments: request.attachments)
-                ),
-            ]
-        )
-        urlRequest.timeoutInterval = 30
-        urlRequest.httpBody = try JSONEncoder().encode(payload)
-
-        let response = try await self.transport.data(for: urlRequest)
-        guard (200..<300).contains(response.statusCode) else {
-            throw OpenClawCoreError.unavailable("\(self.id) request failed with status \(response.statusCode)")
-        }
-        let decoded = try JSONDecoder().decode(GoogleGenerativeAIResponse.self, from: response.body)
-        let text = decoded.candidates?.first?.content?.parts.compactMap(\.text).joined(separator: "\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !text.isEmpty else {
-            throw OpenClawCoreError.unavailable("\(self.id) response did not include generated text")
-        }
-        return ModelGenerationResponse(text: text, providerID: self.id, modelID: modelID)
+        try await self.engine.generate(request)
     }
 
-    private func resolveEndpoint(modelID: String, request: ModelGenerationRequest) throws -> URL {
-        let baseRaw = self.configuration.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !baseRaw.isEmpty, let baseURL = URL(string: baseRaw) else {
-            throw OpenClawCoreError.invalidConfiguration("\(self.id) base URL is invalid")
-        }
-        let path = "models/\(modelID):generateContent"
-        let url = baseURL.appendingPathComponent(path)
-        guard self.configuration.authMode == .apiKey else {
-            return url
-        }
-        let apiKey = try ProviderRequestResolution.resolveAPIKey(
-            configured: self.configuration.apiKey,
-            request: request,
-            providerID: self.id
-        )
-        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
-            throw OpenClawCoreError.invalidConfiguration("\(self.id) endpoint is invalid")
-        }
-        components.queryItems = [URLQueryItem(name: "key", value: apiKey)]
-        guard let resolved = components.url else {
-            throw OpenClawCoreError.invalidConfiguration("\(self.id) endpoint is invalid")
-        }
-        return resolved
-    }
-
-    private func applyAuthorization(to urlRequest: inout URLRequest, request: ModelGenerationRequest) throws {
-        switch self.configuration.authMode {
-        case .apiKey:
-            break
-        case .bearerToken, .oauthToken:
-            let token = try ProviderRequestResolution.resolveAccessToken(
-                configured: self.configuration.accessToken,
-                request: request,
-                providerID: self.id
-            )
-            urlRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        case .awsSDK:
-            throw OpenClawCoreError.invalidConfiguration("\(self.id) does not support aws-sdk auth mode")
-        case .none:
-            break
-        }
+    /// Streams chunks via `streamGenerateContent?alt=sse`.
+    /// - Parameter request: Generation request.
+    /// - Returns: Chunk stream ending with a `.final` chunk.
+    public func generateStream(_ request: ModelGenerationRequest) async -> AsyncThrowingStream<ModelStreamChunk, Error> {
+        self.engine.stream(request)
     }
 }

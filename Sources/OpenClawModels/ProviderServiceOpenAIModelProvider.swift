@@ -4,180 +4,82 @@ import FoundationNetworking
 #endif
 import OpenClawCore
 
-private struct ProviderServiceOpenAIChatCompletionRequest: Encodable, Sendable {
-    let model: String
-    let messages: [ProviderServiceOpenAIChatMessage]
-}
-
-private struct ProviderServiceOpenAIChatMessage: Encodable, Sendable {
-    let role: String
-    let content: OpenAIStyleMessageContent
-}
-
-private struct ProviderServiceOpenAIChatCompletionResponse: Codable, Sendable {
-    struct Choice: Codable, Sendable {
-        struct Message: Codable, Sendable {
-            let role: String
-            let content: String
-        }
-
-        let index: Int
-        let message: Message
-    }
-
-    let model: String?
-    let choices: [Choice]
-}
-
 /// Generic OpenAI-completions provider backed by `ProviderServiceConfig`.
+///
+/// Implements model contract v2 (transcript messages, tools and tool choice, JSON-schema response
+/// formats, tool calls, usage, stop reasons, reasoning and incremental streaming) and shapes
+/// payloads from model compat flags (`maxTokensField`, `thinkingFormat`, developer role, string
+/// content, usage streaming, OpenRouter/Vercel routing). Tool calls are proposals; the host or agent
+/// loop owns execution and approval.
 public struct ProviderServiceOpenAIModelProvider: ModelProvider {
     /// Provider identifier.
     public let id: String
 
     private let configuration: ProviderServiceConfig
-    private let transport: any OpenAICompatibleHTTPTransport
+    private let runtime: ModelProviderRuntimeContext
+    private let engine: OpenAIChatCompletionsEngine
 
     /// Creates a provider service OpenAI-completions provider.
     /// - Parameters:
     ///   - id: Provider identifier.
     ///   - configuration: Provider service configuration.
-    ///   - transport: HTTP transport implementation.
+    ///   - transport: HTTP transport implementation (streams incrementally when it conforms to
+    ///     ``ModelHTTPStreamingTransport``).
+    ///   - runtime: Canonical provider config for per-model compat, params and limits.
     public init(
         id: String,
         configuration: ProviderServiceConfig,
-        transport: any OpenAICompatibleHTTPTransport = HTTPClient()
+        transport: any OpenAICompatibleHTTPTransport = ModelStreamingHTTPClient(),
+        runtime: ModelProviderRuntimeContext = .empty
     ) {
         self.id = id
         self.configuration = configuration
-        self.transport = transport
+        self.runtime = runtime
+        self.engine = OpenAIChatCompletionsEngine(
+            settings: ProviderEndpointSettings(providerID: id, service: configuration, api: .openAICompletions, runtime: runtime),
+            exchange: ProviderHTTPExchange(
+                providerID: id,
+                send: { try await transport.data(for: $0) },
+                streamingTransport: transport as? any ModelHTTPStreamingTransport
+            )
+        )
     }
 
-    /// Generates text from an OpenAI-completions compatible endpoint.
+    /// Contract v2 features: streaming, tools, JSON schema, images, reasoning and transcripts.
+    public var capabilities: ModelProviderCapabilities {
+        OpenAIChatCompletionsEngine.capabilities
+    }
+
+    /// Generates a response from an OpenAI-completions compatible endpoint.
     /// - Parameter request: Generation request payload.
     /// - Returns: Generated response payload.
     public func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
-        guard self.configuration.enabled else {
-            throw OpenClawCoreError.unavailable("\(self.id) model provider is disabled")
+        try self.validateAPIStyle()
+        return try await self.engine.generate(request)
+    }
+
+    /// Streams text, reasoning, tool-call and usage chunks from an OpenAI-completions endpoint.
+    /// - Parameter request: Generation request payload.
+    /// - Returns: Chunk stream ending with a `.final` chunk.
+    public func generateStream(_ request: ModelGenerationRequest) async -> AsyncThrowingStream<ModelStreamChunk, Error> {
+        do {
+            try self.validateAPIStyle()
+        } catch {
+            return AsyncThrowingStream { $0.finish(throwing: error) }
         }
+        return self.engine.stream(request)
+    }
+
+    private func validateAPIStyle() throws {
+        guard self.runtime.api == nil else { return }
         switch self.configuration.apiStyle {
         case .openAICompletions, .custom, .ollama:
-            break
+            return
         default:
             throw OpenClawCoreError.invalidConfiguration(
                 "\(self.id) requires an OpenAI-completions compatible apiStyle"
             )
         }
-
-        let endpoint = try self.resolveEndpoint(request: request)
-        let modelID = self.resolveModelID(request: request)
-        let payload = ProviderServiceOpenAIChatCompletionRequest(
-            model: modelID,
-            messages: self.buildMessages(from: request)
-        )
-
-        var urlRequest = URLRequest(url: endpoint)
-        urlRequest.httpMethod = "POST"
-        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        if let token = try self.resolveAuthorizationToken(request: request) {
-            urlRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
-        if let organizationID = self.configuration.organizationID?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !organizationID.isEmpty
-        {
-            urlRequest.setValue(organizationID, forHTTPHeaderField: "x-organization-id")
-        }
-        ProviderRequestResolution.applyHeaders(
-            ProviderRequestResolution.mergedHeaders(configured: self.configuration.headers, request: request),
-            request: &urlRequest
-        )
-        urlRequest.timeoutInterval = 30
-        urlRequest.httpBody = try JSONEncoder().encode(payload)
-
-        let response = try await self.transport.data(for: urlRequest)
-        guard (200..<300).contains(response.statusCode) else {
-            throw OpenClawCoreError.unavailable("\(self.id) request failed with status \(response.statusCode)")
-        }
-
-        let decoded = try JSONDecoder().decode(ProviderServiceOpenAIChatCompletionResponse.self, from: response.body)
-        guard let content = decoded.choices.first?.message.content.trimmingCharacters(in: .whitespacesAndNewlines),
-              !content.isEmpty
-        else {
-            throw OpenClawCoreError.unavailable("\(self.id) response did not include message content")
-        }
-
-        return ModelGenerationResponse(
-            text: content,
-            providerID: self.id,
-            modelID: decoded.model ?? modelID
-        )
-    }
-
-    private func resolveModelID(request: ModelGenerationRequest) -> String {
-        ProviderRequestResolution.resolveModelID(
-            request: request,
-            configured: self.configuration.modelID,
-            fallback: "gpt-4.1-mini"
-        )
-    }
-
-    private func resolveAuthorizationToken(request: ModelGenerationRequest) throws -> String? {
-        switch self.configuration.authMode {
-        case .apiKey:
-            return try ProviderRequestResolution.resolveAPIKey(
-                configured: self.configuration.apiKey,
-                request: request,
-                providerID: self.id
-            )
-        case .bearerToken, .oauthToken:
-            return try ProviderRequestResolution.resolveAccessToken(
-                configured: self.configuration.accessToken,
-                request: request,
-                providerID: self.id
-            )
-        case .none:
-            return nil
-        case .awsSDK:
-            throw OpenClawCoreError.invalidConfiguration(
-                "\(self.id) does not support aws-sdk auth mode for OpenAI-completions requests"
-            )
-        }
-    }
-
-    private func buildMessages(from request: ModelGenerationRequest) -> [ProviderServiceOpenAIChatMessage] {
-        var messages: [ProviderServiceOpenAIChatMessage] = []
-        let systemPrompt = request.systemPrompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !systemPrompt.isEmpty {
-            messages.append(ProviderServiceOpenAIChatMessage(role: "system", content: .text(systemPrompt)))
-        }
-        messages.append(
-            ProviderServiceOpenAIChatMessage(
-                role: "user",
-                content: OpenAIStyleMultimodalSupport.userContent(
-                    prompt: request.prompt,
-                    attachments: request.attachments
-                )
-            )
-        )
-        return messages
-    }
-
-    private func resolveEndpoint(request: ModelGenerationRequest) throws -> URL {
-        let baseURL = try ProviderRequestResolution.resolveBaseURL(
-            configured: self.configuration.baseURL,
-            request: request,
-            providerID: self.id
-        )
-        let path = self.configuration.chatCompletionsPath
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        guard !path.isEmpty else {
-            throw OpenClawCoreError.invalidConfiguration("\(self.id) chat completions path is required")
-        }
-        var endpoint = baseURL
-        for segment in path.split(separator: "/") {
-            endpoint = endpoint.appendingPathComponent(String(segment))
-        }
-        return endpoint
     }
 }
 
@@ -196,6 +98,7 @@ public struct OpenRouterModelProvider: ModelProvider {
     ///   - id: Provider identifier.
     ///   - configuration: Provider service configuration.
     ///   - transport: HTTP transport implementation.
+    ///   - runtime: Canonical provider config for per-model compat, params and limits.
     public init(
         id: String = OpenRouterModelProvider.providerID,
         configuration: ProviderServiceConfig = ProviderServiceConfig(
@@ -206,21 +109,35 @@ public struct OpenRouterModelProvider: ModelProvider {
             baseURL: "https://openrouter.ai/api/v1",
             chatCompletionsPath: "chat/completions"
         ),
-        transport: any OpenAICompatibleHTTPTransport = HTTPClient()
+        transport: any OpenAICompatibleHTTPTransport = ModelStreamingHTTPClient(),
+        runtime: ModelProviderRuntimeContext = .empty
     ) {
         self.id = id
         self.provider = ProviderServiceOpenAIModelProvider(
             id: id,
             configuration: configuration,
-            transport: transport
+            transport: transport,
+            runtime: runtime
         )
     }
 
-    /// Generates text from OpenRouter.
+    /// Contract v2 features of the underlying OpenAI-completions engine.
+    public var capabilities: ModelProviderCapabilities {
+        self.provider.capabilities
+    }
+
+    /// Generates a response from OpenRouter.
     /// - Parameter request: Generation request payload.
     /// - Returns: Generated response payload.
     public func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
         try await self.provider.generate(request)
+    }
+
+    /// Streams chunks from OpenRouter.
+    /// - Parameter request: Generation request payload.
+    /// - Returns: Chunk stream ending with a `.final` chunk.
+    public func generateStream(_ request: ModelGenerationRequest) async -> AsyncThrowingStream<ModelStreamChunk, Error> {
+        await self.provider.generateStream(request)
     }
 }
 
@@ -239,6 +156,7 @@ public struct GroqModelProvider: ModelProvider {
     ///   - id: Provider identifier.
     ///   - configuration: Provider service configuration.
     ///   - transport: HTTP transport implementation.
+    ///   - runtime: Canonical provider config for per-model compat, params and limits.
     public init(
         id: String = GroqModelProvider.providerID,
         configuration: ProviderServiceConfig = ProviderServiceConfig(
@@ -249,21 +167,35 @@ public struct GroqModelProvider: ModelProvider {
             baseURL: "https://api.groq.com/openai/v1",
             chatCompletionsPath: "chat/completions"
         ),
-        transport: any OpenAICompatibleHTTPTransport = HTTPClient()
+        transport: any OpenAICompatibleHTTPTransport = ModelStreamingHTTPClient(),
+        runtime: ModelProviderRuntimeContext = .empty
     ) {
         self.id = id
         self.provider = ProviderServiceOpenAIModelProvider(
             id: id,
             configuration: configuration,
-            transport: transport
+            transport: transport,
+            runtime: runtime
         )
     }
 
-    /// Generates text from Groq.
+    /// Contract v2 features of the underlying OpenAI-completions engine.
+    public var capabilities: ModelProviderCapabilities {
+        self.provider.capabilities
+    }
+
+    /// Generates a response from Groq.
     /// - Parameter request: Generation request payload.
     /// - Returns: Generated response payload.
     public func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
         try await self.provider.generate(request)
+    }
+
+    /// Streams chunks from Groq.
+    /// - Parameter request: Generation request payload.
+    /// - Returns: Chunk stream ending with a `.final` chunk.
+    public func generateStream(_ request: ModelGenerationRequest) async -> AsyncThrowingStream<ModelStreamChunk, Error> {
+        await self.provider.generateStream(request)
     }
 }
 
@@ -282,6 +214,7 @@ public struct MistralModelProvider: ModelProvider {
     ///   - id: Provider identifier.
     ///   - configuration: Provider service configuration.
     ///   - transport: HTTP transport implementation.
+    ///   - runtime: Canonical provider config for per-model compat, params and limits.
     public init(
         id: String = MistralModelProvider.providerID,
         configuration: ProviderServiceConfig = ProviderServiceConfig(
@@ -292,21 +225,35 @@ public struct MistralModelProvider: ModelProvider {
             baseURL: "https://api.mistral.ai/v1",
             chatCompletionsPath: "chat/completions"
         ),
-        transport: any OpenAICompatibleHTTPTransport = HTTPClient()
+        transport: any OpenAICompatibleHTTPTransport = ModelStreamingHTTPClient(),
+        runtime: ModelProviderRuntimeContext = .empty
     ) {
         self.id = id
         self.provider = ProviderServiceOpenAIModelProvider(
             id: id,
             configuration: configuration,
-            transport: transport
+            transport: transport,
+            runtime: runtime
         )
     }
 
-    /// Generates text from Mistral.
+    /// Contract v2 features of the underlying OpenAI-completions engine.
+    public var capabilities: ModelProviderCapabilities {
+        self.provider.capabilities
+    }
+
+    /// Generates a response from Mistral.
     /// - Parameter request: Generation request payload.
     /// - Returns: Generated response payload.
     public func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
         try await self.provider.generate(request)
+    }
+
+    /// Streams chunks from Mistral.
+    /// - Parameter request: Generation request payload.
+    /// - Returns: Chunk stream ending with a `.final` chunk.
+    public func generateStream(_ request: ModelGenerationRequest) async -> AsyncThrowingStream<ModelStreamChunk, Error> {
+        await self.provider.generateStream(request)
     }
 }
 
@@ -325,6 +272,7 @@ public struct CerebrasModelProvider: ModelProvider {
     ///   - id: Provider identifier.
     ///   - configuration: Provider service configuration.
     ///   - transport: HTTP transport implementation.
+    ///   - runtime: Canonical provider config for per-model compat, params and limits.
     public init(
         id: String = CerebrasModelProvider.providerID,
         configuration: ProviderServiceConfig = ProviderServiceConfig(
@@ -335,21 +283,35 @@ public struct CerebrasModelProvider: ModelProvider {
             baseURL: "https://api.cerebras.ai/v1",
             chatCompletionsPath: "chat/completions"
         ),
-        transport: any OpenAICompatibleHTTPTransport = HTTPClient()
+        transport: any OpenAICompatibleHTTPTransport = ModelStreamingHTTPClient(),
+        runtime: ModelProviderRuntimeContext = .empty
     ) {
         self.id = id
         self.provider = ProviderServiceOpenAIModelProvider(
             id: id,
             configuration: configuration,
-            transport: transport
+            transport: transport,
+            runtime: runtime
         )
     }
 
-    /// Generates text from Cerebras.
+    /// Contract v2 features of the underlying OpenAI-completions engine.
+    public var capabilities: ModelProviderCapabilities {
+        self.provider.capabilities
+    }
+
+    /// Generates a response from Cerebras.
     /// - Parameter request: Generation request payload.
     /// - Returns: Generated response payload.
     public func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
         try await self.provider.generate(request)
+    }
+
+    /// Streams chunks from Cerebras.
+    /// - Parameter request: Generation request payload.
+    /// - Returns: Chunk stream ending with a `.final` chunk.
+    public func generateStream(_ request: ModelGenerationRequest) async -> AsyncThrowingStream<ModelStreamChunk, Error> {
+        await self.provider.generateStream(request)
     }
 }
 
@@ -368,6 +330,7 @@ public struct MoonshotModelProvider: ModelProvider {
     ///   - id: Provider identifier.
     ///   - configuration: Provider service configuration.
     ///   - transport: HTTP transport implementation.
+    ///   - runtime: Canonical provider config for per-model compat, params and limits.
     public init(
         id: String = MoonshotModelProvider.providerID,
         configuration: ProviderServiceConfig = ProviderServiceConfig(
@@ -378,21 +341,35 @@ public struct MoonshotModelProvider: ModelProvider {
             baseURL: "https://api.moonshot.ai/v1",
             chatCompletionsPath: "chat/completions"
         ),
-        transport: any OpenAICompatibleHTTPTransport = HTTPClient()
+        transport: any OpenAICompatibleHTTPTransport = ModelStreamingHTTPClient(),
+        runtime: ModelProviderRuntimeContext = .empty
     ) {
         self.id = id
         self.provider = ProviderServiceOpenAIModelProvider(
             id: id,
             configuration: configuration,
-            transport: transport
+            transport: transport,
+            runtime: runtime
         )
     }
 
-    /// Generates text from Moonshot.
+    /// Contract v2 features of the underlying OpenAI-completions engine.
+    public var capabilities: ModelProviderCapabilities {
+        self.provider.capabilities
+    }
+
+    /// Generates a response from Moonshot.
     /// - Parameter request: Generation request payload.
     /// - Returns: Generated response payload.
     public func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
         try await self.provider.generate(request)
+    }
+
+    /// Streams chunks from Moonshot.
+    /// - Parameter request: Generation request payload.
+    /// - Returns: Chunk stream ending with a `.final` chunk.
+    public func generateStream(_ request: ModelGenerationRequest) async -> AsyncThrowingStream<ModelStreamChunk, Error> {
+        await self.provider.generateStream(request)
     }
 }
 
@@ -411,6 +388,7 @@ public struct LiteLLMModelProvider: ModelProvider {
     ///   - id: Provider identifier.
     ///   - configuration: Provider service configuration.
     ///   - transport: HTTP transport implementation.
+    ///   - runtime: Canonical provider config for per-model compat, params and limits.
     public init(
         id: String = LiteLLMModelProvider.providerID,
         configuration: ProviderServiceConfig = ProviderServiceConfig(
@@ -421,21 +399,35 @@ public struct LiteLLMModelProvider: ModelProvider {
             baseURL: "http://127.0.0.1:4000/v1",
             chatCompletionsPath: "chat/completions"
         ),
-        transport: any OpenAICompatibleHTTPTransport = HTTPClient()
+        transport: any OpenAICompatibleHTTPTransport = ModelStreamingHTTPClient(),
+        runtime: ModelProviderRuntimeContext = .empty
     ) {
         self.id = id
         self.provider = ProviderServiceOpenAIModelProvider(
             id: id,
             configuration: configuration,
-            transport: transport
+            transport: transport,
+            runtime: runtime
         )
     }
 
-    /// Generates text from LiteLLM.
+    /// Contract v2 features of the underlying OpenAI-completions engine.
+    public var capabilities: ModelProviderCapabilities {
+        self.provider.capabilities
+    }
+
+    /// Generates a response from LiteLLM.
     /// - Parameter request: Generation request payload.
     /// - Returns: Generated response payload.
     public func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
         try await self.provider.generate(request)
+    }
+
+    /// Streams chunks from LiteLLM.
+    /// - Parameter request: Generation request payload.
+    /// - Returns: Chunk stream ending with a `.final` chunk.
+    public func generateStream(_ request: ModelGenerationRequest) async -> AsyncThrowingStream<ModelStreamChunk, Error> {
+        await self.provider.generateStream(request)
     }
 }
 
@@ -454,6 +446,7 @@ public struct TogetherModelProvider: ModelProvider {
     ///   - id: Provider identifier.
     ///   - configuration: Provider service configuration.
     ///   - transport: HTTP transport implementation.
+    ///   - runtime: Canonical provider config for per-model compat, params and limits.
     public init(
         id: String = TogetherModelProvider.providerID,
         configuration: ProviderServiceConfig = ProviderServiceConfig(
@@ -464,21 +457,35 @@ public struct TogetherModelProvider: ModelProvider {
             baseURL: "https://api.together.xyz/v1",
             chatCompletionsPath: "chat/completions"
         ),
-        transport: any OpenAICompatibleHTTPTransport = HTTPClient()
+        transport: any OpenAICompatibleHTTPTransport = ModelStreamingHTTPClient(),
+        runtime: ModelProviderRuntimeContext = .empty
     ) {
         self.id = id
         self.provider = ProviderServiceOpenAIModelProvider(
             id: id,
             configuration: configuration,
-            transport: transport
+            transport: transport,
+            runtime: runtime
         )
     }
 
-    /// Generates text from Together.
+    /// Contract v2 features of the underlying OpenAI-completions engine.
+    public var capabilities: ModelProviderCapabilities {
+        self.provider.capabilities
+    }
+
+    /// Generates a response from Together.
     /// - Parameter request: Generation request payload.
     /// - Returns: Generated response payload.
     public func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
         try await self.provider.generate(request)
+    }
+
+    /// Streams chunks from Together.
+    /// - Parameter request: Generation request payload.
+    /// - Returns: Chunk stream ending with a `.final` chunk.
+    public func generateStream(_ request: ModelGenerationRequest) async -> AsyncThrowingStream<ModelStreamChunk, Error> {
+        await self.provider.generateStream(request)
     }
 }
 
@@ -492,11 +499,12 @@ public struct HuggingFaceModelProvider: ModelProvider {
 
     private let provider: ProviderServiceOpenAIModelProvider
 
-    /// Creates a Hugging Face provider.
+    /// Creates a Hugging Face Inference provider.
     /// - Parameters:
     ///   - id: Provider identifier.
     ///   - configuration: Provider service configuration.
     ///   - transport: HTTP transport implementation.
+    ///   - runtime: Canonical provider config for per-model compat, params and limits.
     public init(
         id: String = HuggingFaceModelProvider.providerID,
         configuration: ProviderServiceConfig = ProviderServiceConfig(
@@ -507,21 +515,35 @@ public struct HuggingFaceModelProvider: ModelProvider {
             baseURL: "https://router.huggingface.co/v1",
             chatCompletionsPath: "chat/completions"
         ),
-        transport: any OpenAICompatibleHTTPTransport = HTTPClient()
+        transport: any OpenAICompatibleHTTPTransport = ModelStreamingHTTPClient(),
+        runtime: ModelProviderRuntimeContext = .empty
     ) {
         self.id = id
         self.provider = ProviderServiceOpenAIModelProvider(
             id: id,
             configuration: configuration,
-            transport: transport
+            transport: transport,
+            runtime: runtime
         )
     }
 
-    /// Generates text from Hugging Face Inference.
+    /// Contract v2 features of the underlying OpenAI-completions engine.
+    public var capabilities: ModelProviderCapabilities {
+        self.provider.capabilities
+    }
+
+    /// Generates a response from Hugging Face Inference.
     /// - Parameter request: Generation request payload.
     /// - Returns: Generated response payload.
     public func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
         try await self.provider.generate(request)
+    }
+
+    /// Streams chunks from Hugging Face Inference.
+    /// - Parameter request: Generation request payload.
+    /// - Returns: Chunk stream ending with a `.final` chunk.
+    public func generateStream(_ request: ModelGenerationRequest) async -> AsyncThrowingStream<ModelStreamChunk, Error> {
+        await self.provider.generateStream(request)
     }
 }
 
@@ -540,6 +562,7 @@ public struct QianfanModelProvider: ModelProvider {
     ///   - id: Provider identifier.
     ///   - configuration: Provider service configuration.
     ///   - transport: HTTP transport implementation.
+    ///   - runtime: Canonical provider config for per-model compat, params and limits.
     public init(
         id: String = QianfanModelProvider.providerID,
         configuration: ProviderServiceConfig = ProviderServiceConfig(
@@ -550,21 +573,35 @@ public struct QianfanModelProvider: ModelProvider {
             baseURL: "https://qianfan.baidubce.com/v2",
             chatCompletionsPath: "chat/completions"
         ),
-        transport: any OpenAICompatibleHTTPTransport = HTTPClient()
+        transport: any OpenAICompatibleHTTPTransport = ModelStreamingHTTPClient(),
+        runtime: ModelProviderRuntimeContext = .empty
     ) {
         self.id = id
         self.provider = ProviderServiceOpenAIModelProvider(
             id: id,
             configuration: configuration,
-            transport: transport
+            transport: transport,
+            runtime: runtime
         )
     }
 
-    /// Generates text from Qianfan.
+    /// Contract v2 features of the underlying OpenAI-completions engine.
+    public var capabilities: ModelProviderCapabilities {
+        self.provider.capabilities
+    }
+
+    /// Generates a response from Qianfan.
     /// - Parameter request: Generation request payload.
     /// - Returns: Generated response payload.
     public func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
         try await self.provider.generate(request)
+    }
+
+    /// Streams chunks from Qianfan.
+    /// - Parameter request: Generation request payload.
+    /// - Returns: Chunk stream ending with a `.final` chunk.
+    public func generateStream(_ request: ModelGenerationRequest) async -> AsyncThrowingStream<ModelStreamChunk, Error> {
+        await self.provider.generateStream(request)
     }
 }
 
@@ -583,6 +620,7 @@ public struct NVIDIAModelProvider: ModelProvider {
     ///   - id: Provider identifier.
     ///   - configuration: Provider service configuration.
     ///   - transport: HTTP transport implementation.
+    ///   - runtime: Canonical provider config for per-model compat, params and limits.
     public init(
         id: String = NVIDIAModelProvider.providerID,
         configuration: ProviderServiceConfig = ProviderServiceConfig(
@@ -593,21 +631,35 @@ public struct NVIDIAModelProvider: ModelProvider {
             baseURL: "https://integrate.api.nvidia.com/v1",
             chatCompletionsPath: "chat/completions"
         ),
-        transport: any OpenAICompatibleHTTPTransport = HTTPClient()
+        transport: any OpenAICompatibleHTTPTransport = ModelStreamingHTTPClient(),
+        runtime: ModelProviderRuntimeContext = .empty
     ) {
         self.id = id
         self.provider = ProviderServiceOpenAIModelProvider(
             id: id,
             configuration: configuration,
-            transport: transport
+            transport: transport,
+            runtime: runtime
         )
     }
 
-    /// Generates text from NVIDIA.
+    /// Contract v2 features of the underlying OpenAI-completions engine.
+    public var capabilities: ModelProviderCapabilities {
+        self.provider.capabilities
+    }
+
+    /// Generates a response from NVIDIA.
     /// - Parameter request: Generation request payload.
     /// - Returns: Generated response payload.
     public func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
         try await self.provider.generate(request)
+    }
+
+    /// Streams chunks from NVIDIA.
+    /// - Parameter request: Generation request payload.
+    /// - Returns: Chunk stream ending with a `.final` chunk.
+    public func generateStream(_ request: ModelGenerationRequest) async -> AsyncThrowingStream<ModelStreamChunk, Error> {
+        await self.provider.generateStream(request)
     }
 }
 
@@ -626,6 +678,7 @@ public struct ZAIModelProvider: ModelProvider {
     ///   - id: Provider identifier.
     ///   - configuration: Provider service configuration.
     ///   - transport: HTTP transport implementation.
+    ///   - runtime: Canonical provider config for per-model compat, params and limits.
     public init(
         id: String = ZAIModelProvider.providerID,
         configuration: ProviderServiceConfig = ProviderServiceConfig(
@@ -636,21 +689,35 @@ public struct ZAIModelProvider: ModelProvider {
             baseURL: "https://api.z.ai/api/paas/v4",
             chatCompletionsPath: "chat/completions"
         ),
-        transport: any OpenAICompatibleHTTPTransport = HTTPClient()
+        transport: any OpenAICompatibleHTTPTransport = ModelStreamingHTTPClient(),
+        runtime: ModelProviderRuntimeContext = .empty
     ) {
         self.id = id
         self.provider = ProviderServiceOpenAIModelProvider(
             id: id,
             configuration: configuration,
-            transport: transport
+            transport: transport,
+            runtime: runtime
         )
     }
 
-    /// Generates text from Z.AI.
+    /// Contract v2 features of the underlying OpenAI-completions engine.
+    public var capabilities: ModelProviderCapabilities {
+        self.provider.capabilities
+    }
+
+    /// Generates a response from Z.AI.
     /// - Parameter request: Generation request payload.
     /// - Returns: Generated response payload.
     public func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
         try await self.provider.generate(request)
+    }
+
+    /// Streams chunks from Z.AI.
+    /// - Parameter request: Generation request payload.
+    /// - Returns: Chunk stream ending with a `.final` chunk.
+    public func generateStream(_ request: ModelGenerationRequest) async -> AsyncThrowingStream<ModelStreamChunk, Error> {
+        await self.provider.generateStream(request)
     }
 }
 
@@ -669,6 +736,7 @@ public struct GitHubCopilotModelProvider: ModelProvider {
     ///   - id: Provider identifier.
     ///   - configuration: Provider service configuration.
     ///   - transport: HTTP transport implementation.
+    ///   - runtime: Canonical provider config for per-model compat, params and limits.
     public init(
         id: String = GitHubCopilotModelProvider.providerID,
         configuration: ProviderServiceConfig = ProviderServiceConfig(
@@ -679,64 +747,35 @@ public struct GitHubCopilotModelProvider: ModelProvider {
             baseURL: "https://api.githubcopilot.com",
             chatCompletionsPath: "chat/completions"
         ),
-        transport: any OpenAICompatibleHTTPTransport = HTTPClient()
+        transport: any OpenAICompatibleHTTPTransport = ModelStreamingHTTPClient(),
+        runtime: ModelProviderRuntimeContext = .empty
     ) {
         self.id = id
         self.provider = ProviderServiceOpenAIModelProvider(
             id: id,
             configuration: configuration,
-            transport: transport
+            transport: transport,
+            runtime: runtime
         )
     }
 
-    /// Generates text from GitHub Copilot.
+    /// Contract v2 features of the underlying OpenAI-completions engine.
+    public var capabilities: ModelProviderCapabilities {
+        self.provider.capabilities
+    }
+
+    /// Generates a response from GitHub Copilot.
     /// - Parameter request: Generation request payload.
     /// - Returns: Generated response payload.
     public func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
         try await self.provider.generate(request)
     }
-}
 
-/// Ollama provider service implementation.
-public struct OllamaModelProvider: ModelProvider {
-    /// Canonical provider identifier.
-    public static let providerID = "ollama"
-
-    /// Provider identifier.
-    public let id: String
-
-    private let provider: ProviderServiceOpenAIModelProvider
-
-    /// Creates an Ollama provider.
-    /// - Parameters:
-    ///   - id: Provider identifier.
-    ///   - configuration: Provider service configuration.
-    ///   - transport: HTTP transport implementation.
-    public init(
-        id: String = OllamaModelProvider.providerID,
-        configuration: ProviderServiceConfig = ProviderServiceConfig(
-            enabled: false,
-            apiStyle: .ollama,
-            authMode: .none,
-            modelID: "llama3.3",
-            baseURL: "http://127.0.0.1:11434/v1",
-            chatCompletionsPath: "chat/completions"
-        ),
-        transport: any OpenAICompatibleHTTPTransport = HTTPClient()
-    ) {
-        self.id = id
-        self.provider = ProviderServiceOpenAIModelProvider(
-            id: id,
-            configuration: configuration,
-            transport: transport
-        )
-    }
-
-    /// Generates text from Ollama.
+    /// Streams chunks from GitHub Copilot.
     /// - Parameter request: Generation request payload.
-    /// - Returns: Generated response payload.
-    public func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
-        try await self.provider.generate(request)
+    /// - Returns: Chunk stream ending with a `.final` chunk.
+    public func generateStream(_ request: ModelGenerationRequest) async -> AsyncThrowingStream<ModelStreamChunk, Error> {
+        await self.provider.generateStream(request)
     }
 }
 
@@ -755,6 +794,7 @@ public struct VLLMModelProvider: ModelProvider {
     ///   - id: Provider identifier.
     ///   - configuration: Provider service configuration.
     ///   - transport: HTTP transport implementation.
+    ///   - runtime: Canonical provider config for per-model compat, params and limits.
     public init(
         id: String = VLLMModelProvider.providerID,
         configuration: ProviderServiceConfig = ProviderServiceConfig(
@@ -765,21 +805,35 @@ public struct VLLMModelProvider: ModelProvider {
             baseURL: "http://127.0.0.1:8000/v1",
             chatCompletionsPath: "chat/completions"
         ),
-        transport: any OpenAICompatibleHTTPTransport = HTTPClient()
+        transport: any OpenAICompatibleHTTPTransport = ModelStreamingHTTPClient(),
+        runtime: ModelProviderRuntimeContext = .empty
     ) {
         self.id = id
         self.provider = ProviderServiceOpenAIModelProvider(
             id: id,
             configuration: configuration,
-            transport: transport
+            transport: transport,
+            runtime: runtime
         )
     }
 
-    /// Generates text from vLLM.
+    /// Contract v2 features of the underlying OpenAI-completions engine.
+    public var capabilities: ModelProviderCapabilities {
+        self.provider.capabilities
+    }
+
+    /// Generates a response from vLLM.
     /// - Parameter request: Generation request payload.
     /// - Returns: Generated response payload.
     public func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
         try await self.provider.generate(request)
+    }
+
+    /// Streams chunks from vLLM.
+    /// - Parameter request: Generation request payload.
+    /// - Returns: Chunk stream ending with a `.final` chunk.
+    public func generateStream(_ request: ModelGenerationRequest) async -> AsyncThrowingStream<ModelStreamChunk, Error> {
+        await self.provider.generateStream(request)
     }
 }
 
@@ -798,6 +852,7 @@ public struct QwenPortalModelProvider: ModelProvider {
     ///   - id: Provider identifier.
     ///   - configuration: Provider service configuration.
     ///   - transport: HTTP transport implementation.
+    ///   - runtime: Canonical provider config for per-model compat, params and limits.
     public init(
         id: String = QwenPortalModelProvider.providerID,
         configuration: ProviderServiceConfig = ProviderServiceConfig(
@@ -808,20 +863,117 @@ public struct QwenPortalModelProvider: ModelProvider {
             baseURL: "https://portal.qwen.ai/v1",
             chatCompletionsPath: "chat/completions"
         ),
-        transport: any OpenAICompatibleHTTPTransport = HTTPClient()
+        transport: any OpenAICompatibleHTTPTransport = ModelStreamingHTTPClient(),
+        runtime: ModelProviderRuntimeContext = .empty
     ) {
         self.id = id
         self.provider = ProviderServiceOpenAIModelProvider(
             id: id,
             configuration: configuration,
-            transport: transport
+            transport: transport,
+            runtime: runtime
         )
     }
 
-    /// Generates text from Qwen Portal.
+    /// Contract v2 features of the underlying OpenAI-completions engine.
+    public var capabilities: ModelProviderCapabilities {
+        self.provider.capabilities
+    }
+
+    /// Generates a response from Qwen Portal.
     /// - Parameter request: Generation request payload.
     /// - Returns: Generated response payload.
     public func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
         try await self.provider.generate(request)
+    }
+
+    /// Streams chunks from Qwen Portal.
+    /// - Parameter request: Generation request payload.
+    /// - Returns: Chunk stream ending with a `.final` chunk.
+    public func generateStream(_ request: ModelGenerationRequest) async -> AsyncThrowingStream<ModelStreamChunk, Error> {
+        await self.provider.generateStream(request)
+    }
+}
+
+/// Ollama provider service implementation.
+///
+/// With `apiStyle: .ollama` (the default) requests use the native `/api/chat` endpoint at the
+/// Ollama root (a trailing `/v1` is stripped), matching upstream. Other API styles keep the
+/// OpenAI-compatible `chat/completions` path. Ollama Cloud (`https://ollama.com`) takes an API
+/// key sent as `Authorization: Bearer`.
+public struct OllamaModelProvider: ModelProvider {
+    /// Canonical provider identifier.
+    public static let providerID = "ollama"
+
+    /// Provider identifier.
+    public let id: String
+
+    private let native: OllamaChatEngine?
+    private let compatible: ProviderServiceOpenAIModelProvider
+
+    /// Creates an Ollama provider.
+    /// - Parameters:
+    ///   - id: Provider identifier.
+    ///   - configuration: Provider service configuration.
+    ///   - transport: HTTP transport implementation.
+    ///   - runtime: Canonical provider config for per-model compat, params and limits.
+    public init(
+        id: String = OllamaModelProvider.providerID,
+        configuration: ProviderServiceConfig = ProviderServiceConfig(
+            enabled: false,
+            apiStyle: .ollama,
+            authMode: .none,
+            modelID: "llama3.3",
+            baseURL: "http://127.0.0.1:11434",
+            chatCompletionsPath: "chat/completions"
+        ),
+        transport: any OpenAICompatibleHTTPTransport = ModelStreamingHTTPClient(),
+        runtime: ModelProviderRuntimeContext = .empty
+    ) {
+        self.id = id
+        let usesNative = runtime.api.map { $0 == .ollama } ?? (configuration.apiStyle == .ollama)
+        if usesNative {
+            self.native = OllamaChatEngine(
+                settings: ProviderEndpointSettings(providerID: id, service: configuration, api: .ollama, runtime: runtime),
+                exchange: ProviderHTTPExchange(
+                    providerID: id,
+                    send: { try await transport.data(for: $0) },
+                    streamingTransport: transport as? any ModelHTTPStreamingTransport
+                )
+            )
+        } else {
+            self.native = nil
+        }
+        self.compatible = ProviderServiceOpenAIModelProvider(
+            id: id,
+            configuration: configuration,
+            transport: transport,
+            runtime: runtime
+        )
+    }
+
+    /// Contract v2 features of the active engine.
+    public var capabilities: ModelProviderCapabilities {
+        self.native == nil ? self.compatible.capabilities : OllamaChatEngine.capabilities
+    }
+
+    /// Generates a response from Ollama.
+    /// - Parameter request: Generation request payload.
+    /// - Returns: Generated response payload.
+    public func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
+        if let native {
+            return try await native.generate(request)
+        }
+        return try await self.compatible.generate(request)
+    }
+
+    /// Streams chunks from Ollama (NDJSON on the native endpoint).
+    /// - Parameter request: Generation request payload.
+    /// - Returns: Chunk stream ending with a `.final` chunk.
+    public func generateStream(_ request: ModelGenerationRequest) async -> AsyncThrowingStream<ModelStreamChunk, Error> {
+        if let native {
+            return native.stream(request)
+        }
+        return await self.compatible.generateStream(request)
     }
 }
