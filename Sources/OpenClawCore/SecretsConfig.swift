@@ -5,11 +5,18 @@ public let DEFAULT_SECRET_PROVIDER_ALIAS = "default"
 /// Sentinel file-secret ID used when a file contains one raw value instead of JSON.
 public let SINGLE_VALUE_FILE_SECRET_REF_ID = "value"
 
-private enum SecretPatterns {
+/// Prefix of the retired `secretref-env:NAME` env marker (decode-only).
+public let LEGACY_SECRETREF_ENV_MARKER_PREFIX = "secretref-env:"
+/// Prefix of the older retired `__env__:NAME` env marker (decode-only).
+public let LEGACY_DOUBLE_UNDERSCORE_ENV_MARKER_PREFIX = "__env__:"
+
+enum SecretPatterns {
     static let envID = try! NSRegularExpression(pattern: "^[A-Z][A-Z0-9_]{0,127}$")
     static let envTemplate = try! NSRegularExpression(pattern: #"^\$\{([A-Z][A-Z0-9_]{0,127})\}$"#)
+    static let envShorthand = try! NSRegularExpression(pattern: #"^\$([A-Z][A-Z0-9_]{0,127})$"#)
     static let providerAlias = try! NSRegularExpression(pattern: "^[a-z][a-z0-9_-]{0,63}$")
-    static let execID = try! NSRegularExpression(pattern: "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$")
+    static let execID = try! NSRegularExpression(pattern: "^[A-Za-z0-9][A-Za-z0-9._:/#-]{0,255}$")
+    static let integrationID = try! NSRegularExpression(pattern: "^.{1,128}$")
 
     static func matches(_ regex: NSRegularExpression, value: String) -> Bool {
         let range = NSRange(value.startIndex..<value.endIndex, in: value)
@@ -21,13 +28,16 @@ private enum SecretPatterns {
 
     static func envTemplateRef(_ value: String, provider: String = DEFAULT_SECRET_PROVIDER_ALIAS) -> SecretRef? {
         let range = NSRange(value.startIndex..<value.endIndex, in: value)
-        guard let match = self.envTemplate.firstMatch(in: value, range: range),
-              match.numberOfRanges == 2,
-              let idRange = Range(match.range(at: 1), in: value)
-        else {
-            return nil
+        for pattern in [self.envTemplate, self.envShorthand] {
+            guard let match = pattern.firstMatch(in: value, range: range),
+                  match.numberOfRanges == 2,
+                  let idRange = Range(match.range(at: 1), in: value)
+            else {
+                continue
+            }
+            return SecretRef(source: .env, provider: provider, id: String(value[idRange]))
         }
-        return SecretRef(source: .env, provider: provider, id: String(value[idRange]))
+        return nil
     }
 }
 
@@ -105,7 +115,7 @@ public struct SecretRef: Codable, Sendable, Equatable {
             }
         case .exec:
             guard SecretPatterns.matches(SecretPatterns.execID, value: normalized.id) else {
-                return "Exec SecretRef ids must match ^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$."
+                return "Exec SecretRef ids must match ^[A-Za-z0-9][A-Za-z0-9._:/#-]{0,255}$."
             }
             for segment in normalized.id.split(separator: "/", omittingEmptySubsequences: false) {
                 if segment == "." || segment == ".." {
@@ -116,6 +126,11 @@ public struct SecretRef: Codable, Sendable, Equatable {
         return nil
     }
 
+    /// Parses the `${NAME}` template or the `$NAME` shorthand into an env SecretRef.
+    /// - Parameters:
+    ///   - value: Candidate string (trimmed before matching).
+    ///   - provider: Provider alias for the resulting ref.
+    /// - Returns: The env ref, or `nil` when `value` is not an env shorthand.
     public static func parseEnvTemplate(
         _ value: String,
         provider: String = DEFAULT_SECRET_PROVIDER_ALIAS
@@ -124,6 +139,40 @@ public struct SecretRef: Codable, Sendable, Equatable {
             value.trimmingCharacters(in: .whitespacesAndNewlines),
             provider: provider
         )
+    }
+
+    /// Whether `value` is a retired `secretref-env:NAME` or `__env__:NAME` marker string.
+    /// - Parameter value: Candidate string.
+    /// - Returns: `true` for either legacy prefix.
+    public static func isLegacyEnvMarker(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.hasPrefix(LEGACY_SECRETREF_ENV_MARKER_PREFIX) || trimmed.hasPrefix(LEGACY_DOUBLE_UNDERSCORE_ENV_MARKER_PREFIX)
+    }
+
+    /// Parses a retired env marker string into an env SecretRef (upstream only reads these during
+    /// doctor migration; the SDK accepts them on decode and never writes them).
+    /// - Parameters:
+    ///   - value: Marker string such as `secretref-env:OPENAI_API_KEY`.
+    ///   - provider: Provider alias for the resulting ref.
+    /// - Returns: The env ref, or `nil` when the marker is malformed.
+    public static func parseLegacyEnvMarker(
+        _ value: String,
+        provider: String = DEFAULT_SECRET_PROVIDER_ALIAS
+    ) -> SecretRef? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prefix: String
+        if trimmed.hasPrefix(LEGACY_SECRETREF_ENV_MARKER_PREFIX) {
+            prefix = LEGACY_SECRETREF_ENV_MARKER_PREFIX
+        } else if trimmed.hasPrefix(LEGACY_DOUBLE_UNDERSCORE_ENV_MARKER_PREFIX) {
+            prefix = LEGACY_DOUBLE_UNDERSCORE_ENV_MARKER_PREFIX
+        } else {
+            return nil
+        }
+        let id = String(trimmed.dropFirst(prefix.count))
+        guard SecretPatterns.matches(SecretPatterns.envID, value: id) else {
+            return nil
+        }
+        return SecretRef(source: .env, provider: provider, id: id)
     }
 
     public static func isValidFileSecretRefID(_ value: String) -> Bool {
@@ -164,17 +213,47 @@ public enum SecretInput: Codable, Sendable, Equatable {
     case string(String)
     case ref(SecretRef)
 
+    /// Decodes a plaintext string, an env shorthand (`${NAME}` / `$NAME`), a retired env marker
+    /// (`secretref-env:NAME`, `__env__:NAME`, recorded as a legacy-key issue) or a SecretRef object.
+    /// - Parameter decoder: Source decoder.
     public init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         if let stringValue = try? container.decode(String.self) {
-            if let envRef = SecretRef.parseEnvTemplate(stringValue) {
-                self = .ref(envRef)
-            } else {
-                self = .string(stringValue)
+            let parsed = Self.parse(stringValue)
+            if parsed.isLegacyMarker {
+                ConfigDecodeIssueReporting.record(
+                    "Retired env marker \"\(stringValue)\" decoded as an env SecretRef; write {source, provider, id} instead.",
+                    kind: .legacyKey,
+                    decoder: decoder
+                )
             }
+            self = parsed.input
             return
         }
         self = .ref(try container.decode(SecretRef.self))
+    }
+
+    /// Interprets a secret string: env shorthands and retired env markers become env refs.
+    /// - Parameters:
+    ///   - value: Raw string.
+    ///   - envProvider: Provider alias for env refs (upstream `secrets.defaults.env`).
+    /// - Returns: The input and whether a retired marker was used.
+    public static func parse(
+        _ value: String,
+        envProvider: String = DEFAULT_SECRET_PROVIDER_ALIAS
+    ) -> (input: SecretInput, isLegacyMarker: Bool) {
+        if let envRef = SecretRef.parseEnvTemplate(value, provider: envProvider) {
+            return (.ref(envRef), false)
+        }
+        if let markerRef = SecretRef.parseLegacyEnvMarker(value, provider: envProvider) {
+            return (.ref(markerRef), true)
+        }
+        return (.string(value), false)
+    }
+
+    /// Whether the value is a plaintext `config.get` redaction marker (never a real secret).
+    public var isRedacted: Bool {
+        ConfigRedaction.isRedactedSecretValue(self.stringValue)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -270,11 +349,47 @@ public struct FileSecretProviderConfig: Codable, Sendable, Equatable {
             maxBytes: try container.decodeIfPresent(Int.self, forKey: .maxBytes) ?? 1_048_576
         )
     }
+
+    /// Upstream schema checks: `timeoutMs` ≤ 120000 and `maxBytes` ≤ 20 MiB.
+    /// - Returns: Human-readable problems (empty when valid).
+    public func validationErrors() -> [String] {
+        var errors: [String] = []
+        if self.path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            errors.append("File secret provider path must not be empty.")
+        }
+        if self.timeoutMs > 120_000 {
+            errors.append("File secret provider timeoutMs must be at most 120000 ms.")
+        }
+        if self.maxBytes > 20 * 1_024 * 1_024 {
+            errors.append("File secret provider maxBytes must be at most 20 MiB.")
+        }
+        return errors
+    }
+}
+
+/// `pluginIntegration` form of an exec secret provider: a plugin-owned integration resolves the refs.
+public struct ExecSecretPluginIntegration: Codable, Sendable, Equatable {
+    /// Plugin id (1...128 characters).
+    public var pluginId: String
+    /// Integration id inside the plugin (1...128 characters).
+    public var integrationId: String
+
+    /// Creates a plugin integration reference.
+    /// - Parameters:
+    ///   - pluginId: Plugin id.
+    ///   - integrationId: Integration id.
+    public init(pluginId: String, integrationId: String) {
+        self.pluginId = pluginId
+        self.integrationId = integrationId
+    }
 }
 
 public struct ExecSecretProviderConfig: Codable, Sendable, Equatable {
     public var source: SecretRefSource
+    /// Absolute path of the resolver command (empty for the ``pluginIntegration`` form).
     public var command: String
+    /// Plugin-owned integration that resolves refs instead of a local command (2026.9.6).
+    public var pluginIntegration: ExecSecretPluginIntegration?
     public var args: [String]
     public var timeoutMs: Int
     public var noOutputTimeoutMs: Int
@@ -298,10 +413,12 @@ public struct ExecSecretProviderConfig: Codable, Sendable, Equatable {
         passEnv: [String] = [],
         trustedDirs: [String] = [],
         allowInsecurePath: Bool = false,
-        allowSymlinkCommand: Bool = false
+        allowSymlinkCommand: Bool = false,
+        pluginIntegration: ExecSecretPluginIntegration? = nil
     ) {
         self.source = source
         self.command = command
+        self.pluginIntegration = pluginIntegration
         self.args = args
         let normalizedTimeoutMs = max(1, timeoutMs)
         self.timeoutMs = normalizedTimeoutMs
@@ -315,9 +432,16 @@ public struct ExecSecretProviderConfig: Codable, Sendable, Equatable {
         self.allowSymlinkCommand = allowSymlinkCommand
     }
 
+    /// Creates the plugin-integration form (no local command).
+    /// - Parameter pluginIntegration: Plugin and integration ids.
+    public init(pluginIntegration: ExecSecretPluginIntegration) {
+        self.init(command: "", pluginIntegration: pluginIntegration)
+    }
+
     private enum CodingKeys: String, CodingKey {
         case source
         case command
+        case pluginIntegration
         case args
         case timeoutMs
         case noOutputTimeoutMs
@@ -330,12 +454,21 @@ public struct ExecSecretProviderConfig: Codable, Sendable, Equatable {
         case allowSymlinkCommand
     }
 
+    /// Decodes the manual (`command`) or `pluginIntegration` form.
+    /// - Parameter decoder: Source decoder.
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let timeoutMs = try container.decodeIfPresent(Int.self, forKey: .timeoutMs) ?? 5_000
+        let pluginIntegration = container.decodeLenient(ExecSecretPluginIntegration.self, forKey: .pluginIntegration)
+        let command: String
+        if pluginIntegration != nil {
+            command = try container.decodeIfPresent(String.self, forKey: .command) ?? ""
+        } else {
+            command = try container.decode(String.self, forKey: .command)
+        }
         self.init(
             source: try container.decodeIfPresent(SecretRefSource.self, forKey: .source) ?? .exec,
-            command: try container.decode(String.self, forKey: .command),
+            command: command,
             args: try container.decodeIfPresent([String].self, forKey: .args) ?? [],
             timeoutMs: timeoutMs,
             noOutputTimeoutMs: try container.decodeIfPresent(Int.self, forKey: .noOutputTimeoutMs) ?? timeoutMs,
@@ -345,8 +478,74 @@ public struct ExecSecretProviderConfig: Codable, Sendable, Equatable {
             passEnv: try container.decodeIfPresent([String].self, forKey: .passEnv) ?? [],
             trustedDirs: try container.decodeIfPresent([String].self, forKey: .trustedDirs) ?? [],
             allowInsecurePath: try container.decodeIfPresent(Bool.self, forKey: .allowInsecurePath) ?? false,
-            allowSymlinkCommand: try container.decodeIfPresent(Bool.self, forKey: .allowSymlinkCommand) ?? false
+            allowSymlinkCommand: try container.decodeIfPresent(Bool.self, forKey: .allowSymlinkCommand) ?? false,
+            pluginIntegration: pluginIntegration
         )
+    }
+
+    /// Encodes the provider. Under ``Swift/CodingUserInfoKey/openClawUpstreamProjection`` the retired
+    /// `allowInsecurePath`/`allowSymlinkCommand` keys are omitted and the plugin form writes only
+    /// `source` and `pluginIntegration`, matching the strict upstream schema.
+    /// - Parameter encoder: Target encoder.
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        let projection = encoder.userInfo[.openClawUpstreamProjection] as? Bool == true
+        try container.encode(self.source, forKey: .source)
+        if let pluginIntegration = self.pluginIntegration {
+            try container.encode(pluginIntegration, forKey: .pluginIntegration)
+            if projection {
+                return
+            }
+        }
+        if !(projection && self.command.isEmpty) {
+            try container.encode(self.command, forKey: .command)
+        }
+        try container.encode(self.args, forKey: .args)
+        try container.encode(self.timeoutMs, forKey: .timeoutMs)
+        try container.encode(self.noOutputTimeoutMs, forKey: .noOutputTimeoutMs)
+        try container.encode(self.maxOutputBytes, forKey: .maxOutputBytes)
+        try container.encode(self.jsonOnly, forKey: .jsonOnly)
+        try container.encode(self.env, forKey: .env)
+        try container.encode(self.passEnv, forKey: .passEnv)
+        try container.encode(self.trustedDirs, forKey: .trustedDirs)
+        if !projection {
+            try container.encode(self.allowInsecurePath, forKey: .allowInsecurePath)
+            try container.encode(self.allowSymlinkCommand, forKey: .allowSymlinkCommand)
+        }
+    }
+
+    /// Upstream schema checks: absolute command path (manual form) or a valid plugin integration,
+    /// `args` ≤ 128, `timeoutMs` ≤ 120000, `maxOutputBytes` ≤ 20 MiB, `passEnv` env ids (≤ 128),
+    /// absolute `trustedDirs` (≤ 64).
+    /// - Returns: Human-readable problems (empty when valid).
+    public func validationErrors() -> [String] {
+        var errors: [String] = []
+        if let integration = self.pluginIntegration {
+            for (label, value) in [("pluginId", integration.pluginId), ("integrationId", integration.integrationId)]
+            where value.isEmpty || value.count > 128 {
+                errors.append("Exec secret provider pluginIntegration.\(label) must be 1-128 characters.")
+            }
+            return errors
+        }
+        if !self.command.hasPrefix("/") {
+            errors.append("Exec secret provider command must be an absolute path.")
+        }
+        if self.args.count > 128 {
+            errors.append("Exec secret provider args must contain at most 128 entries.")
+        }
+        if self.timeoutMs > 120_000 || self.noOutputTimeoutMs > 120_000 {
+            errors.append("Exec secret provider timeouts must be at most 120000 ms.")
+        }
+        if self.maxOutputBytes > 20 * 1_024 * 1_024 {
+            errors.append("Exec secret provider maxOutputBytes must be at most 20 MiB.")
+        }
+        if self.passEnv.count > 128 || self.passEnv.contains(where: { !SecretPatterns.matches(SecretPatterns.envID, value: $0) }) {
+            errors.append("Exec secret provider passEnv must contain at most 128 env ids matching ^[A-Z][A-Z0-9_]{0,127}$.")
+        }
+        if self.trustedDirs.count > 64 || self.trustedDirs.contains(where: { !$0.hasPrefix("/") }) {
+            errors.append("Exec secret provider trustedDirs must contain at most 64 absolute paths.")
+        }
+        return errors
     }
 }
 
@@ -490,26 +689,56 @@ public struct SecretResolutionConfig: Codable, Sendable, Equatable {
     }
 }
 
+/// `secrets.egressProxy`: host allowlists for the gateway-side secret egress proxy (server behavior;
+/// the SDK only decodes it).
+public struct SecretEgressProxyConfig: Codable, Sendable, Equatable {
+    /// Enables the egress proxy.
+    public var enabled: Bool?
+    /// Exact hostnames secrets may be sent to (max 256).
+    public var allowedHosts: [String]?
+    /// Exact hostnames that bypass the proxy (max 256).
+    public var bypassHosts: [String]?
+
+    /// Creates an egress proxy config.
+    /// - Parameters:
+    ///   - enabled: Enables the proxy.
+    ///   - allowedHosts: Allowed exact hosts.
+    ///   - bypassHosts: Bypassed exact hosts.
+    public init(enabled: Bool? = nil, allowedHosts: [String]? = nil, bypassHosts: [String]? = nil) {
+        self.enabled = enabled
+        self.allowedHosts = allowedHosts
+        self.bypassHosts = bypassHosts
+    }
+}
+
 /// Canonical top-level secrets config aligned with OpenClaw secret-provider docs.
+///
+/// - Note: `resolution` is retired upstream (2026.9.6). The SDK keeps it as a local runtime knob but
+///   never writes it into an upstream projection (see ``Swift/CodingUserInfoKey/openClawUpstreamProjection``).
 public struct SecretsConfig: Codable, Sendable, Equatable {
     public var providers: [String: SecretProviderConfig]
     public var defaults: SecretDefaultsConfig
     public var resolution: SecretResolutionConfig
+    /// `secrets.egressProxy` (metadata only).
+    public var egressProxy: SecretEgressProxyConfig?
 
     public init(
         providers: [String: SecretProviderConfig] = [:],
         defaults: SecretDefaultsConfig = SecretDefaultsConfig(),
-        resolution: SecretResolutionConfig = SecretResolutionConfig()
+        resolution: SecretResolutionConfig = SecretResolutionConfig(),
+        egressProxy: SecretEgressProxyConfig? = nil
     ) {
         self.providers = providers
         self.defaults = defaults
         self.resolution = resolution
+        self.egressProxy = egressProxy
     }
 
     private enum CodingKeys: String, CodingKey {
         case providers
         case defaults
         case resolution
+        case egressProxy
     }
 
     public init(from decoder: Decoder) throws {
@@ -518,6 +747,63 @@ public struct SecretsConfig: Codable, Sendable, Equatable {
         self.providers = container.decodeLossyDictionaryIfPresent(SecretProviderConfig.self, forKey: .providers) ?? [:]
         self.defaults = try container.decodeIfPresent(SecretDefaultsConfig.self, forKey: .defaults) ?? SecretDefaultsConfig()
         self.resolution = try container.decodeIfPresent(SecretResolutionConfig.self, forKey: .resolution) ?? SecretResolutionConfig()
+        self.egressProxy = container.decodeLenient(SecretEgressProxyConfig.self, forKey: .egressProxy)
+    }
+
+    /// Encodes the config; the upstream projection omits the retired `resolution` block.
+    /// - Parameter encoder: Target encoder.
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        let projection = encoder.userInfo[.openClawUpstreamProjection] as? Bool == true
+        if !(projection && self.providers.isEmpty) {
+            try container.encode(self.providers, forKey: .providers)
+        }
+        try container.encode(self.defaults, forKey: .defaults)
+        if !projection {
+            try container.encode(self.resolution, forKey: .resolution)
+        }
+        try container.encodeIfPresent(self.egressProxy, forKey: .egressProxy)
+    }
+
+    /// Provider alias that resolves `ref`: an explicit alias wins; the implicit `default` alias
+    /// falls back to `secrets.defaults.<source>` when no provider named `default` is configured for
+    /// that source (upstream fills a missing provider from the defaults).
+    /// - Parameter ref: Secret reference.
+    /// - Returns: Provider alias to use.
+    public func effectiveProviderAlias(for ref: SecretRef) -> String {
+        let provider = ref.provider.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard provider.isEmpty || provider == DEFAULT_SECRET_PROVIDER_ALIAS else {
+            return provider
+        }
+        if self.providers[DEFAULT_SECRET_PROVIDER_ALIAS]?.source == ref.source {
+            return DEFAULT_SECRET_PROVIDER_ALIAS
+        }
+        return self.defaults.providerAlias(for: ref.source)
+    }
+
+    /// Validation problems across providers and the egress proxy (upstream schema bounds).
+    /// - Returns: Human-readable problems keyed by config path.
+    public func validationErrors() -> [String] {
+        var errors: [String] = []
+        for (name, provider) in self.providers.sorted(by: { $0.key < $1.key }) {
+            if !SecretPatterns.matches(SecretPatterns.providerAlias, value: name) {
+                errors.append("secrets.providers.\(name): provider alias must match ^[a-z][a-z0-9_-]{0,63}$.")
+            }
+            switch provider {
+            case .file(let file):
+                errors.append(contentsOf: file.validationErrors().map { "secrets.providers.\(name): \($0)" })
+            case .exec(let exec):
+                errors.append(contentsOf: exec.validationErrors().map { "secrets.providers.\(name): \($0)" })
+            case .env, .store:
+                break
+            }
+        }
+        if let proxy = self.egressProxy {
+            if (proxy.allowedHosts?.count ?? 0) > 256 || (proxy.bypassHosts?.count ?? 0) > 256 {
+                errors.append("secrets.egressProxy host lists must contain at most 256 entries.")
+            }
+        }
+        return errors
     }
 
     public func defaultProviderAlias(for source: SecretRefSource) -> String {

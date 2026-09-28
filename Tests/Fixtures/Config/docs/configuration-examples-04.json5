@@ -1,0 +1,8 @@
+{
+  skills: {
+    load: {
+      extraDirs: ["~/path/to/skills"],
+      allowSymlinkTargets: ["~/path/to/skills"],
+    },
+  },
+}

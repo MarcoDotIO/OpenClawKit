@@ -1,0 +1,14 @@
+{
+  acp: {
+    enabled: true,
+    dispatch: { enabled: true },
+    backend: "acpx",
+    fallbacks: ["acpx-secondary"],
+    defaultAgent: "main",
+    allowedAgents: ["main", "ops"],
+    stream: {
+      repeatSuppression: true,
+      deliveryMode: "live", // live | final_only
+    },
+  },
+}
