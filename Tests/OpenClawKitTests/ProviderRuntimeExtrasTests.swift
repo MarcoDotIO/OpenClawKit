@@ -140,6 +140,28 @@ struct ProviderRuntimeExtrasTests {
     }
 
     @Test
+    func openAIOAuthConfigsUseTheChatGPTRoute() throws {
+        let oauth = try JSONDecoder().decode(
+            ModelProviderConfig.self,
+            from: Data(#"{"auth":"oauth","apiKey":"tok","models":[{"id":"gpt-5.4"}]}"#.utf8)
+        )
+        let provider = try ModelProviderFactory.makeProvider(providerID: "openai", config: oauth)
+        #expect(provider is OpenAIResponsesModelProvider)
+        let migrated = OpenAIRouteResolution.migrateLegacyCodexConfig(oauth)
+        #expect(migrated.api == .openAIChatGPTResponses)
+        #expect(migrated.baseURL == OpenAIRouteResolution.chatGPTBaseURL)
+
+        let explicit = ModelProviderConfig(
+            enabled: true,
+            baseURL: "https://api.openai.com/v1",
+            auth: .oauth,
+            api: .openAIResponses,
+            models: [ModelDefinitionConfig(id: "gpt-5.4")]
+        )
+        #expect(try ModelProviderFactory.makeProvider(providerID: "openai", config: explicit) is OpenAIResponsesModelProvider)
+    }
+
+    @Test
     func legacyBridgeInfersAPIKeyAuthWhenConfigOmitsAuth() throws {
         let decoded = try JSONDecoder().decode(ModelProviderConfig.self, from: Data(#"{"baseUrl":"https://x.example","apiKey":"sk"}"#.utf8))
         #expect(decoded.auth == nil)

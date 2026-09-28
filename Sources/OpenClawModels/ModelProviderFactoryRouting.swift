@@ -52,6 +52,11 @@ extension ModelProviderFactory {
         var config = config
         if OpenAIRouteResolution.isLegacyCodexProviderID(providerID) || OpenAIRouteResolution.isLegacyCodexProviderID(normalizedProviderID) {
             config = OpenAIRouteResolution.migrateLegacyCodexConfig(config)
+        } else if normalizedProviderID == OpenAIModelProvider.providerID, config.api == nil, config.auth == .oauth,
+                  [.unresolved, .platform, .chatGPT].contains(OpenAIRouteResolution.classify(baseURL: config.baseURL))
+        {
+            // ChatGPT sign-in credentials only work on the ChatGPT route.
+            config = OpenAIRouteResolution.migrateLegacyCodexConfig(config)
         }
         if config.api == nil, let unrecognized = config.unrecognizedAPI {
             throw OpenClawCoreError.unavailable(

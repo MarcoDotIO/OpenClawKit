@@ -199,7 +199,9 @@ enum OpenAIChatCompletionsWire {
         let compat = context.model?.compat
         if compat?.cacheControlFormat == .anthropic {
             var control: [String: Any] = ["type": "ephemeral"]
-            if cache.longRetention, compat?.supportsLongCacheRetention == true || context.compat.endpoint == .openRouter {
+            let longCapable = compat?.supportsLongCacheRetention != false
+                && (compat?.supportsLongCacheRetention == true || context.compat.endpoint == .openRouter)
+            if cache.longRetention, longCapable {
                 control["ttl"] = "1h"
             }
             if var tools = payload["tools"] as? [[String: Any]], !tools.isEmpty {
