@@ -116,4 +116,20 @@ struct ProviderCatalogThinkingProfileTests {
         #expect(profile.levels == [.off, .adaptive, .medium, .max])
         #expect(profile.defaultLevel == nil)
     }
+
+    @Test
+    func modelChoicesCarryThinkingLevelsAndContextWindows() throws {
+        let choices = OpenClawReferenceProviderCatalog.modelChoices(providerID: "anthropic", agentRuntime: "openclaw")
+        let opus = try #require(choices.first { $0.id == "claude-opus-5" })
+        #expect(opus.provider == "anthropic")
+        #expect(opus.thinkingdefault == "high")
+        #expect(opus.thinkinglevels?.compactMap { $0["id"]?.stringValue }.contains("max") == true)
+        #expect(opus.contextwindows?.compactMap { $0["id"]?.stringValue }.contains("1m") == true)
+        #expect(opus.input?.compactMap(\.stringValue).contains("image") == true)
+
+        let appleFM = OpenClawReferenceProviderCatalog.modelChoices(providerID: "apple-fm")
+        #expect(appleFM.first?.id == "system")
+        #expect(appleFM.first?.local == true)
+        #expect(appleFM.first?.thinkinglevels?.count == 1)
+    }
 }
