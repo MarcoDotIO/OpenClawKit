@@ -538,6 +538,18 @@ public actor MediaPipeline {
             return "audio/wav"
         }
         if bytes.starts(with: [0x50, 0x4B, 0x03, 0x04]) { return "application/zip" }
+        if bytes.count >= 12, bytes.starts(with: Array("FORM".utf8)), Array(bytes[8...11]) == Array("AIFF".utf8) {
+            return "audio/aiff"
+        }
+        if bytes.count >= 12, Array(bytes[4...7]) == Array("ftyp".utf8) {
+            // ISO base media (MP4/QuickTime family); the major brand picks audio vs video.
+            switch String(decoding: bytes[8...11], as: UTF8.self) {
+            case "M4A ", "M4B ", "M4P ": return "audio/mp4"
+            case "qt  ": return "video/quicktime"
+            case "M4V ", "M4VH", "M4VP": return "video/x-m4v"
+            default: return "video/mp4"
+            }
+        }
         if let text = String(data: data.prefix(512), encoding: .utf8) {
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.hasPrefix("{") || trimmed.hasPrefix("[") {
@@ -578,6 +590,16 @@ public actor MediaPipeline {
             return "video/mp4"
         case "mov":
             return "video/quicktime"
+        case "m4v":
+            return "video/x-m4v"
+        case "m4a":
+            return "audio/mp4"
+        case "aif", "aiff":
+            return "audio/aiff"
+        case "caf":
+            return "audio/x-caf"
+        case "flac":
+            return "audio/flac"
         default:
             return nil
         }
@@ -607,6 +629,16 @@ public actor MediaPipeline {
             return "mp4"
         case "video/quicktime":
             return "mov"
+        case "video/x-m4v":
+            return "m4v"
+        case "audio/mp4", "audio/x-m4a":
+            return "m4a"
+        case "audio/aiff", "audio/x-aiff":
+            return "aiff"
+        case "audio/x-caf":
+            return "caf"
+        case "audio/flac":
+            return "flac"
         default:
             return nil
         }
