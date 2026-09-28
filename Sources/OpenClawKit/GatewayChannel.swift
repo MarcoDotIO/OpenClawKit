@@ -471,7 +471,10 @@ public actor GatewayChannelActor {
             params["permissions"] = ProtoAnyCodable(options.permissions)
         }
         let includeDeviceIdentity = options.includeDeviceIdentity
-        let identity = includeDeviceIdentity ? DeviceIdentityStore.loadOrCreate() : nil
+        // Storage failures surface as connect errors instead of rotating to an unpaired identity.
+        let identity = includeDeviceIdentity
+            ? try await DeviceIdentityStore.loadOrCreatePersistedInBackground()
+            : nil
         let selectedAuth = self.selectConnectAuth(
             role: role,
             includeDeviceIdentity: includeDeviceIdentity,
