@@ -689,7 +689,12 @@ public struct OpenClawGatewaySessionChatTransport: OpenClawChatGatewayTransport 
                             transport.subscribeSessions(ifCurrentRoute: route)
                         case .contextChanged:
                             transport.subscribeSessions(ifCurrentRoute: route)
-                            if case .seqGap = mapped { mapped = .routeChanged }
+                            if case .seqGap = mapped {
+                                mapped = .routeChanged
+                            } else {
+                                // The replacement was first noticed on another event: announce it first.
+                                continuation.yield(.routeChanged)
+                            }
                         }
                     }
                     continuation.yield(mapped)
