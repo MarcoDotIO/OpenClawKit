@@ -931,7 +931,7 @@ struct AgentLoop: Sendable {
                 } else {
                     grantKey = ApprovalBroker.pluginGrantKey(pluginID: approvalRequest.pluginID, toolName: call.name)
                 }
-                let approval = await self.deps.approvalBroker.requestAndWait(
+                let started = await self.deps.approvalBroker.begin(
                     presentation: presentation,
                     sessionKey: request.sessionKey,
                     agentID: agentID,
@@ -940,6 +940,12 @@ struct AgentLoop: Sendable {
                     grantKey: grantKey,
                     timeoutMs: approvalRequest.timeoutMs
                 )
+                var approval = started
+                if started.state == .pending {
+                    events.emit(.approval, started.agentEventData)
+                    approval = await self.deps.approvalBroker.waitUntilTerminal(started)
+                    events.emit(.approval, approval.agentEventData)
+                }
                 try Task.checkCancellation()
                 if !approval.isAllowed {
                     let reason = approval.reason?.rawValue ?? approval.state.rawValue

@@ -627,6 +627,38 @@ public actor ApprovalBroker {
         grantKey: String? = nil,
         timeoutMs: Int64? = nil
     ) async -> AgentApproval {
+        let started = self.begin(
+            presentation: presentation,
+            sessionKey: sessionKey,
+            agentID: agentID,
+            runID: runID,
+            toolCallID: toolCallID,
+            grantKey: grantKey,
+            timeoutMs: timeoutMs
+        )
+        return await self.waitUntilTerminal(started)
+    }
+
+    /// Starts an approval: returns a synthetic `allowed` record when an active grant covers
+    /// `grantKey`, otherwise a new pending approval (see ``waitUntilTerminal(_:)``).
+    /// - Parameters:
+    ///   - presentation: Presentation.
+    ///   - sessionKey: Raising session.
+    ///   - agentID: Requesting agent.
+    ///   - runID: Requesting run.
+    ///   - toolCallID: Tool call.
+    ///   - grantKey: Grant key.
+    ///   - timeoutMs: Deadline.
+    /// - Returns: The allowed grant record or the pending approval.
+    public func begin(
+        presentation: AgentApprovalPresentation,
+        sessionKey: String? = nil,
+        agentID: String? = nil,
+        runID: String? = nil,
+        toolCallID: String? = nil,
+        grantKey: String? = nil,
+        timeoutMs: Int64? = nil
+    ) -> AgentApproval {
         if let grantKey, self.consumeGrant(kind: presentation.kind, key: grantKey, agentID: agentID) {
             let now = self.clock()
             return AgentApproval(
@@ -647,7 +679,7 @@ public actor ApprovalBroker {
                 grantKey: grantKey
             )
         }
-        let pending = self.request(
+        return self.request(
             presentation: presentation,
             sessionKey: sessionKey,
             agentID: agentID,
@@ -656,12 +688,21 @@ public actor ApprovalBroker {
             grantKey: grantKey,
             timeoutMs: timeoutMs
         )
+    }
+
+    /// Waits until an approval from ``begin(presentation:sessionKey:agentID:runID:toolCallID:grantKey:timeoutMs:)``
+    /// is terminal; cancelling the waiting task cancels the approval (`run-aborted`).
+    /// - Parameter approval: Started approval.
+    /// - Returns: The terminal approval.
+    public func waitUntilTerminal(_ approval: AgentApproval) async -> AgentApproval {
+        guard approval.state == .pending else { return approval }
+        let id = approval.id
         let resolved = await withTaskCancellationHandler {
-            await self.awaitTerminal(pending.id, timeoutMs: nil)
+            await self.awaitTerminal(id, timeoutMs: nil)
         } onCancel: {
-            Task { await self.cancel(id: pending.id, reason: .runAborted) }
+            Task { await self.cancel(id: id, reason: .runAborted) }
         }
-        return resolved ?? self.current(pending.id) ?? pending
+        return resolved ?? self.current(id) ?? approval
     }
 
     /// Suspends until the approval is terminal, or returns `nil` once `timeoutMs` elapses.

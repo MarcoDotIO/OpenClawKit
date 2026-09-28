@@ -367,8 +367,17 @@ struct AgentLoopToolCallingTests {
                 if decisions.isEmpty { break }
             }
         }
-        let result = try await runtime.run(AgentRunRequest(sessionKey: "appr", prompt: "go"), timeoutMs: 5_000)
+        let frames = runtime.events()
+        let result = try await runtime.run(AgentRunRequest(runID: "appr-run", sessionKey: "appr", prompt: "go"), timeoutMs: 5_000)
         resolver.cancel()
+        var approvalPhases: [String] = []
+        for await frame in frames where frame.runID == "appr-run" {
+            if frame.stream == .approval, let phase = frame.data["phase"]?.stringValue {
+                approvalPhases.append(phase)
+            }
+            if frame.lifecyclePhase == "end" { break }
+        }
+        #expect(approvalPhases == ["requested", "resolved", "requested", "resolved"])
         #expect(result.toolResults[0].output.text == "echo:one")
         #expect(result.toolResults[1].isError)
         #expect(result.toolResults[1].output.text.contains("not approved"))
