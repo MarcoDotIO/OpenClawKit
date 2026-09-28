@@ -16,6 +16,8 @@ public struct EmbeddedAgentStack: Sendable {
     public let subagents: SubagentManager
     /// Goal manager (`get_goal`, `create_goal`, `update_goal`, `sessions.goal.*`).
     public let goals: SessionGoalManager
+    /// Progress cards (`progress_card`, `progressCard.*`).
+    public let progressCards: ProgressCardStore
 }
 
 public extension OpenClawSDK {
@@ -73,6 +75,9 @@ public extension OpenClawSDK {
             await runtime.registerTool(tool)
         }
         await goals.registerGatewayMethods(on: server)
+        let progressCards = ProgressCardStore()
+        await runtime.registerTool(progressCards.tool)
+        await progressCards.attach(to: server, runtime: runtime)
         return EmbeddedAgentStack(
             server: server,
             runtime: runtime,
@@ -80,7 +85,8 @@ public extension OpenClawSDK {
             transcriptStore: transcripts,
             taskLedger: ledger,
             subagents: subagents,
-            goals: goals
+            goals: goals,
+            progressCards: progressCards
         )
     }
 }

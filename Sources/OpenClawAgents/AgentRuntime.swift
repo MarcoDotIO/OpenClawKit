@@ -89,6 +89,8 @@ public struct AgentRunRequest: Sendable {
     public let spawnedBy: String?
     /// Per-model-call timeout hint (ms) forwarded to providers.
     public let modelTimeoutMs: Int?
+    /// Record the prompt as a hidden instruction (not shown in chat history) instead of a user message.
+    public let hiddenPrompt: Bool
 
     /// Creates a run request.
     /// - Parameters:
@@ -106,6 +108,7 @@ public struct AgentRunRequest: Sendable {
     ///   - sessionID: Transcript session override.
     ///   - spawnedBy: Parent session key for spawned runs.
     ///   - modelTimeoutMs: Per-model-call timeout hint.
+    ///   - hiddenPrompt: Record the prompt as a hidden instruction.
     public init(
         runID: String = UUID().uuidString,
         sessionKey: String,
@@ -127,7 +130,8 @@ public struct AgentRunRequest: Sendable {
         extraSystemPrompt: String? = nil,
         sessionID: String? = nil,
         spawnedBy: String? = nil,
-        modelTimeoutMs: Int? = nil
+        modelTimeoutMs: Int? = nil,
+        hiddenPrompt: Bool = false
     ) {
         self.runID = runID
         self.sessionKey = sessionKey
@@ -150,6 +154,7 @@ public struct AgentRunRequest: Sendable {
         self.sessionID = sessionID
         self.spawnedBy = spawnedBy
         self.modelTimeoutMs = modelTimeoutMs
+        self.hiddenPrompt = hiddenPrompt
     }
 }
 
@@ -730,7 +735,13 @@ public actor EmbeddedAgentRuntime {
         guard try await transcriptStore.header(sessionID: sessionID) != nil else {
             return []
         }
-        let messages = try await transcriptStore.activePath(sessionID: sessionID).compactMap(\.message)
+        // Hidden custom messages (internal events, hidden prompts) stay out of chat history.
+        let messages = try await transcriptStore.activePath(sessionID: sessionID).compactMap(\.message).filter { message in
+            if case .other("custom", let raw) = message, raw["display"]?.boolValue == false {
+                return false
+            }
+            return true
+        }
         guard let limit, limit > 0, messages.count > limit else {
             return messages
         }

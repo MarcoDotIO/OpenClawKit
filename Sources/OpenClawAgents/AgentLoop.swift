@@ -316,12 +316,10 @@ struct AgentLoop: Sendable {
                 transcript: transcript
             )
         }
-        try await self.appendMessage(
-            .user(AgentUserMessage(content: .blocks(userBlocks), timestamp: SessionTranscriptClock.nowMs())),
-            sessionID: sessionID,
-            sessionKey: request.sessionKey,
-            transcript: transcript
-        )
+        let promptMessage: AgentMessage = request.hiddenPrompt
+            ? .custom(customType: "hidden_prompt", content: .blocks(userBlocks), display: false, timestamp: SessionTranscriptClock.nowMs())
+            : .user(AgentUserMessage(content: .blocks(userBlocks), timestamp: SessionTranscriptClock.nowMs()))
+        try await self.appendMessage(promptMessage, sessionID: sessionID, sessionKey: request.sessionKey, transcript: transcript)
 
         let context = AgentToolInvocationContext(runID: runID, sessionKey: request.sessionKey, agentID: agentID)
         let policy = Self.effectivePolicy(base: self.deps.tools.policy, request: request, session: sessionRecord)

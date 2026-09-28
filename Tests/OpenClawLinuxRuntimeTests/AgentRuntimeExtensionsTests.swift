@@ -291,6 +291,63 @@ struct AgentRuntimeExtensionsTests {
         #expect(await manager.goal(sessionKey: "g") == nil)
     }
 
+    // MARK: - Progress cards
+
+    @Test
+    func progressCardsValidateRevisionsAndRefreshHidden() async throws {
+        let store = ProgressCardStore()
+        let tool = store.tool
+        let output = try await tool.invoke(
+            AgentToolInvocation(
+                arguments: [
+                    "markdown": AnyCodable("Working"),
+                    "plan": AnyCodable([AnyCodable(["step": AnyCodable("a"), "status": AnyCodable("in_progress")])]),
+                ],
+                context: AgentToolInvocationContext(sessionKey: "pc")
+            ),
+            update: nil
+        )
+        #expect(output.isError == false)
+        #expect(await store.card(sessionKey: "pc")?.revision == 1)
+        do {
+            try await store.put(sessionKey: "pc", markdown: "x", steps: nil, expectedRevision: 5)
+            Issue.record("expected revision conflict")
+        } catch let error as ProgressCardError {
+            #expect(error == .revisionConflict(expected: 5, actual: 1))
+        }
+        let badStep = try await tool.invoke(
+            AgentToolInvocation(
+                arguments: ["plan": AnyCodable([AnyCodable(["step": AnyCodable("a"), "status": AnyCodable("done")])])],
+                context: AgentToolInvocationContext(sessionKey: "pc")
+            ),
+            update: nil
+        )
+        #expect(badStep.isError)
+
+        let provider = ScriptedToolProvider(turns: [ScriptedToolProvider.text("refreshed")])
+        let transcript = InMemorySessionTranscriptStore()
+        let runtime = EmbeddedAgentRuntime(modelRouter: ModelRouter(defaultProviderID: provider.id, providers: [provider]), transcriptStore: transcript)
+        let server = GatewayServer(
+            sessionStore: SessionStore(fileURL: FileManager.default.temporaryDirectory.appendingPathComponent("pc-\(UUID().uuidString).json")),
+            secretVault: GatewaySecretVault(credentialStore: InMemoryTestCredentialStore())
+        )
+        await store.attach(to: server, runtime: runtime)
+        let fetched = await server.handle(RequestFrame(type: "req", id: "1", method: "progressCard.get", params: AnyCodable(["sessionKey": AnyCodable("pc")])))
+        #expect(fetched.payload?.dictionaryValue?["card"]?.dictionaryValue?["revision"] == AnyCodable(1))
+        let refresh = await server.handle(
+            RequestFrame(
+                type: "req",
+                id: "2",
+                method: "progressCard.refresh",
+                params: AnyCodable(["sessionKey": AnyCodable("pc"), "idempotencyKey": AnyCodable("k1")])
+            )
+        )
+        let runID = try #require(refresh.payload?.dictionaryValue?["runId"]?.stringValue)
+        #expect(await runtime.wait(runID: runID, timeoutMs: 5_000)?.status == "ok")
+        // The refresh instruction is hidden from chat history.
+        #expect(try await runtime.history(sessionKey: "pc").map(\.role) == ["assistant"])
+    }
+
     // MARK: - Tool search
 
     @Test
