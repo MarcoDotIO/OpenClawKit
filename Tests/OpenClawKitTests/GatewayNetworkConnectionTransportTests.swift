@@ -176,5 +176,14 @@ struct GatewayNetworkConnectionTransportTests {
         }
         #expect(NetworkConnectionTLSValidator.normalize(" sha256:AB:CD ") == "abcd")
     }
+
+    @Test
+    func closeCodesMapIncludingApplicationCodes() {
+        guard #available(macOS 26.0, *) else { return }
+        #expect(NetworkConnectionWebSocketTask.networkCloseCode(.goingAway) == .protocolCode(.goingAway))
+        #expect(NetworkConnectionWebSocketTask.networkCloseCode(.normalClosure) == .protocolCode(.normalClosure))
+        let tick = URLSessionWebSocketTask.CloseCode(rawValue: 4000) ?? .goingAway
+        #expect(NetworkConnectionWebSocketTask.networkCloseCode(tick) == .applicationCode(4000))
+    }
 }
 #endif

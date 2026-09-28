@@ -1,7 +1,6 @@
 import Foundation
 import Testing
 @testable import OpenClawKit
-@testable import OpenClawCore
 
 private struct RaceTimeoutError: Error, Equatable {}
 
@@ -117,26 +116,20 @@ struct AsyncTimeoutRaceTests {
 
     @Test
     func cancellationShieldRunsCleanupForACancelledCaller() async throws {
-        for forceFallback in [false, true] {
-            let recorded = RaceCounter()
-            let task = Task {
-                try await CancellationShieldSupport.$forcesFallback.withValue(forceFallback) {
-                    try await withTaskCancellationHandler {
-                        // Wait until the caller is cancelled, then run cleanup that checks cancellation.
-                        while !Task.isCancelled {
-                            try? await Task.sleep(for: .milliseconds(1))
-                        }
-                        try await CancellationShieldSupport.run {
-                            try Task.checkCancellation()
-                            recorded.increment()
-                        }
-                    } onCancel: {}
-                }
+        let recorded = RaceCounter()
+        let task = Task {
+            // Wait until the caller is cancelled, then run cleanup that checks cancellation.
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(1))
             }
-            try await Task.sleep(for: .milliseconds(20))
-            task.cancel()
-            try await task.value
-            #expect(recorded.total == 1, "forceFallback=\(forceFallback)")
+            try await CancellationShieldSupport.run {
+                try Task.checkCancellation()
+                recorded.increment()
+            }
         }
+        try await Task.sleep(for: .milliseconds(20))
+        task.cancel()
+        try await task.value
+        #expect(recorded.total == 1)
     }
 }

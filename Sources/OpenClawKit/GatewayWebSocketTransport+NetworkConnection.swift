@@ -319,11 +319,22 @@ public final class NetworkConnectionWebSocketTask: WebSocketTasking, @unchecked 
         self.lock.unlock()
         let connection = self.connection
         let text = reason.flatMap { String(data: $0, encoding: .utf8) }
-        let code = (try? NWProtocolWebSocket.CloseCode(rawValue: UInt16(clamping: closeCode.rawValue)))
-            ?? .protocolCode(.goingAway)
+        let code = Self.networkCloseCode(closeCode)
         Task {
             try? await connection.close(code: code, reason: text)
         }
+    }
+
+    /// Maps a URLSession close code (including 4000-4999 application codes such as the tick timeout).
+    static func networkCloseCode(_ closeCode: URLSessionWebSocketTask.CloseCode) -> NWProtocolWebSocket.CloseCode {
+        let raw = closeCode.rawValue
+        if (4000...4999).contains(raw) {
+            return .applicationCode(UInt16(raw))
+        }
+        if let defined = NWProtocolWebSocket.CloseCode.Defined(rawValue: UInt16(clamping: raw)) {
+            return .protocolCode(defined)
+        }
+        return .protocolCode(.goingAway)
     }
 
     /// Sends one text or binary message.
