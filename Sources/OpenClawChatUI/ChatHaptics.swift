@@ -1,6 +1,6 @@
 import Foundation
 
-#if canImport(UIKit) && !os(watchOS) && !os(tvOS)
+#if os(iOS)
 import UIKit
 #endif
 
@@ -18,7 +18,7 @@ public struct OpenClawChatHaptics: Sendable {
 
     private let performer: @Sendable (Event) -> Void
 
-    /// Creates the platform default performer (UIKit feedback generators on iOS/visionOS; no-op elsewhere).
+    /// Creates the platform default performer (UIKit feedback generators on iOS; no-op elsewhere).
     public init() {
         self.performer = Self.defaultPerformer
     }
@@ -34,7 +34,7 @@ public struct OpenClawChatHaptics: Sendable {
     }
 
     private static let defaultPerformer: @Sendable (Event) -> Void = { event in
-        #if canImport(UIKit) && !os(watchOS) && !os(tvOS)
+        #if os(iOS)
         Task { @MainActor in
             switch event {
             case .messageSent:
