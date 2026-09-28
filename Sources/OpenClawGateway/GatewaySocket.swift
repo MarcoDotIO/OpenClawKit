@@ -38,6 +38,11 @@ public actor LoopbackGatewaySocket: GatewaySocket {
         self.connection = connection
     }
 
+    deinit {
+        // Ends the server event subscription even when the socket is dropped without `close()`.
+        self.eventPump?.cancel()
+    }
+
     /// Marks the loopback socket as connected and starts forwarding server events.
     /// - Parameter url: Ignored loopback URL placeholder.
     public func connect(url _: URL) async throws {
