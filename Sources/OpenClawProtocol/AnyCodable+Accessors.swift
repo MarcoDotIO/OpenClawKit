@@ -1,58 +1,26 @@
 import Foundation
 
+// Typed accessors for the enum-backed `AnyCodable`.
+//
+// These live in OpenClawProtocol (not OpenClawKit) so every platform, including Linux, can read
+// generated model fields without casting `value` (which is an `AnySendableValue`, not `Any`).
 public extension AnyCodable {
     /// Canonical `null` sentinel used by transport and bridge helpers.
     static let nullValue = AnyCodable(.null)
 
     /// Converts Foundation container values into `AnyCodable`.
+    ///
+    /// `NSNumber` values are classified before Swift casts so JSON `0`/`1` stay numbers and
+    /// `CFBoolean` values stay booleans. Values without a JSON representation are stringified.
     /// - Parameter raw: Foundation-backed value to normalize.
     /// - Returns: A normalized `AnyCodable` value when conversion succeeds.
     static func fromFoundation(_ raw: Any) -> AnyCodable? {
-        switch raw {
-        case let value as AnyCodable:
-            return value
-        case is NSNull:
-            return self.nullValue
-        case let value as Bool:
-            return AnyCodable(value)
-        case let value as Int:
-            return AnyCodable(value)
-        case let value as Double:
-            return AnyCodable(value)
-        case let value as Float:
-            return AnyCodable(Double(value))
-        case let value as String:
-            return AnyCodable(value)
-        case let value as NSNumber:
-            if CFGetTypeID(value) == CFBooleanGetTypeID() {
-                return AnyCodable(value.boolValue)
-            }
-            let doubleValue = value.doubleValue
-            if
-                doubleValue.rounded(.towardZero) == doubleValue,
-                doubleValue >= Double(Int.min),
-                doubleValue <= Double(Int.max)
-            {
-                return AnyCodable(Int(doubleValue))
-            }
-            return AnyCodable(doubleValue)
-        case let value as [String: Any]:
-            return AnyCodable(value.reduce(into: [String: AnyCodable]()) { acc, entry in
-                acc[entry.key] = self.fromFoundation(entry.value) ?? AnyCodable(String(describing: entry.value))
-            })
-        case let value as [Any]:
-            return AnyCodable(value.map { self.fromFoundation($0) ?? AnyCodable(String(describing: $0)) })
-        case let value as NSDictionary:
-            var converted: [String: AnyCodable] = [:]
-            for case let (key as String, rawValue) in value {
-                converted[key] = self.fromFoundation(rawValue) ?? AnyCodable(String(describing: rawValue))
-            }
-            return AnyCodable(converted)
-        case let value as NSArray:
-            return AnyCodable(value.map { self.fromFoundation($0) ?? AnyCodable(String(describing: $0)) })
-        default:
-            return AnyCodable(String(describing: raw))
-        }
+        AnyCodable(AnySendableValue.normalize(raw, strict: false))
+    }
+
+    /// Whether the wrapped value is JSON `null`.
+    var isNull: Bool {
+        self.value == .null
     }
 
     /// Returns the underlying string when the wrapped value is a string.
@@ -65,7 +33,7 @@ public extension AnyCodable {
         }
     }
 
-    /// Returns the underlying Boolean when the wrapped value is a Boolean.
+    /// Returns the underlying Boolean when the wrapped value is a Boolean (numbers never coerce).
     var boolValue: Bool? {
         switch self.value {
         case .bool(let value):
@@ -75,13 +43,28 @@ public extension AnyCodable {
         }
     }
 
-    /// Returns the wrapped integer value, coercing integral doubles when possible.
+    /// Returns the wrapped integer value, converting integral doubles exactly when they fit `Int`.
     var intValue: Int? {
         switch self.value {
         case .int(let value):
             return value
-        case .double(let value) where value.rounded(.towardZero) == value && value >= Double(Int.min) && value <= Double(Int.max):
-            return Int(value)
+        case .double(let value):
+            return Int(exactly: value)
+        default:
+            return nil
+        }
+    }
+
+    /// Returns the wrapped integer as `Int64`, converting integral doubles exactly.
+    ///
+    /// Prefer this accessor for millisecond timestamps: on 32-bit watchOS (`arm64_32`) values above
+    /// `Int32.max` decode as `.double` and `intValue` returns `nil`.
+    var int64Value: Int64? {
+        switch self.value {
+        case .int(let value):
+            return Int64(value)
+        case .double(let value):
+            return Int64(exactly: value)
         default:
             return nil
         }
