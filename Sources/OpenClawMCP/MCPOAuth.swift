@@ -539,8 +539,8 @@ public actor MCPOAuthClient: MCPAuthorizationProvider {
     }
 
     static func formEncode(_ form: [String: String]) -> String {
-        var allowed = CharacterSet.alphanumerics
-        allowed.insert(charactersIn: "-._~")
+        // RFC 3986 unreserved characters only (ASCII), so non-ASCII letters are percent-encoded too.
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
         return form.keys.sorted().map { key in
             let value = form[key] ?? ""
             return "\(key.addingPercentEncoding(withAllowedCharacters: allowed) ?? key)=\(value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value)"

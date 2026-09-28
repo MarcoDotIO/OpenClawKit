@@ -124,6 +124,7 @@ struct MCPOAuthTests {
         let wellKnown = MCPOAuthClient.wellKnown(URL(string: "https://auth.example.com/tenant?x=1")!, suffix: "oauth-authorization-server")
         #expect(wellKnown?.absoluteString == "https://auth.example.com/.well-known/oauth-authorization-server/tenant")
         #expect(MCPOAuthClient.formEncode(["b": "x y", "a": "1&2"]) == "a=1%262&b=x%20y")
+        #expect(MCPOAuthClient.formEncode(["n": "é+"]) == "n=%C3%A9%2B")
     }
 
     @Test
