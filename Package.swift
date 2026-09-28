@@ -13,6 +13,7 @@ var products: [Product] = [
     .library(name: "OpenClawMedia", targets: ["OpenClawMedia"]),
     .library(name: "OpenClawModels", targets: ["OpenClawModels"]),
     .library(name: "OpenClawSkills", targets: ["OpenClawSkills"]),
+    .library(name: "OpenClawMCP", targets: ["OpenClawMCP"]),
 ]
 
 var targets: [Target] = [
@@ -116,15 +117,34 @@ var targets: [Target] = [
             .enableUpcomingFeature("StrictConcurrency"),
         ]
     ),
+    // Model Context Protocol client runtime. Cross-platform (Linux included);
+    // stdio transport is limited to macOS/Linux at the source level.
+    .target(
+        name: "OpenClawMCP",
+        dependencies: ["OpenClawCore", "OpenClawProtocol", "OpenClawAgents"],
+        swiftSettings: [
+            .enableUpcomingFeature("StrictConcurrency"),
+        ]
+    ),
 ]
 
 #if !os(Linux)
 products += [
     .library(name: "OpenClawKit", targets: ["OpenClawKit"]),
     .library(name: "OpenClawChatUI", targets: ["OpenClawChatUI"]),
+    .library(name: "OpenClawNativeState", targets: ["OpenClawNativeState"]),
+    .library(name: "OpenClawAppIntents", targets: ["OpenClawAppIntents"]),
+    .library(name: "OpenClawChatStore", targets: ["OpenClawChatStore"]),
 ]
 
 targets += [
+    // Shared native state database (system SQLite3 + CryptoKit). No third-party dependencies.
+    .target(
+        name: "OpenClawNativeState",
+        swiftSettings: [
+            .enableUpcomingFeature("StrictConcurrency"),
+        ]
+    ),
     .target(
         name: "OpenClawKit",
         dependencies: [
@@ -138,6 +158,8 @@ targets += [
             "OpenClawMedia",
             "OpenClawModels",
             "OpenClawSkills",
+            "OpenClawMCP",
+            "OpenClawNativeState",
         ],
         resources: [
             .process("Resources"),
@@ -148,6 +170,28 @@ targets += [
     ),
     .target(
         name: "OpenClawChatUI",
+        dependencies: [
+            "OpenClawKit",
+            .product(name: "Markdown", package: "swift-markdown"),
+        ],
+        swiftSettings: [
+            .enableUpcomingFeature("StrictConcurrency"),
+        ]
+    ),
+    // Optional GRDB-backed offline chat store; apps that do not link this product never compile GRDB.
+    .target(
+        name: "OpenClawChatStore",
+        dependencies: [
+            "OpenClawChatUI",
+            .product(name: "GRDB", package: "GRDB.swift"),
+        ],
+        swiftSettings: [
+            .enableUpcomingFeature("StrictConcurrency"),
+        ]
+    ),
+    // App Intents integration (entities, intents, and the experimental model-delegation trait).
+    .target(
+        name: "OpenClawAppIntents",
         dependencies: ["OpenClawKit"],
         swiftSettings: [
             .enableUpcomingFeature("StrictConcurrency"),
@@ -155,7 +199,18 @@ targets += [
     ),
     .testTarget(
         name: "OpenClawKitTests",
-        dependencies: ["OpenClawKit", "OpenClawChatUI", "OpenClawGateway", "OpenClawCore", "OpenClawProtocol", "OpenClawModels"],
+        dependencies: [
+            "OpenClawKit",
+            "OpenClawChatUI",
+            "OpenClawGateway",
+            "OpenClawCore",
+            "OpenClawProtocol",
+            "OpenClawModels",
+            "OpenClawNativeState",
+            "OpenClawMCP",
+            "OpenClawAppIntents",
+            "OpenClawChatStore",
+        ],
         swiftSettings: [
             .enableExperimentalFeature("SwiftTesting"),
         ]
@@ -184,6 +239,7 @@ targets += [
             "OpenClawMedia",
             "OpenClawSkills",
             "OpenClawPlugins",
+            "OpenClawMCP",
         ],
         swiftSettings: [
             .enableExperimentalFeature("SwiftTesting"),
@@ -201,6 +257,17 @@ let package = Package(
         .watchOS(.v10),
     ],
     products: products,
+    traits: [
+        .trait(
+            name: "ExperimentalAppleModelDelegation",
+            description: """
+            Experimental: compiles the OpenClawAppIntents model-delegation surface built on the \
+            underscored AppIntents 27 `_ModelDelegationIntent` API. Off by default; the API is \
+            unstable and may change or disappear in any Apple SDK update.
+            """
+        ),
+        .default(enabledTraits: []),
+    ],
     dependencies: [
         .package(url: "https://github.com/OpenDive/OpenAIKit.git", exact: "3.0.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.10.0"),
@@ -209,6 +276,11 @@ let package = Package(
             url: "https://github.com/swiftwasm/WasmKit.git",
             revision: "a654a899a0e2802bf66429214e8ebc51c397c4d9"
         ),
+        // Markdown parsing for OpenClawChatUI (Apache-2.0; swift-cmark is BSD-2-Clause).
+        .package(url: "https://github.com/swiftlang/swift-markdown", exact: "0.8.0"),
+        // SQLite toolkit for the optional OpenClawChatStore product (MIT). Resolved on every
+        // platform, but only compiled when an app links OpenClawChatStore.
+        .package(url: "https://github.com/groue/GRDB.swift.git", exact: "7.11.1"),
     ],
     targets: targets
 )
