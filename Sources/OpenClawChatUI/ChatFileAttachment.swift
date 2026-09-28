@@ -6,7 +6,7 @@ import Foundation
 import SwiftUI
 #if os(macOS)
 import AppKit
-#elseif os(iOS)
+#else
 import UIKit
 #endif
 
@@ -94,7 +94,7 @@ struct ChatFileAttachment: View {
             Text("Reconnect and try again. If the file has expired or was removed, ask the assistant to send it again.")
                 .font(OpenClawChatTypography.body)
         }
-        #if os(iOS)
+        #if os(iOS) || os(visionOS)
         .sheet(item: self.$downloadedFile) { file in
             // The sheet retains the file until the system activity finishes.
             OpenClawChatFileShareSheet(fileURL: file.url, onCompletion: { _ = file })
@@ -144,7 +144,7 @@ struct ChatFileAttachment: View {
     }
 }
 
-#if os(iOS)
+#if os(iOS) || os(visionOS)
 /// System file sharing used by chat attachments, transcript export, and workspace files.
 public struct OpenClawChatFileShareSheet: UIViewControllerRepresentable {
     /// File to share.

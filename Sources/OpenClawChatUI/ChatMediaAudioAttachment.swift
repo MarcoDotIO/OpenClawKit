@@ -359,7 +359,7 @@ final class ChatMediaAudioPlayer: NSObject, ChatMediaNowPlayingOwner {
     }
 
     private func activateAudioSession() -> Bool {
-        #if os(iOS)
+        #if os(iOS) || os(visionOS)
         let session = AVAudioSession.sharedInstance()
         do {
             try session.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
@@ -373,7 +373,7 @@ final class ChatMediaAudioPlayer: NSObject, ChatMediaNowPlayingOwner {
     }
 
     private func deactivateAudioSession() {
-        #if os(iOS)
+        #if os(iOS) || os(visionOS)
         guard self.ownsAudioSession else { return }
         self.ownsAudioSession = false
         try? AVAudioSession.sharedInstance().setActive(

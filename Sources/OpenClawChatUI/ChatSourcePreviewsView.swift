@@ -48,7 +48,7 @@ struct ChatSourcePreviewsView: View {
                 self.selectedSource = sources.first { $0.id == selected.id }
             }
         }
-        #if os(iOS)
+        #if os(iOS) || os(visionOS)
         .sheet(item: self.$selectedSource) { source in
             ScrollView {
                 ChatSourcePreviewDetail(source: source) { self.selectedSource = nil }

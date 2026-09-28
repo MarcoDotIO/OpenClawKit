@@ -51,7 +51,7 @@ public struct OpenClawChatAttentionBadge: View {
             Image(systemName: self.summary.kind == .question ? "hand.raised.fill" : "checkmark.shield")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(OpenClawChatTheme.warning)
-                #if os(iOS)
+                #if os(iOS) || os(visionOS)
                 .frame(width: 44, height: 44)
                 #else
                 .frame(width: 22, height: 22)
@@ -82,7 +82,7 @@ public struct OpenClawChatAttentionBadge: View {
             }
             .padding(16)
             .frame(minWidth: 220, idealWidth: 300, maxWidth: 360, alignment: .leading)
-            #if os(iOS)
+            #if os(iOS) || os(visionOS)
             .presentationCompactAdaptation(.popover)
             #endif
         }

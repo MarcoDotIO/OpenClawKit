@@ -21,7 +21,7 @@ struct ChatCompletedWorkDisclosure<Content: View>: View {
         } label: {
             Text(self.label)
                 .font(OpenClawChatTypography.caption)
-                #if os(iOS)
+                #if os(iOS) || os(visionOS)
                 .foregroundStyle(Color.secondary)
                 .frame(minHeight: 44)
                 #else

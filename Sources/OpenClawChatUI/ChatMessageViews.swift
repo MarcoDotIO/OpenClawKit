@@ -1208,11 +1208,15 @@ private struct ChatAssistantTextBody: View {
         if self.isComplete {
             self.completeBody
         } else {
-            ChatStreamingAssistantTextBody(
-                text: self.text,
-                markdownVariant: self.markdownVariant,
-                includesThinking: self.includesThinking,
-                textColor: self.textColor)
+            // The word-paced reveal also pauses when the system prefers reduced resource usage (27+).
+            ChatReducedResourceUsageReader { prefersReducedResourceUsage in
+                ChatStreamingAssistantTextBody(
+                    text: self.text,
+                    markdownVariant: self.markdownVariant,
+                    includesThinking: self.includesThinking,
+                    textColor: self.textColor,
+                    prefersReducedResourceUsage: prefersReducedResourceUsage)
+            }
         }
     }
 
@@ -1238,15 +1242,28 @@ private struct ChatStreamingAssistantTextBody: View {
     let markdownVariant: ChatMarkdownVariant
     let textColor: Color
 
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
+    private let prefersReducedResourceUsage: Bool
     @State private var snapshot: Snapshot
     @State private var revealState: ChatStreamingRevealState
     @State private var revealLocation: Snapshot.ProseLocation?
     @State private var pendingUntil: TimeInterval?
 
-    init(text: String, markdownVariant: ChatMarkdownVariant, includesThinking: Bool, textColor: Color) {
+    /// Reduce Motion, or the 27+ reduced-resource preference, renders the final text without the fade.
+    private var reduceMotion: Bool {
+        self.accessibilityReduceMotion || self.prefersReducedResourceUsage
+    }
+
+    init(
+        text: String,
+        markdownVariant: ChatMarkdownVariant,
+        includesThinking: Bool,
+        textColor: Color,
+        prefersReducedResourceUsage: Bool = false)
+    {
         self.markdownVariant = markdownVariant
         self.textColor = textColor
+        self.prefersReducedResourceUsage = prefersReducedResourceUsage
 
         let now = Date.timeIntervalSinceReferenceDate
         let snapshot = Snapshot(text: text, includesThinking: includesThinking)

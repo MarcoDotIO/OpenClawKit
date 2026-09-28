@@ -96,7 +96,7 @@ struct OpenClawQuestionCard: View {
                     .font(OpenClawChatTypography.body)
                     .textFieldStyle(.roundedBorder)
                     .autocorrectionDisabled()
-                    #if os(iOS)
+                    #if os(iOS) || os(visionOS)
                     .textInputAutocapitalization(.never)
                     #endif
                     .disabled(self.model.status(at: now) != .pending)
@@ -171,7 +171,7 @@ struct OpenClawQuestionCard: View {
                 .font(OpenClawChatTypography.body)
                 .textFieldStyle(.roundedBorder)
                 .autocorrectionDisabled()
-                #if os(iOS)
+                #if os(iOS) || os(visionOS)
                 .textInputAutocapitalization(.never)
                 #endif
                 .disabled(self.model.status(at: now) != .pending)
