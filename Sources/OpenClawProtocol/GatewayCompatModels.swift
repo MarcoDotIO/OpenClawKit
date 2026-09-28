@@ -1,5 +1,24 @@
 import Foundation
 
+// OpenClawKit-owned gateway payloads.
+//
+// Everything in this file is SDK-local: these types back the in-process `GatewayServer`
+// (OpenClawGateway) and the typed `GatewayClient` helpers. They are NOT generated from upstream
+// OpenClaw and must never share a name with a type in the vendored GatewayModels.swift
+// (Scripts/protocol-gen-swift.mjs enforces this with a collision guard).
+//
+// Overlapping upstream (OpenClaw 2026.9.6) equivalents, for callers that talk to a real gateway:
+// - GatewayAgentRequest            <-> AgentParams (`agent`); the server also accepts AgentParams.
+// - GatewayAgentAccepted           <-> `agent` accepted payload `{ runId, status }`.
+// - GatewayAgentWaitParams/Result  <-> AgentWaitParams (`agent.wait`, wire key `runId`).
+// - GatewaySessionPatchParams      <-> SessionsPatchParams (`model`/`agentId` aliases are accepted).
+// - GatewaySessionKeyParams        <-> SessionsResetParams / SessionsDeleteParams.
+// - GatewayModelsListResult        <-> ModelsListResult (`models.list` rows also carry ModelChoice keys).
+// - GatewaySecret*                 <-> SecretsStore* (`secrets.store.*`); `secrets.*` stay SDK extensions.
+// - GatewaySkill*                  <-> no core equivalent (`skills.list`/`skills.invoke` are SDK extensions).
+// - GatewayBrowserRequestParams    <-> extensions/browser `browser.request` (plugin-owned upstream).
+
+/// Empty request or response payload (`{}`).
 public struct EmptyPayload: Codable, Sendable, Equatable {
     /// Creates an empty payload marker.
     public init() {}
@@ -64,35 +83,91 @@ public struct GatewayAgentRequest: Codable, Sendable, Equatable {
 }
 
 /// Accepted gateway response for an agent run.
+///
+/// Encodes the upstream wire key `runId`; decoding also accepts the legacy SDK key `runID`.
 public struct GatewayAgentAccepted: Codable, Sendable, Equatable {
+    /// Identifier of the started run, used with `agent.wait`.
     public let runID: String
+    /// Acceptance status (`accepted`).
     public let status: String
 
+    /// Creates an accepted-run payload.
+    /// - Parameters:
+    ///   - runID: Identifier of the started run.
+    ///   - status: Acceptance status.
     public init(runID: String, status: String = "accepted") {
         self.runID = runID
         self.status = status
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case runID = "runId"
+        case status
+    }
+
+    /// Decodes the payload, accepting both `runId` and the legacy `runID` key.
+    /// - Parameter decoder: Source decoder.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.runID = try GatewayLegacyRunIDKey.decodeRunID(from: decoder, container: container, key: .runID)
+        self.status = try container.decode(String.self, forKey: .status)
+    }
 }
 
 /// Wait request payload for an in-flight agent run.
+///
+/// Encodes the upstream `AgentWaitParams` wire keys (`runId`, `timeoutMs`); decoding also accepts `runID`.
 public struct GatewayAgentWaitParams: Codable, Sendable, Equatable {
+    /// Identifier of the run to wait for.
     public let runID: String
+    /// Optional wait timeout in milliseconds.
     public let timeoutMs: Int?
 
+    /// Creates a wait request.
+    /// - Parameters:
+    ///   - runID: Identifier of the run to wait for.
+    ///   - timeoutMs: Optional wait timeout in milliseconds.
     public init(runID: String, timeoutMs: Int? = nil) {
         self.runID = runID
         self.timeoutMs = timeoutMs
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case runID = "runId"
+        case timeoutMs
+    }
+
+    /// Decodes the payload, accepting both `runId` and the legacy `runID` key.
+    /// - Parameter decoder: Source decoder.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.runID = try GatewayLegacyRunIDKey.decodeRunID(from: decoder, container: container, key: .runID)
+        self.timeoutMs = try container.decodeIfPresent(Int.self, forKey: .timeoutMs)
+    }
 }
 
 /// Completion payload for an agent run wait request.
+///
+/// Encodes the upstream wire key `runId`; decoding also accepts the legacy SDK key `runID`.
 public struct GatewayAgentWaitResult: Codable, Sendable, Equatable {
+    /// Identifier of the run.
     public let runID: String
+    /// Terminal or interim status (`ok`, `error`, `timeout`).
     public let status: String
+    /// Session key the run belongs to.
     public let sessionKey: String?
+    /// Final assistant output when the run succeeded.
     public let output: String?
+    /// Error message when the run failed.
     public let error: String?
 
+    /// Creates a wait result.
+    /// - Parameters:
+    ///   - runID: Identifier of the run.
+    ///   - status: Run status.
+    ///   - sessionKey: Session key the run belongs to.
+    ///   - output: Final assistant output.
+    ///   - error: Error message.
     public init(
         runID: String,
         status: String,
@@ -105,6 +180,53 @@ public struct GatewayAgentWaitResult: Codable, Sendable, Equatable {
         self.sessionKey = sessionKey
         self.output = output
         self.error = error
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case runID = "runId"
+        case status
+        case sessionKey
+        case output
+        case error
+    }
+
+    /// Decodes the payload, accepting both `runId` and the legacy `runID` key.
+    /// - Parameter decoder: Source decoder.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.runID = try GatewayLegacyRunIDKey.decodeRunID(from: decoder, container: container, key: .runID)
+        self.status = try container.decode(String.self, forKey: .status)
+        self.sessionKey = try container.decodeIfPresent(String.self, forKey: .sessionKey)
+        self.output = try container.decodeIfPresent(String.self, forKey: .output)
+        self.error = try container.decodeIfPresent(String.self, forKey: .error)
+    }
+}
+
+/// Decoding helper for the legacy `runID` wire key used before OpenClawKit 2026.3.0.
+private struct GatewayLegacyRunIDKey: CodingKey {
+    static let legacy = GatewayLegacyRunIDKey(stringValue: "runID")
+
+    let stringValue: String
+    var intValue: Int? { nil }
+
+    init(stringValue: String) {
+        self.stringValue = stringValue
+    }
+
+    init?(intValue _: Int) {
+        nil
+    }
+
+    static func decodeRunID<Key: CodingKey>(
+        from decoder: Decoder,
+        container: KeyedDecodingContainer<Key>,
+        key: Key
+    ) throws -> String {
+        if let runID = try container.decodeIfPresent(String.self, forKey: key) {
+            return runID
+        }
+        let legacy = try decoder.container(keyedBy: GatewayLegacyRunIDKey.self)
+        return try legacy.decode(String.self, forKey: .legacy)
     }
 }
 

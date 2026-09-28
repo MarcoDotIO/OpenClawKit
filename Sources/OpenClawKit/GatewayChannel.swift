@@ -85,6 +85,13 @@ public struct GatewayConnectOptions: Sendable {
     // device-scoped auth (role/scope upgrades will require pairing). Keep this true for
     // role/scoped sessions such as operator UI clients.
     public var includeDeviceIdentity: Bool
+    /// Lowest gateway protocol version offered in `connect.minProtocol`.
+    ///
+    /// `nil` (the default) follows upstream: operators require `GATEWAY_MIN_PROTOCOL_VERSION` (4) and
+    /// node-role/node-mode clients accept `GATEWAY_MIN_NODE_PROTOCOL_VERSION` (3). Set this to `3` to
+    /// opt in to legacy pre-v4 gateways (for example OpenClaw 2026.4.x); v4-only features such as
+    /// chat `deltaText` events are then unavailable on those gateways.
+    public var minimumProtocolVersion: Int?
 
     public init(
         role: String,
@@ -95,7 +102,8 @@ public struct GatewayConnectOptions: Sendable {
         clientId: String,
         clientMode: String,
         clientDisplayName: String?,
-        includeDeviceIdentity: Bool = true)
+        includeDeviceIdentity: Bool = true,
+        minimumProtocolVersion: Int? = nil)
     {
         self.role = role
         self.scopes = scopes
@@ -106,6 +114,7 @@ public struct GatewayConnectOptions: Sendable {
         self.clientMode = clientMode
         self.clientDisplayName = clientDisplayName
         self.includeDeviceIdentity = includeDeviceIdentity
+        self.minimumProtocolVersion = minimumProtocolVersion
     }
 }
 
@@ -138,6 +147,26 @@ private extension String {
     }
 }
 
+/// Flattens an upstream `ErrorShape` into the legacy `GatewayResponseError.details` dictionary.
+private func gatewayErrorDetails(_ error: ErrorShape?) -> [String: ProtoAnyCodable] {
+    var details: [String: ProtoAnyCodable] = error?.details?.dictionaryValue ?? [:]
+    if let error {
+        if details["code"] == nil {
+            details["code"] = ProtoAnyCodable(error.code)
+        } else {
+            details["errorCode"] = ProtoAnyCodable(error.code)
+        }
+        details["message"] = ProtoAnyCodable(error.message)
+        if let retryable = error.retryable {
+            details["retryable"] = ProtoAnyCodable(retryable)
+        }
+        if let retryAfterMs = error.retryafterms {
+            details["retryAfterMs"] = ProtoAnyCodable(retryAfterMs)
+        }
+    }
+    return details
+}
+
 private struct SelectedConnectAuth: Sendable {
     let authToken: String?
     let authBootstrapToken: String?
@@ -164,6 +193,25 @@ private enum GatewayConnectErrorCodes {
 
 /// Actor-isolated WebSocket gateway channel with reconnect, auth, and request tracking behavior.
 public actor GatewayChannelActor {
+    /// Upstream minimum protocol: node RPC frames stayed compatible across v3/v4; operator chat surfaces require v4.
+    nonisolated static func minimumProtocolVersion(role: String, clientMode: String) -> Int {
+        if role == "node", clientMode == "node" {
+            return GATEWAY_MIN_NODE_PROTOCOL_VERSION
+        }
+        return GATEWAY_MIN_PROTOCOL_VERSION
+    }
+
+    /// Protocol range offered in `connect`, honoring ``GatewayConnectOptions/minimumProtocolVersion``.
+    nonisolated static func supportedProtocols(for options: GatewayConnectOptions?) -> ClosedRange<Int> {
+        var lower = Self.minimumProtocolVersion(
+            role: options?.role ?? "operator",
+            clientMode: options?.clientMode ?? "ui")
+        if let override = options?.minimumProtocolVersion {
+            lower = min(max(1, override), GATEWAY_PROTOCOL_VERSION)
+        }
+        return lower...GATEWAY_PROTOCOL_VERSION
+    }
+
     private let logger = Logger(subsystem: "ai.openclaw", category: "gateway")
     private var task: WebSocketTaskBox?
     private var pending: [String: CheckedContinuation<GatewayFrame, Error>] = [:]
@@ -392,6 +440,7 @@ public actor GatewayChannelActor {
         let scopes = options.scopes
 
         let reqId = UUID().uuidString
+        let protocols = Self.supportedProtocols(for: options)
         var client: [String: ProtoAnyCodable] = [
             "id": ProtoAnyCodable(clientId),
             "displayName": ProtoAnyCodable(clientDisplayName),
@@ -406,8 +455,8 @@ public actor GatewayChannelActor {
             client["modelIdentifier"] = ProtoAnyCodable(model)
         }
         var params: [String: ProtoAnyCodable] = [
-            "minProtocol": ProtoAnyCodable(GATEWAY_PROTOCOL_VERSION),
-            "maxProtocol": ProtoAnyCodable(GATEWAY_PROTOCOL_VERSION),
+            "minProtocol": ProtoAnyCodable(protocols.lowerBound),
+            "maxProtocol": ProtoAnyCodable(protocols.upperBound),
             "client": ProtoAnyCodable(client),
             "caps": ProtoAnyCodable(options.caps),
             "locale": ProtoAnyCodable(primaryLocale),
@@ -550,8 +599,8 @@ public actor GatewayChannelActor {
         role: String
     ) async throws {
         if res.ok == false {
-            let msg = res.error?["message"]?.stringValue ?? "gateway connect failed"
-            let details = res.error?["details"]?.dictionaryValue
+            let msg = res.error?.message ?? "gateway connect failed"
+            let details = res.error?.details?.dictionaryValue
             let detailCode = details?["code"]?.stringValue
             let canRetryWithDeviceToken = details?["canRetryWithDeviceToken"]?.boolValue ?? false
             let recommendedNextStep = details?["recommendedNextStep"]?.stringValue
@@ -572,9 +621,8 @@ public actor GatewayChannelActor {
         if let tick = ok.policy["tickIntervalMs"]?.doubleValue {
             self.tickIntervalMs = tick
         }
-        if let auth = ok.auth,
-           let deviceToken = auth["deviceToken"]?.stringValue
-        {
+        let auth = ok.auth
+        if let deviceToken = auth["deviceToken"]?.stringValue {
             let authRole = auth["role"]?.stringValue ?? role
             let scopes = auth["scopes"]?.arrayValue?.compactMap(\.stringValue) ?? []
             if let identity {
@@ -848,8 +896,8 @@ public actor GatewayChannelActor {
                     // Treat send failures as a broken socket: mark disconnected and trigger reconnect.
                     self.connected = false
                     self.task?.cancel(with: .goingAway, reason: nil)
-                    Task { [weak self] in
-                        guard let self else { return }
+                    // The enclosing task already holds `self` strongly; keep the capture explicit.
+                    Task { [self] in
                         await self.scheduleReconnect()
                     }
                     if let waiter { waiter.resume(throwing: wrapped) }
@@ -860,12 +908,11 @@ public actor GatewayChannelActor {
             throw NSError(domain: "Gateway", code: 2, userInfo: [NSLocalizedDescriptionKey: "unexpected frame"])
         }
         if res.ok == false {
-            let code = res.error?["code"]?.stringValue
-            let msg = res.error?["message"]?.stringValue
-            let details: [String: AnyCodable] = (res.error ?? [:]).reduce(into: [:]) { acc, pair in
-                acc[pair.key] = pair.value
-            }
-            throw GatewayResponseError(method: method, code: code, message: msg, details: details)
+            throw GatewayResponseError(
+                method: method,
+                code: res.error?.code,
+                message: res.error?.message,
+                details: gatewayErrorDetails(res.error))
         }
         if let payload = res.payload {
             // Encode back to JSON with Swift's encoder to preserve types and avoid ObjC bridging exceptions.

@@ -134,11 +134,11 @@ struct GatewayServerTests {
             params: GatewayBrowserRequestParams(method: "POST", path: "/profiles")
         )
         #expect(blocked.ok == false)
-        #expect(blocked.error?.code == .invalidRequest)
+        #expect(blocked.error?.errorCode == .invalidRequest)
 
         let unsupported = await self.rawRequest(server, method: "unsupported.method", params: EmptyPayload())
         #expect(unsupported.ok == false)
-        #expect(unsupported.error?.code == .invalidRequest)
+        #expect(unsupported.error?.errorCode == .invalidRequest)
 
         let deletedSession = try await self.request(
             server,
@@ -206,7 +206,7 @@ struct GatewayServerTests {
             params: GatewayAgentWaitParams(runID: accepted.runID, timeoutMs: 10)
         )
         #expect(missingAfterCleanup.ok == false)
-        #expect(missingAfterCleanup.error?.code == .unavailable)
+        #expect(missingAfterCleanup.error?.errorCode == .unavailable)
 
         let slow = try await self.request(
             server,
@@ -261,7 +261,7 @@ struct GatewayServerTests {
             params: GatewaySessionPatchParams(key: "   ")
         )
         #expect(invalidSessionKey.ok == false)
-        #expect(invalidSessionKey.error?.code == .invalidRequest)
+        #expect(invalidSessionKey.error?.errorCode == .invalidRequest)
 
         let invalidPayload = await defaultServer.handle(
             RequestFrame(
@@ -272,7 +272,7 @@ struct GatewayServerTests {
             )
         )
         #expect(invalidPayload.ok == false)
-        #expect(invalidPayload.error?.code == .invalidRequest)
+        #expect(invalidPayload.error?.errorCode == .invalidRequest)
 
         let missingReset = try await self.request(
             defaultServer,
@@ -292,11 +292,11 @@ struct GatewayServerTests {
 
         let unavailableModels = await self.rawRequest(defaultServer, method: "models.list", params: EmptyPayload())
         #expect(unavailableModels.ok == false)
-        #expect(unavailableModels.error?.code == .unavailable)
+        #expect(unavailableModels.error?.errorCode == .unavailable)
 
         let unavailableSkills = await self.rawRequest(defaultServer, method: "skills.list", params: EmptyPayload())
         #expect(unavailableSkills.ok == false)
-        #expect(unavailableSkills.error?.code == .unavailable)
+        #expect(unavailableSkills.error?.errorCode == .unavailable)
 
         let unavailableInvoke = await self.rawRequest(
             defaultServer,
@@ -304,7 +304,7 @@ struct GatewayServerTests {
             params: GatewaySkillInvokeParams(name: "hello", input: "world")
         )
         #expect(unavailableInvoke.ok == false)
-        #expect(unavailableInvoke.error?.code == .unavailable)
+        #expect(unavailableInvoke.error?.errorCode == .unavailable)
 
         let unavailableAgent = await self.rawRequest(
             defaultServer,
@@ -312,7 +312,7 @@ struct GatewayServerTests {
             params: GatewayAgentRequest(sessionKey: "fallback", prompt: "hello")
         )
         #expect(unavailableAgent.ok == false)
-        #expect(unavailableAgent.error?.code == .unavailable)
+        #expect(unavailableAgent.error?.errorCode == .unavailable)
 
         let unavailableBrowser = await self.rawRequest(
             defaultServer,
@@ -320,7 +320,7 @@ struct GatewayServerTests {
             params: GatewayBrowserRequestParams(method: "GET", path: "/ok")
         )
         #expect(unavailableBrowser.ok == false)
-        #expect(unavailableBrowser.error?.code == .unavailable)
+        #expect(unavailableBrowser.error?.errorCode == .unavailable)
 
         let invalidBrowserMethod = await self.rawRequest(
             GatewayServer(
@@ -334,7 +334,7 @@ struct GatewayServerTests {
             params: GatewayBrowserRequestParams(method: "PUT", path: "/ok")
         )
         #expect(invalidBrowserMethod.ok == false)
-        #expect(invalidBrowserMethod.error?.code == .invalidRequest)
+        #expect(invalidBrowserMethod.error?.errorCode == .invalidRequest)
 
         let invalidBrowserPath = await self.rawRequest(
             GatewayServer(
@@ -348,7 +348,7 @@ struct GatewayServerTests {
             params: GatewayBrowserRequestParams(method: "GET", path: "missing-slash")
         )
         #expect(invalidBrowserPath.ok == false)
-        #expect(invalidBrowserPath.error?.code == .invalidRequest)
+        #expect(invalidBrowserPath.error?.errorCode == .invalidRequest)
 
         let permissiveProfileRead = try await self.request(
             GatewayServer(
@@ -380,12 +380,12 @@ struct GatewayServerTests {
         )
         let unknownErrorResponse = await self.rawRequest(unknownErrorServer, method: "models.list", params: EmptyPayload())
         #expect(unknownErrorResponse.ok == false)
-        #expect(unknownErrorResponse.error?.code == .unavailable)
+        #expect(unknownErrorResponse.error?.errorCode == .unavailable)
     }
 
     @Test
-    func gatewayServerDecodesKnown20260425MethodsAsUnavailable() async throws {
-        let root = try self.makeTempDirectory(named: "gateway-server-20260425")
+    func gatewayServerDecodesKnown20260906MethodsAsUnavailable() async throws {
+        let root = try self.makeTempDirectory(named: "gateway-server-20260906")
         defer { try? FileManager.default.removeItem(at: root) }
 
         let server = GatewayServer(
@@ -445,19 +445,7 @@ struct GatewayServerTests {
                 )
             },
             { await self.rawRequest(server, method: "sessions.abort", params: SessionsAbortParams(key: "main", runid: nil)) },
-            { await self.rawRequest(server, method: "sessions.compaction.list", params: SessionsCompactionListParams(key: "main")) },
-            {
-                await self.rawRequest(
-                    server,
-                    method: "talk.realtime.session",
-                    params: TalkRealtimeSessionParams(
-                        sessionkey: "main",
-                        provider: "openai",
-                        model: "gpt-realtime",
-                        voice: "alloy"
-                    )
-                )
-            },
+            { await self.rawRequest(server, method: "talk.client.create", params: TalkClientCreateParams(sessionkey: "main")) },
             {
                 await self.rawRequest(
                     server,
@@ -516,7 +504,7 @@ struct GatewayServerTests {
         for request in knownRequests {
             let response = await request()
             #expect(response.ok == false)
-            #expect(response.error?.code == .unavailable)
+            #expect(response.error?.errorCode == .unavailable)
         }
 
         let invalidKnown = await server.handle(
@@ -528,11 +516,11 @@ struct GatewayServerTests {
             )
         )
         #expect(invalidKnown.ok == false)
-        #expect(invalidKnown.error?.code == .invalidRequest)
+        #expect(invalidKnown.error?.errorCode == .invalidRequest)
 
         let unknown = await self.rawRequest(server, method: "newer.unknown.method", params: EmptyPayload())
         #expect(unknown.ok == false)
-        #expect(unknown.error?.code == .invalidRequest)
+        #expect(unknown.error?.errorCode == .invalidRequest)
     }
 
     @Test
@@ -701,7 +689,7 @@ struct GatewayServerTests {
             params: GatewayAgentWaitParams(runID: explodedRun.runID)
         )
         #expect(explodedWait.ok == false)
-        #expect(explodedWait.error?.code == .unavailable)
+        #expect(explodedWait.error?.errorCode == .unavailable)
     }
 
     @Test
@@ -857,8 +845,7 @@ struct GatewayServerTests {
     }
 
     private static func errorShape(from response: ResponseFrame) throws -> ErrorShape {
-        let payload = try #require(response.error)
-        return try GatewayPayloadCodec.decode(ErrorShape.self, from: AnyCodable(payload))
+        try #require(response.error)
     }
 
     private func makeTempDirectory(named name: String) throws -> URL {
@@ -867,14 +854,5 @@ struct GatewayServerTests {
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root
-    }
-}
-
-private extension Dictionary where Key == String, Value == AnyCodable {
-    var code: ErrorCode? {
-        guard case .string(let rawValue) = self["code"]?.value else {
-            return nil
-        }
-        return ErrorCode(rawValue: rawValue)
     }
 }

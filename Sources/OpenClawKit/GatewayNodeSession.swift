@@ -373,7 +373,8 @@ public actor GatewayNodeSession {
     private func handlePush(_ push: GatewayPush) async {
         switch push {
         case let .snapshot(ok):
-            let raw = ok.canvashosturl?.trimmingCharacters(in: .whitespacesAndNewlines)
+            // Protocol v4 moved the canvas host into plugin surfaces keyed by name ("canvas").
+            let raw = ok.pluginsurfaceurls?["canvas"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
             self.canvasHostUrl = self.normalizeCanvasHostUrl(raw)
             if self.hasEverConnected {
                 self.broadcastServerEvent(

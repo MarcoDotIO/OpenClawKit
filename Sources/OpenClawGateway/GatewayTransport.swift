@@ -80,6 +80,7 @@ public actor GatewayClient {
     private let onEvent: EventHandler?
     private let tickIntervalMs: Int
     private let initialReconnectBackoffMs: UInt64
+    private let startupUnavailableRetryLimit: Int
     private let tickTimeoutMultiplier = 2
 
     private var socket: (any GatewaySocket)?
@@ -99,18 +100,23 @@ public actor GatewayClient {
     ///   - tls: TLS pinning settings.
     ///   - tickIntervalMs: Tick interval in milliseconds.
     ///   - initialReconnectBackoffMs: Initial reconnect delay in milliseconds.
+    ///   - startupUnavailableRetryLimit: How many times a request is retried when the gateway answers the
+    ///     retryable startup-unavailable error (`UNAVAILABLE` with `details.reason == "startup-sidecars"`).
+    ///     The gateway rejects those requests before running a handler, so retrying is safe.
     ///   - onEvent: Optional event callback.
     public init(
         socketFactory: @escaping SocketFactory = { LoopbackGatewaySocket() },
         tls: GatewayTLSSettings = GatewayTLSSettings(),
         tickIntervalMs: Int = 30_000,
         initialReconnectBackoffMs: UInt64 = 500,
+        startupUnavailableRetryLimit: Int = 3,
         onEvent: EventHandler? = nil
     ) {
         self.socketFactory = socketFactory
         self.tls = tls
         self.tickIntervalMs = max(10, tickIntervalMs)
         self.initialReconnectBackoffMs = max(10, initialReconnectBackoffMs)
+        self.startupUnavailableRetryLimit = max(0, startupUnavailableRetryLimit)
         self.onEvent = onEvent
         self.reconnectBackoffMs = max(10, initialReconnectBackoffMs)
     }
@@ -148,6 +154,9 @@ public actor GatewayClient {
     }
 
     /// Sends a request frame and awaits response with timeout.
+    ///
+    /// Startup-unavailable responses are retried after their bounded `retryAfterMs` hint, up to the
+    /// configured `startupUnavailableRetryLimit`.
     /// - Parameters:
     ///   - method: Gateway method name.
     ///   - params: Request parameters.
@@ -157,6 +166,26 @@ public actor GatewayClient {
         method: String,
         params: [String: AnyCodable] = [:],
         timeoutMs: Int = 15_000
+    ) async throws -> ResponseFrame
+    {
+        var retries = 0
+        while true {
+            let response = try await self.sendOnce(method: method, params: params, timeoutMs: timeoutMs)
+            guard !response.ok,
+                  retries < self.startupUnavailableRetryLimit,
+                  let delayMs = response.error?.startupRetryAfterMs
+            else {
+                return response
+            }
+            retries += 1
+            try await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000)
+        }
+    }
+
+    private func sendOnce(
+        method: String,
+        params: [String: AnyCodable],
+        timeoutMs: Int
     ) async throws -> ResponseFrame
     {
         guard self.connected, let socket = self.socket else {
@@ -250,8 +279,7 @@ public actor GatewayClient {
 
     private static func decodeResponse<T: Decodable>(_ type: T.Type, from response: ResponseFrame) throws -> T {
         guard response.ok else {
-            if let error = response.error {
-                let shape = try GatewayPayloadCodec.decode(ErrorShape.self, from: AnyCodable(error))
+            if let shape = response.error {
                 throw GatewayTransportError.remote(shape)
             }
             throw GatewayTransportError.invalidFrame("Gateway response marked as failed without an error payload")

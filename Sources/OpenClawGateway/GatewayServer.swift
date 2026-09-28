@@ -68,84 +68,114 @@ public struct GatewayServerHandlers: Sendable {
     }
 }
 
-private struct GatewaySecretIndex: Codable, Sendable {
-    let version: Int
-    var keys: [String]
-}
-
-/// Small metadata wrapper that adds list semantics on top of `CredentialStore`.
-public actor GatewaySecretVault {
-    private let credentialStore: any CredentialStore
-    private let indexURL: URL?
-    private var keys: Set<String>
-
-    /// Creates a metadata-aware secret vault backed by a credential store.
-    public init(credentialStore: any CredentialStore, indexURL: URL? = nil) {
-        self.credentialStore = credentialStore
-        self.indexURL = indexURL
-        self.keys = []
-        if let indexURL, FileManager.default.fileExists(atPath: indexURL.path),
-           let data = try? Data(contentsOf: indexURL),
-           let payload = try? JSONDecoder().decode(GatewaySecretIndex.self, from: data)
-        {
-            self.keys = Set(payload.keys)
-        }
-    }
-
-    /// Returns the sorted list of secret keys tracked by the vault.
-    public func listSecretKeys() -> [String] {
-        self.keys.sorted()
-    }
-
-    /// Stores or replaces a secret value.
-    public func setSecret(_ value: String, for key: String) async throws {
-        let normalizedKey = try Self.normalizedKey(key)
-        try await self.credentialStore.saveSecret(value, for: normalizedKey)
-        self.keys.insert(normalizedKey)
-        try self.persistIndexIfNeeded()
-    }
-
-    /// Deletes a secret value and returns whether it existed before removal.
-    public func deleteSecret(for key: String) async throws -> Bool {
-        let normalizedKey = try Self.normalizedKey(key)
-        let existed = self.keys.contains(normalizedKey)
-        try await self.credentialStore.deleteSecret(for: normalizedKey)
-        self.keys.remove(normalizedKey)
-        try self.persistIndexIfNeeded()
-        return existed
-    }
-
-    private func persistIndexIfNeeded() throws {
-        guard let indexURL else {
-            return
-        }
-        try FileManager.default.createDirectory(
-            at: indexURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        let payload = GatewaySecretIndex(version: 1, keys: self.keys.sorted())
-        let data = try JSONEncoder().encode(payload)
-        try data.write(to: indexURL, options: [.atomic])
-    }
-
-    private static func normalizedKey(_ key: String) throws -> String {
-        let normalized = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalized.isEmpty else {
-            throw OpenClawCoreError.invalidConfiguration("Secret key must not be empty")
-        }
-        return normalized
-    }
-}
-
 /// In-process gateway dispatcher that fronts sessions, secrets, and injected runtime handlers.
-public actor GatewayServer {
-    private let sessionStore: SessionStore
-    private let secretVault: GatewaySecretVault
-    private let defaultAgentID: String
-    private let handlers: GatewayServerHandlers
-    private var agentRuns: [String: Task<GatewayAgentWaitResult, Error>] = [:]
+///
+/// Dispatch is table-driven:
+/// 1. Methods registered with ``register(method:descriptor:handler:)`` (and the built-in handlers,
+///    which live in the same table and can be replaced or removed).
+/// 2. Resolvers added with ``addMethodResolver(_:)`` (dynamic sources such as plugin registries).
+/// 3. Any other upstream core method from ``GatewayMethodCatalog``: params are validated against the
+///    generated `<Method>Params` model (`INVALID_REQUEST` on mismatch), then the request answers
+///    `UNAVAILABLE` because nothing in-process implements it.
+/// 4. Methods upstream removed since the previous pin, and unknown methods, answer `INVALID_REQUEST`.
+///
+/// Before invoking a handler the server authorizes the connection like upstream: node-scoped methods
+/// require the node role and all others the operator role (`INVALID_REQUEST "unauthorized role: …"`),
+/// and the descriptor scope is checked against the connection's grants
+/// (``GatewayConnectionContext/allows(scope:)``), answering `FORBIDDEN` with `MISSING_SCOPE` details.
+public actor GatewayServer: GatewayMethodRegistrar {
+    /// Methods served in-process that are OpenClawKit extensions rather than upstream core methods.
+    ///
+    /// `browser.request` is plugin-owned upstream (extensions/browser); the others have no upstream
+    /// equivalent (`secrets.store.*` is the upstream secrets surface).
+    public static let sdkExtensionMethods: Set<String> = [
+        "agent.run",
+        "skills.list",
+        "skills.invoke",
+        "secrets.list",
+        "secrets.set",
+        "secrets.delete",
+        "browser.request",
+    ]
+
+    /// Descriptors used for ``sdkExtensionMethods`` (scopes mirror the closest upstream method).
+    public static let sdkExtensionDescriptors: [String: GatewayMethodDescriptor] = [
+        "agent.run": GatewayMethodDescriptor(name: "agent.run", family: "sdk-agent", scope: "operator.write", since: "sdk"),
+        "skills.list": GatewayMethodDescriptor(name: "skills.list", family: "sdk-skills", scope: "operator.read", since: "sdk"),
+        "skills.invoke": GatewayMethodDescriptor(name: "skills.invoke", family: "sdk-skills", scope: "operator.write", since: "sdk"),
+        "secrets.list": GatewayMethodDescriptor(name: "secrets.list", family: "sdk-secrets", scope: "operator.admin", since: "sdk"),
+        "secrets.set": GatewayMethodDescriptor(name: "secrets.set", family: "sdk-secrets", scope: "operator.admin", since: "sdk"),
+        "secrets.delete": GatewayMethodDescriptor(name: "secrets.delete", family: "sdk-secrets", scope: "operator.admin", since: "sdk"),
+        "browser.request": GatewayMethodDescriptor(name: "browser.request", family: "browser", scope: "operator.admin", since: "sdk"),
+    ]
+
+    enum BuiltinMethod: Sendable {
+        case agentRun
+        case agentWait
+        case sessionsList
+        case sessionsGet
+        case sessionsPatch
+        case sessionsReset
+        case sessionsDelete
+        case modelsList
+        case skillsList
+        case skillsInvoke
+        case secretsList
+        case secretsSet
+        case secretsDelete
+        case secretsStoreList
+        case secretsStoreSet
+        case secretsStoreDelete
+        case browserRequest
+    }
+
+    static let builtinMethods: [String: BuiltinMethod] = [
+        "agent": .agentRun,
+        "agent.run": .agentRun,
+        "agent.wait": .agentWait,
+        "sessions.list": .sessionsList,
+        "sessions.get": .sessionsGet,
+        "sessions.patch": .sessionsPatch,
+        "sessions.reset": .sessionsReset,
+        "sessions.delete": .sessionsDelete,
+        "models.list": .modelsList,
+        "skills.list": .skillsList,
+        "skills.invoke": .skillsInvoke,
+        "secrets.list": .secretsList,
+        "secrets.set": .secretsSet,
+        "secrets.delete": .secretsDelete,
+        "secrets.store.list": .secretsStoreList,
+        "secrets.store.set": .secretsStoreSet,
+        "secrets.store.delete": .secretsStoreDelete,
+        "browser.request": .browserRequest,
+    ]
+
+    private enum MethodImplementation: Sendable {
+        case builtin(BuiltinMethod)
+        case custom(GatewayMethodHandler)
+    }
+
+    private struct MethodEntry: Sendable {
+        let descriptor: GatewayMethodDescriptor?
+        let implementation: MethodImplementation
+    }
+
+    let sessionStore: SessionStore
+    let secretVault: GatewaySecretVault
+    let defaultAgentID: String
+    let handlers: GatewayServerHandlers
+    var agentRuns: [String: Task<GatewayAgentWaitResult, Error>] = [:]
+    private var methods: [String: MethodEntry]
+    private var resolvers: [GatewayMethodResolver] = []
+    private var eventSubscribers: [UUID: AsyncStream<EventFrame>.Continuation] = [:]
+    private var eventSequence = 0
 
     /// Creates an in-process gateway server with session, secret, and runtime handlers.
+    /// - Parameters:
+    ///   - sessionStore: Store backing `sessions.*`.
+    ///   - secretVault: Vault backing `secrets.*` and `secrets.store.*`.
+    ///   - defaultAgentID: Agent id assigned to sessions created by `sessions.patch`.
+    ///   - handlers: Runtime handlers for agent runs, models, skills and browser requests.
     public init(
         sessionStore: SessionStore,
         secretVault: GatewaySecretVault,
@@ -156,461 +186,218 @@ public actor GatewayServer {
         self.secretVault = secretVault
         self.defaultAgentID = defaultAgentID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "main" : defaultAgentID
         self.handlers = handlers
+        var methods: [String: MethodEntry] = [:]
+        for (name, builtin) in Self.builtinMethods {
+            methods[name] = MethodEntry(descriptor: Self.defaultDescriptor(for: name), implementation: .builtin(builtin))
+        }
+        self.methods = methods
     }
 
-    /// Dispatches one gateway request frame to a typed response.
+    // MARK: - Registration
+
+    /// Registers (or replaces) the handler for `method`, including built-in methods.
+    ///
+    /// Names are trimmed; an empty name is ignored.
+    /// - Parameters:
+    ///   - method: Wire method name.
+    ///   - descriptor: Method metadata; `nil` uses the upstream catalog (or SDK extension) descriptor
+    ///     when one exists, otherwise the method is unscoped.
+    ///   - handler: Handler invoked for each request.
+    public func register(method: String, descriptor: GatewayMethodDescriptor?, handler: @escaping GatewayMethodHandler) {
+        let name = method.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        self.methods[name] = MethodEntry(
+            descriptor: descriptor ?? Self.defaultDescriptor(for: name),
+            implementation: .custom(handler)
+        )
+    }
+
+    /// Removes the handler for `method` (built-in or registered).
+    ///
+    /// Afterwards the method falls through to resolvers and the catalog fallback.
+    /// - Parameter method: Wire method name.
+    /// - Returns: `true` when a handler was removed.
+    @discardableResult
+    public func unregister(method: String) -> Bool {
+        self.methods.removeValue(forKey: method.trimmingCharacters(in: .whitespacesAndNewlines)) != nil
+    }
+
+    /// Adds a resolver consulted for methods without a registered handler, in insertion order.
+    /// - Parameter resolver: Resolver returning a handler, or `nil` to pass.
+    public func addMethodResolver(_ resolver: @escaping GatewayMethodResolver) {
+        self.resolvers.append(resolver)
+    }
+
+    /// Returns the sorted names of every method with an in-process handler (diagnostics).
+    ///
+    /// This is the SDK analogue of hello-ok `features.methods` before advertise filtering.
+    public func supportedMethods() -> [String] {
+        self.methods.keys.sorted()
+    }
+
+    /// Returns the sorted names of handled methods that should be advertised in hello-ok `features.methods`.
+    ///
+    /// Methods whose descriptor sets `advertised: false` (for example `sessions.get`) are omitted.
+    public func advertisedMethods() -> [String] {
+        self.methods
+            .filter { $0.value.descriptor?.advertised ?? true }
+            .map(\.key)
+            .sorted()
+    }
+
+    /// Returns the descriptor the server uses for `method` (registration, SDK extension, or catalog).
+    /// - Parameter method: Wire method name.
+    /// - Returns: Descriptor when one is known.
+    public func methodDescriptor(for method: String) -> GatewayMethodDescriptor? {
+        self.methods[method]?.descriptor ?? Self.defaultDescriptor(for: method)
+    }
+
+    // MARK: - Events
+
+    /// Subscribes to events emitted by method handlers (and ``broadcast(event:payload:)``).
+    /// - Parameter limit: Number of undelivered events buffered per subscriber.
+    /// - Returns: Stream of event frames; cancel iteration to unsubscribe.
+    public func events(bufferingNewest limit: Int = 256) -> AsyncStream<EventFrame> {
+        let id = UUID()
+        let (stream, continuation) = AsyncStream<EventFrame>.makeStream(bufferingPolicy: .bufferingNewest(max(1, limit)))
+        self.eventSubscribers[id] = continuation
+        continuation.onTermination = { [weak self] _ in
+            Task { await self?.removeEventSubscriber(id) }
+        }
+        return stream
+    }
+
+    /// Emits an event to every subscriber with the next sequence number.
+    /// - Parameters:
+    ///   - event: Event name (see ``GatewayEventName``).
+    ///   - payload: Optional event payload.
+    /// - Returns: The emitted frame.
+    @discardableResult
+    public func broadcast(event: String, payload: AnyCodable? = nil) -> EventFrame {
+        self.eventSequence += 1
+        let frame = EventFrame(type: "event", event: event, payload: payload, seq: self.eventSequence)
+        for continuation in self.eventSubscribers.values {
+            continuation.yield(frame)
+        }
+        return frame
+    }
+
+    private func removeEventSubscriber(_ id: UUID) {
+        self.eventSubscribers.removeValue(forKey: id)
+    }
+
+    nonisolated private func makeEventEmitter() -> GatewayEventEmitter {
+        GatewayEventEmitter { [weak self] event, payload in
+            await self?.broadcast(event: event, payload: payload)
+        }
+    }
+
+    // MARK: - Dispatch
+
+    /// Dispatches one gateway request frame from a trusted in-process caller.
     /// - Parameter request: Raw request frame.
     /// - Returns: Encoded response frame.
     public func handle(_ request: RequestFrame) async -> ResponseFrame {
+        await self.handle(request, connection: .inProcess)
+    }
+
+    /// Dispatches one gateway request frame on behalf of a connection.
+    /// - Parameters:
+    ///   - request: Raw request frame.
+    ///   - connection: Connection identity and grants used for scope checks and handler context.
+    /// - Returns: Encoded response frame.
+    public func handle(_ request: RequestFrame, connection: GatewayConnectionContext) async -> ResponseFrame {
+        let entry = self.methods[request.method]
+        let descriptor = entry?.descriptor ?? Self.defaultDescriptor(for: request.method)
+        let context = GatewayMethodRequest(
+            id: request.id,
+            method: request.method,
+            rawParams: request.params,
+            descriptor: descriptor,
+            connection: connection,
+            events: self.makeEventEmitter()
+        )
         do {
-            switch request.method {
-            case "agent", "agent.run":
-                let payload = try await self.handleAgentRun(request.params, method: request.method)
-                return try self.successResponse(id: request.id, payload: payload)
-            case "agent.wait":
-                let payload = try await self.handleAgentWait(request.params)
-                return try self.successResponse(id: request.id, payload: payload)
-            case "sessions.list":
-                return try self.successResponse(
-                    id: request.id,
-                    payload: GatewaySessionListResult(sessions: await self.listSessions())
-                )
-            case "sessions.get":
-                let params = try self.decodeParams(GatewaySessionGetParams.self, from: request.params, method: request.method)
-                let record = await self.sessionStore.recordForKey(params.key)
-                return try self.successResponse(
-                    id: request.id,
-                    payload: GatewaySessionGetResult(session: record.map(Self.sessionInfo(from:)))
-                )
-            case "sessions.patch":
-                let payload = try await self.handleSessionPatch(request.params, method: request.method)
-                return try self.successResponse(id: request.id, payload: payload)
-            case "sessions.reset":
-                let payload = try await self.handleSessionReset(request.params, method: request.method)
-                return try self.successResponse(id: request.id, payload: payload)
-            case "sessions.delete":
-                let payload = try await self.handleSessionDelete(request.params, method: request.method)
-                return try self.successResponse(id: request.id, payload: payload)
-            case "message.action":
-                try self.knownUnsupported(MessageActionParams.self, from: request.params, method: request.method)
-            case "sessions.compaction.list":
-                try self.knownUnsupported(SessionsCompactionListParams.self, from: request.params, method: request.method)
-            case "sessions.compaction.get":
-                try self.knownUnsupported(SessionsCompactionGetParams.self, from: request.params, method: request.method)
-            case "sessions.compaction.branch":
-                try self.knownUnsupported(SessionsCompactionBranchParams.self, from: request.params, method: request.method)
-            case "sessions.compaction.restore":
-                try self.knownUnsupported(SessionsCompactionRestoreParams.self, from: request.params, method: request.method)
-            case "sessions.create":
-                try self.knownUnsupported(SessionsCreateParams.self, from: request.params, method: request.method)
-            case "sessions.send":
-                try self.knownUnsupported(SessionsSendParams.self, from: request.params, method: request.method)
-            case "sessions.messages.subscribe":
-                try self.knownUnsupported(SessionsMessagesSubscribeParams.self, from: request.params, method: request.method)
-            case "sessions.messages.unsubscribe":
-                try self.knownUnsupported(SessionsMessagesUnsubscribeParams.self, from: request.params, method: request.method)
-            case "sessions.abort":
-                try self.knownUnsupported(SessionsAbortParams.self, from: request.params, method: request.method)
-            case "models.list":
-                return try self.successResponse(
-                    id: request.id,
-                    payload: GatewayModelsListResult(models: try await self.handlers.listModels())
-                )
-            case "talk.realtime.session":
-                try self.knownUnsupported(TalkRealtimeSessionParams.self, from: request.params, method: request.method)
-            case "talk.speak":
-                try self.knownUnsupported(TalkSpeakParams.self, from: request.params, method: request.method)
-            case "channels.status":
-                try self.knownUnsupported(ChannelsStatusParams.self, from: request.params, method: request.method)
-            case "channels.start":
-                try self.knownUnsupported(ChannelsStartParams.self, from: request.params, method: request.method)
-            case "channels.logout":
-                try self.knownUnsupported(ChannelsLogoutParams.self, from: request.params, method: request.method)
-            case "commands.list":
-                try self.knownUnsupported(CommandsListParams.self, from: request.params, method: request.method)
-            case "tools.catalog":
-                try self.knownUnsupported(ToolsCatalogParams.self, from: request.params, method: request.method)
-            case "tools.effective":
-                try self.knownUnsupported(ToolsEffectiveParams.self, from: request.params, method: request.method)
-            case "skills.status":
-                try self.knownUnsupported(SkillsStatusParams.self, from: request.params, method: request.method)
-            case "skills.bins":
-                try self.knownUnsupported(SkillsBinsParams.self, from: request.params, method: request.method)
-            case "skills.search":
-                try self.knownUnsupported(SkillsSearchParams.self, from: request.params, method: request.method)
-            case "skills.detail":
-                try self.knownUnsupported(SkillsDetailParams.self, from: request.params, method: request.method)
-            case "skills.list":
-                return try self.successResponse(
-                    id: request.id,
-                    payload: GatewaySkillsListResult(skills: try await self.handlers.listSkills())
-                )
-            case "skills.invoke":
-                let params = try self.decodeParams(GatewaySkillInvokeParams.self, from: request.params, method: request.method)
-                return try self.successResponse(id: request.id, payload: try await self.handlers.invokeSkill(params))
-            case "secrets.list":
-                let keys = await self.secretVault.listSecretKeys()
-                let payload = GatewaySecretsListResult(
-                    secrets: keys.map(GatewaySecretDescriptor.init(key:))
-                )
-                return try self.successResponse(id: request.id, payload: payload)
-            case "secrets.set":
-                let params = try self.decodeParams(GatewaySecretSetParams.self, from: request.params, method: request.method)
-                try await self.secretVault.setSecret(params.value, for: params.key)
-                return try self.successResponse(id: request.id, payload: GatewaySecretMutationResult(key: params.key))
-            case "secrets.delete":
-                let params = try self.decodeParams(GatewaySecretDeleteParams.self, from: request.params, method: request.method)
-                let deleted = try await self.secretVault.deleteSecret(for: params.key)
-                return try self.successResponse(
-                    id: request.id,
-                    payload: GatewaySecretMutationResult(key: params.key, deleted: deleted)
-                )
-            case "browser.request":
-                let payload = try await self.handleBrowserRequest(request.params, method: request.method)
-                return try self.successResponse(id: request.id, payload: payload)
-            case "exec.approval.get":
-                try self.knownUnsupported(ExecApprovalGetParams.self, from: request.params, method: request.method)
-            case "plugin.approval.request":
-                try self.knownUnsupported(PluginApprovalRequestParams.self, from: request.params, method: request.method)
-            case "plugin.approval.resolve":
-                try self.knownUnsupported(PluginApprovalResolveParams.self, from: request.params, method: request.method)
-            default:
-                return self.errorResponse(
-                    id: request.id,
-                    code: .invalidRequest,
-                    message: "Unsupported gateway method: \(request.method)"
-                )
+            if let descriptor, let denial = Self.authorizationError(method: request.method, descriptor: descriptor, connection: connection) {
+                throw denial
             }
+            let payload: AnyCodable?
+            if let entry {
+                payload = try await self.invoke(entry.implementation, request: context)
+            } else if let handler = await self.resolveHandler(for: request.method) {
+                payload = try await handler(context)
+            } else {
+                return Self.errorResponse(id: request.id, shape: Self.fallbackError(for: context).errorShape)
+            }
+            return ResponseFrame(type: "res", id: request.id, ok: true, payload: payload, error: nil)
         } catch {
-            return self.errorResponse(
-                id: request.id,
-                code: Self.errorCode(for: error),
-                message: error.localizedDescription
-            )
+            return Self.errorResponse(id: request.id, shape: GatewayMethodError.errorShape(for: error))
         }
     }
 
-    private func knownUnsupported<T: Decodable>(_ type: T.Type, from payload: AnyCodable?, method: String) throws -> Never {
-        _ = try self.decodeParams(type, from: payload, method: method)
-        throw OpenClawCoreError.unavailable("\(method) is known but is not configured for this gateway server")
-    }
-
-    private func handleAgentRun(_ payload: AnyCodable?, method: String) async throws -> GatewayAgentAccepted {
-        let params = try self.decodeParams(GatewayAgentRequest.self, from: payload, method: method)
-        let execution = try await self.handlers.runAgent(params)
-        self.agentRuns[execution.runID] = execution.task
-        return GatewayAgentAccepted(runID: execution.runID)
-    }
-
-    private func handleAgentWait(_ payload: AnyCodable?) async throws -> GatewayAgentWaitResult {
-        let params = try self.decodeParams(GatewayAgentWaitParams.self, from: payload, method: "agent.wait")
-        guard let task = self.agentRuns[params.runID] else {
-            throw OpenClawCoreError.unavailable("Agent run '\(params.runID)' is not tracked by this gateway server")
-        }
-        let result: GatewayAgentWaitResult
-        if let timeoutMs = params.timeoutMs, timeoutMs > 0 {
-            result = try await withThrowingTaskGroup(of: GatewayAgentWaitResult.self) { group in
-                group.addTask {
-                    try await task.value
-                }
-                group.addTask {
-                    try await Task.sleep(nanoseconds: UInt64(timeoutMs) * 1_000_000)
-                    return GatewayAgentWaitResult(runID: params.runID, status: "timeout")
-                }
-                let first = try await group.next() ?? GatewayAgentWaitResult(runID: params.runID, status: "timeout")
-                group.cancelAll()
-                return first
-            }
-        } else {
-            result = try await task.value
-        }
-        if result.status == "ok" || result.status == "error" {
-            self.agentRuns.removeValue(forKey: params.runID)
-        }
-        return result
-    }
-
-    private func listSessions() async -> [GatewaySessionInfo] {
-        let records = await self.sessionStore.allRecords()
-        return records.map(Self.sessionInfo(from:))
-    }
-
-    private func handleSessionPatch(_ payload: AnyCodable?, method: String) async throws -> GatewaySessionMutationResult {
-        let params = try self.decodeParams(GatewaySessionPatchParams.self, from: payload, method: method)
-        let key = params.key.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty else {
-            throw OpenClawCoreError.invalidConfiguration("Session key must not be empty")
-        }
-        var record = await self.sessionStore.recordForKey(key) ?? SessionRecord(
-            key: key,
-            agentID: Self.normalizedText(params.agentID) ?? self.defaultAgentID,
-            updatedAtMs: Self.nowMs()
-        )
-        record.updatedAtMs = Self.nowMs()
-        if let agentID = Self.normalizedText(params.agentID) {
-            record.agentID = agentID
-        }
-        if let label = params.label {
-            record.label = Self.normalizedText(label)
-        }
-        if let modelOverride = params.modelOverride {
-            record.modelOverride = Self.normalizedText(modelOverride)
-        }
-        if let thinkingLevel = params.thinkingLevel {
-            record.thinkingLevel = ThinkLevel.normalize(thinkingLevel)
-        }
-        if let verboseLevel = params.verboseLevel {
-            record.verboseLevel = VerboseLevel.normalize(verboseLevel)
-        }
-        if let reasoningLevel = params.reasoningLevel {
-            record.reasoningLevel = ReasoningLevel.normalize(reasoningLevel)
-        }
-        if let responseUsage = params.responseUsage {
-            record.responseUsage = UsageDisplayLevel.normalize(responseUsage)
-        }
-        if let elevatedLevel = params.elevatedLevel {
-            record.elevatedLevel = ElevatedLevel.normalize(elevatedLevel)
-        }
-        if let groupActivation = params.groupActivation {
-            record.groupActivation = Self.normalizeGroupActivation(groupActivation)
-        }
-        if let sendPolicy = params.sendPolicy {
-            record.sendPolicy = Self.normalizeSendPolicy(sendPolicy)
-        }
-        if let execHost = params.execHost {
-            record.execHost = Self.normalizeExecHost(execHost)
-        }
-        if let execSecurity = params.execSecurity {
-            record.execSecurity = Self.normalizeExecSecurity(execSecurity)
-        }
-        if let execAsk = params.execAsk {
-            record.execAsk = Self.normalizeExecAsk(execAsk)
-        }
-        if let execNode = params.execNode {
-            record.execNode = Self.normalizedText(execNode)
-        }
-        await self.sessionStore.upsert(record)
-        try await self.sessionStore.save()
-        return GatewaySessionMutationResult(key: key, session: Self.sessionInfo(from: record))
-    }
-
-    private func handleSessionReset(_ payload: AnyCodable?, method: String) async throws -> GatewaySessionMutationResult {
-        let params = try self.decodeParams(GatewaySessionKeyParams.self, from: payload, method: method)
-        guard let existing = await self.sessionStore.recordForKey(params.key) else {
-            return GatewaySessionMutationResult(key: params.key, session: nil)
-        }
-        let reset = SessionRecord(
-            key: existing.key,
-            agentID: existing.agentID,
-            updatedAtMs: Self.nowMs(),
-            lastRoute: existing.lastRoute
-        )
-        await self.sessionStore.upsert(reset)
-        try await self.sessionStore.save()
-        return GatewaySessionMutationResult(key: params.key, session: Self.sessionInfo(from: reset))
-    }
-
-    private func handleSessionDelete(_ payload: AnyCodable?, method: String) async throws -> GatewaySessionMutationResult {
-        let params = try self.decodeParams(GatewaySessionKeyParams.self, from: payload, method: method)
-        let deleted = await self.sessionStore.deleteRecord(forKey: params.key)
-        if deleted {
-            try await self.sessionStore.save()
-        }
-        return GatewaySessionMutationResult(key: params.key, deleted: deleted)
-    }
-
-    private func handleBrowserRequest(_ payload: AnyCodable?, method: String) async throws -> GatewayBrowserResponse {
-        guard let browserRequest = self.handlers.browserRequest else {
-            throw OpenClawCoreError.unavailable("Browser request handling is not configured for this gateway server")
-        }
-        let params = try self.decodeParams(GatewayBrowserRequestParams.self, from: payload, method: method)
-        let sanitized = try Self.sanitizedBrowserRequest(params)
-        return try await browserRequest(sanitized)
-    }
-
-    private func decodeParams<T: Decodable>(_ type: T.Type, from payload: AnyCodable?, method: String) throws -> T {
-        do {
-            return try GatewayPayloadCodec.decode(type, from: payload)
-        } catch {
-            throw OpenClawCoreError.invalidConfiguration("Invalid \(method) params: \(error)")
-        }
-    }
-
-    private func successResponse<T: Encodable>(id: String, payload: T) throws -> ResponseFrame {
-        ResponseFrame(
-            type: "res",
-            id: id,
-            ok: true,
-            payload: try GatewayPayloadCodec.encode(payload),
-            error: nil
-        )
-    }
-
-    private func errorResponse(id: String, code: ErrorCode, message: String) -> ResponseFrame {
-        let errorShape = ErrorShape(
-            code: code.rawValue,
-            message: message,
-            details: nil,
-            retryable: nil,
-            retryafterms: nil
-        )
-        let errorPayload: [String: AnyCodable]?
-        if let encoded = try? GatewayPayloadCodec.encode(errorShape), case .object(let object) = encoded.value {
-            errorPayload = object
-        } else {
-            errorPayload = [
-                "code": AnyCodable(code.rawValue),
-                "message": AnyCodable(message),
-            ]
-        }
-        return ResponseFrame(
-            type: "res",
-            id: id,
-            ok: false,
-            payload: nil,
-            error: errorPayload
-        )
-    }
-
-    private static func errorCode(for error: Error) -> ErrorCode {
-        if let error = error as? OpenClawCoreError {
-            switch error {
-            case .invalidConfiguration:
-                return .invalidRequest
-            case .unavailable:
-                return .unavailable
+    private func resolveHandler(for method: String) async -> GatewayMethodHandler? {
+        for resolver in self.resolvers {
+            if let handler = await resolver(method) {
+                return handler
             }
         }
-        return .unavailable
+        return nil
     }
 
-    private static func sessionInfo(from record: SessionRecord) -> GatewaySessionInfo {
-        GatewaySessionInfo(
-            key: record.key,
-            agentID: record.agentID,
-            updatedAtMs: record.updatedAtMs,
-            channel: record.lastRoute?.channel,
-            accountID: record.lastRoute?.accountID,
-            peerID: record.lastRoute?.peerID,
-            label: record.label,
-            modelOverride: record.modelOverride,
-            thinkingLevel: record.thinkingLevel?.rawValue,
-            verboseLevel: record.verboseLevel?.rawValue,
-            reasoningLevel: record.reasoningLevel?.rawValue,
-            responseUsage: record.responseUsage?.rawValue,
-            elevatedLevel: record.elevatedLevel?.rawValue,
-            groupActivation: record.groupActivation?.rawValue,
-            sendPolicy: record.sendPolicy?.rawValue,
-            execHost: record.execHost?.rawValue,
-            execSecurity: record.execSecurity?.rawValue,
-            execAsk: record.execAsk?.rawValue,
-            execNode: record.execNode
-        )
-    }
-
-    private static func sanitizedBrowserRequest(_ params: GatewayBrowserRequestParams) throws -> GatewayBrowserRequestParams {
-        let method = params.method.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        guard method == "GET" || method == "POST" || method == "DELETE" else {
-            throw OpenClawCoreError.invalidConfiguration("Invalid browser.request method: \(params.method)")
+    private func invoke(_ implementation: MethodImplementation, request: GatewayMethodRequest) async throws -> AnyCodable? {
+        switch implementation {
+        case .custom(let handler):
+            return try await handler(request)
+        case .builtin(let builtin):
+            return try await self.invokeBuiltin(builtin, request: request)
         }
-        let path = params.path.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !path.isEmpty, path.hasPrefix("/") else {
-            throw OpenClawCoreError.invalidConfiguration("browser.request path must start with '/'")
-        }
-        if Self.isBlockedBrowserProfileMutation(path: path, method: method) {
-            throw OpenClawCoreError.invalidConfiguration("browser.request cannot mutate browser profiles")
-        }
-        return GatewayBrowserRequestParams(
-            method: method,
-            path: path,
-            query: params.query,
-            body: params.body,
-            timeoutMs: params.timeoutMs,
-            workspaceRoot: nil,
-            spawnedWorkspaceRoot: nil
-        )
     }
 
-    private static func isBlockedBrowserProfileMutation(path: String, method: String) -> Bool {
-        let normalizedPath = path.lowercased()
-        guard normalizedPath.contains("profile") else {
-            return false
-        }
-        return method == "POST" || method == "DELETE"
-    }
-
-    private static func normalizedText(_ value: String?) -> String? {
-        guard let value else { return nil }
-        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        return normalized.isEmpty ? nil : normalized
-    }
-
-    private static func normalizeSendPolicy(_ raw: String) -> SendPolicy? {
-        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "allow", "on", "true", "yes":
-            return .allow
-        case "deny", "off", "false", "no":
-            return .deny
-        default:
+    /// Mirrors upstream `authorizeGatewayMethod`: `health` is always reachable, node-scoped methods
+    /// require the node role and every other method the operator role (`INVALID_REQUEST
+    /// "unauthorized role: …"`), and operator scopes are checked against the connection grants
+    /// (`FORBIDDEN` with `MISSING_SCOPE` details). `dynamic` methods resolve their scope in the handler.
+    static func authorizationError(
+        method: String,
+        descriptor: GatewayMethodDescriptor,
+        connection: GatewayConnectionContext
+    ) -> GatewayMethodError? {
+        if method == "health" {
             return nil
         }
-    }
-
-    private static func normalizeGroupActivation(_ raw: String) -> GroupActivation? {
-        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "always":
-            return .always
-        case "mention", "mentions":
-            return .mention
-        default:
+        let role = connection.role.trimmingCharacters(in: .whitespacesAndNewlines)
+        let requiresNodeRole = descriptor.scope == "node"
+        guard role == (requiresNodeRole ? "node" : "operator") else {
+            return .invalidRequest("unauthorized role: \(role)")
+        }
+        if requiresNodeRole || connection.allows(scope: descriptor.scope) {
             return nil
         }
+        return .missingScope(descriptor.scope)
     }
 
-    private static func normalizeExecHost(_ raw: String) -> ExecHost? {
-        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "sandbox":
-            return .sandbox
-        case "gateway":
-            return .gateway
-        case "node":
-            return .node
-        default:
-            return nil
+    /// Error for a method without any in-process handler.
+    static func fallbackError(for request: GatewayMethodRequest) -> GatewayMethodError {
+        let method = request.method
+        if let descriptor = GatewayMethodCatalog.byName[method] {
+            do {
+                _ = try GatewayMethodCatalog.validateParams(method: method, payload: request.rawParams)
+            } catch {
+                return .invalidParams(method: method, underlying: error)
+            }
+            return .unavailable("\(method) is known (since \(descriptor.since)) but is not configured for this gateway server")
         }
-    }
-
-    private static func normalizeExecSecurity(_ raw: String) -> ExecSecurity? {
-        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().replacingOccurrences(of: "-", with: "") {
-        case "deny":
-            return .deny
-        case "allowlist":
-            return .allowlist
-        case "full":
-            return .full
-        default:
-            return nil
+        if GatewayMethodCatalog.removedSincePreviousPin.contains(method) {
+            return .invalidRequest("unknown method: \(method) (removed upstream in OpenClaw \(GatewayMethodCatalog.upstreamVersion))")
         }
+        return .invalidRequest("unknown method: \(method)")
     }
 
-    private static func normalizeExecAsk(_ raw: String) -> ExecAsk? {
-        let normalized = raw
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-            .replacingOccurrences(of: "_", with: "-")
-        switch normalized {
-        case "off":
-            return .off
-        case "on-miss", "onmiss":
-            return .onMiss
-        case "always":
-            return .always
-        default:
-            return nil
-        }
+    static func defaultDescriptor(for method: String) -> GatewayMethodDescriptor? {
+        GatewayMethodCatalog.byName[method] ?? Self.sdkExtensionDescriptors[method]
     }
 
-    private static func nowMs() -> Int {
-        Int(Date().timeIntervalSince1970 * 1000)
+    static func errorResponse(id: String, shape: ErrorShape) -> ResponseFrame {
+        ResponseFrame(type: "res", id: id, ok: false, payload: nil, error: shape)
     }
 }
