@@ -972,11 +972,11 @@ extension OpenClawChatViewModel {
             // the gateway rejected it. Never replay automatically.
             return await self.stopAfterUnconfirmedDelivery(command, outbox: outbox)
         } catch let error as GatewayResponseError {
-            if ChatGatewayErrorFacts.reason(error) == OpenClawChatSessionRoutingContract.changedErrorReason {
+            if error.detailsReason == OpenClawChatSessionRoutingContract.changedErrorReason {
                 let parked = await self.parkOutboxCommandForChangedTarget(command, outbox: outbox)
                 return parked ? .continueFlush : .stop
             }
-            if ChatGatewayErrorFacts.reason(error) == OpenClawChatSessionSettingsContract.changedErrorReason {
+            if error.detailsReason == OpenClawChatSessionSettingsContract.changedErrorReason {
                 let parked = await self.parkOutboxCommandForChangedSettings(command, outbox: outbox)
                 return parked ? .continueFlush : .stop
             }

@@ -540,12 +540,12 @@ extension OpenClawChatViewModel {
     }
 
     nonisolated private static func questionListIsUnavailable(_ error: GatewayResponseError) -> Bool {
-        if ChatGatewayErrorFacts.missingScope(error) == "operator.questions" { return true }
+        if error.missingScope == "operator.questions" { return true }
         return error.code == "INVALID_REQUEST" && error.message == "unknown method: question.list"
     }
 
     nonisolated private static func questionIsNotFound(_ error: GatewayResponseError) -> Bool {
-        ChatGatewayErrorFacts.reason(error) == "QUESTION_NOT_FOUND"
+        error.detailsReason == "QUESTION_NOT_FOUND"
     }
 
     private func restartQuestionRefreshAfterStateChange(generation: UInt64) {
@@ -627,8 +627,8 @@ extension OpenClawChatViewModel {
             let responseError = error as? GatewayResponseError
             let preserveSecretDraft = responseError.map { responseError in
                 responseError.code == "INVALID_REQUEST" &&
-                    ChatGatewayErrorFacts.reason(responseError) == nil &&
-                    !ChatGatewayErrorFacts.isAuthorizationFailure(responseError)
+                    responseError.detailsReason == nil &&
+                    !responseError.isAuthorizationFailure
             } ?? false
             model.failSubmission(error.localizedDescription, preserveSecretDraft: preserveSecretDraft)
             self.questionStateRevision &+= 1
