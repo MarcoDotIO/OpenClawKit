@@ -35,6 +35,12 @@ jobs:
       - name: Lint Swift sources
         run: Scripts/lint-swift.sh
 
+      # Verifies the vendored OpenClawProtocol files match the pinned upstream checkout.
+      # The checkout (.codex/openclaw or OPENCLAW_UPSTREAM_DIR) is not part of this repo,
+      # so the check is skipped with a warning when it is absent.
+      - name: Protocol sync check
+        run: node Scripts/protocol-gen-swift.mjs --check --allow-missing-upstream
+
   swift-validation:
     name: Swift Validation
     runs-on: ubuntu-latest

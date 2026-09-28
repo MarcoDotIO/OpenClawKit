@@ -491,6 +491,102 @@ struct ProtocolModelsTests {
         _ = try GatewayPayloadCodec.encode(execApproval)
         _ = try GatewayPayloadCodec.encode(pluginApproval)
         _ = try GatewayPayloadCodec.encode(pluginRequest)
+
+        // 2026.9.6 additions: talk.client/talk.session replace talk.realtime.session.
+        let talkClient = TalkClientCreateParams(sessionkey: "session-main", provider: "openai", model: "gpt-realtime", voice: "alloy")
+        let decodedTalkClient = try GatewayPayloadCodec.decode(TalkClientCreateParams.self, from: GatewayPayloadCodec.encode(talkClient))
+        #expect(decodedTalkClient.sessionkey == "session-main")
+        #expect(decodedTalkClient.voice == "alloy")
+        let talkSession = TalkSessionCreateParams(sessionkey: "session-main", language: "en", ttlms: 60_000)
+        #expect(try GatewayPayloadCodec.decode(TalkSessionCreateParams.self, from: GatewayPayloadCodec.encode(talkSession)).ttlms == 60_000)
+
+        let richCreate = SessionsCreateParams(
+            key: "session-main",
+            idempotencykey: "idem-create",
+            displayname: "Main",
+            permissionmode: .guarded,
+            visibility: .shared,
+            worktree: true
+        )
+        let createJSON = try #require(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(richCreate)) as? [String: Any]
+        )
+        #expect(createJSON["idempotencyKey"] as? String == "idem-create")
+        #expect(createJSON["permissionMode"] as? String == "guarded")
+        #expect(createJSON["visibility"] as? String == "shared")
+        let decodedCreate = try JSONDecoder().decode(SessionsCreateParams.self, from: JSONEncoder().encode(richCreate))
+        #expect(decodedCreate.displayname == "Main")
+        #expect(decodedCreate.worktree == true)
+
+        // Generated `.value as?` compat accessors are rewritten to typed accessors by the generator.
+        let fast = ChatSendParams(sessionkey: "main", message: "hi", fastmode: true, idempotencykey: "idem-chat")
+        #expect(fast.fastmode == true)
+        #expect(AgentsUpdateParams(agentid: "work", model: "openai/gpt-5.6").model == "openai/gpt-5.6")
+
+        let update = try JSONDecoder().decode(
+            UpdateAvailable.self,
+            from: Data(#"{"currentVersion":"2026.9.5","latestVersion":"2026.9.6","channel":"stable","commitsBehind":3}"#.utf8)
+        )
+        #expect(update.latestversion == "2026.9.6")
+        #expect(update.commitsbehind == 3)
+        let state = try JSONDecoder().decode(StateVersion.self, from: Data(#"{"presence":4,"health":9}"#.utf8))
+        #expect(state.presence == 4)
+        #expect(state.health == 9)
+
+        let chatDelta = try JSONDecoder().decode(
+            ChatEvent.self,
+            from: Data(
+                #"{"state":"delta","runId":"run-1","sessionKey":"main","seq":3,"deltaText":"lo","replace":false,"message":{"text":"hello"}}"#.utf8
+            )
+        )
+        guard case .delta(let delta) = chatDelta else {
+            Issue.record("Expected a chat delta event")
+            return
+        }
+        #expect(delta.deltatext == "lo")
+        #expect(delta.replace == false)
+        #expect(delta.runid == "run-1")
+        let reencodedDelta = try JSONDecoder().decode(ChatEvent.self, from: JSONEncoder().encode(chatDelta))
+        guard case .delta(let roundTripped) = reencodedDelta else {
+            Issue.record("Expected the delta to survive re-encoding")
+            return
+        }
+        #expect(roundTripped.seq == 3)
+    }
+
+    @Test
+    func errorShapeExposesTypedDetails() throws {
+        let missingScope = try JSONDecoder().decode(
+            ErrorShape.self,
+            from: Data(
+                #"""
+                {
+                  "code": "FORBIDDEN",
+                  "message": "missing scope: operator.admin",
+                  "details": { "code": "MISSING_SCOPE", "missingScope": "operator.admin", "requiredScopes": ["operator.admin"] }
+                }
+                """#.utf8
+            )
+        )
+        #expect(missingScope.errorCode == .forbidden)
+        guard case .missingScope(let details)? = missingScope.typedDetails else {
+            Issue.record("Expected MISSING_SCOPE details")
+            return
+        }
+        #expect(details.missingscope == "operator.admin")
+        #expect(missingScope.isStartupUnavailable == false)
+
+        let startup = ErrorShape(
+            code: "UNAVAILABLE",
+            message: "gateway starting",
+            details: AnyCodable(["reason": AnyCodable(GATEWAY_STARTUP_UNAVAILABLE_REASON)]),
+            retryable: true,
+            retryafterms: 5_000
+        )
+        #expect(startup.isStartupUnavailable)
+        #expect(startup.startupRetryAfterMs == 2_000)
+        #expect(startup.typedDetails == nil)
+        #expect(ErrorShape(code: "SOMETHING_NEW", message: "x").errorCode == nil)
     }
 
     @Test
