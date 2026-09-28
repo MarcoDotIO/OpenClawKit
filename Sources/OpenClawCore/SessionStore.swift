@@ -900,5 +900,5 @@ enum GatewayPayloadCodecLite {
 
 /// Current time in epoch milliseconds as `Int64` (safe on 32-bit watchOS).
 func sessionStoreNowMs() -> Int64 {
-    Int64((Date().timeIntervalSince1970 * 1000).rounded())
+    OpenClawClock.nowMs()
 }

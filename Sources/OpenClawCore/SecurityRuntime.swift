@@ -8,8 +8,8 @@ public struct PairingRecord: Sendable, Equatable {
     public let role: String
     /// Pairing token associated with the device.
     public let token: String
-    /// Approval timestamp in milliseconds since epoch.
-    public let approvedAtMs: Int
+    /// Approval timestamp in milliseconds since epoch (`Int64`, safe on 32-bit watchOS).
+    public let approvedAtMs: Int64
 
     /// Creates a pairing record.
     /// - Parameters:
@@ -17,7 +17,7 @@ public struct PairingRecord: Sendable, Equatable {
     ///   - role: Device role.
     ///   - token: Pairing token.
     ///   - approvedAtMs: Approval timestamp in milliseconds.
-    public init(deviceID: String, role: String, token: String, approvedAtMs: Int) {
+    public init(deviceID: String, role: String, token: String, approvedAtMs: Int64) {
         self.deviceID = deviceID
         self.role = role
         self.token = token
@@ -43,7 +43,7 @@ public actor SecurityRuntime {
             deviceID: deviceID,
             role: role,
             token: token,
-            approvedAtMs: Int(Date().timeIntervalSince1970 * 1000)
+            approvedAtMs: OpenClawClock.nowMs()
         )
     }
 

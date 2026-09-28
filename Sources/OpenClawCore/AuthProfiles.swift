@@ -797,7 +797,7 @@ public actor AuthProfileStore {
 
     private static func currentTimestampMs() -> Int64 {
         // Int64 keeps millisecond timestamps representable on 32-bit watchOS (arm64_32).
-        Int64(Date().timeIntervalSince1970 * 1000)
+        OpenClawClock.nowMs()
     }
 }
 
@@ -937,6 +937,6 @@ public enum AuthProfileResolver {
 
     private static func currentTimestampMs() -> Int64 {
         // Int64 keeps millisecond timestamps representable on 32-bit watchOS (arm64_32).
-        Int64(Date().timeIntervalSince1970 * 1000)
+        OpenClawClock.nowMs()
     }
 }
