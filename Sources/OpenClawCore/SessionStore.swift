@@ -499,9 +499,6 @@ public actor SessionStore {
         existing.elevatedLevel = ElevatedLevel.normalize(Self.stringValue(from: patch.elevatedlevel))
             ?? existing.elevatedLevel
         existing.model = Self.stringValue(from: patch.model) ?? existing.model
-        existing.spawnedBy = Self.stringValue(from: patch.spawnedby) ?? existing.spawnedBy
-        existing.spawnedWorkspaceDir = Self.stringValue(from: patch.spawnedworkspacedir) ?? existing.spawnedWorkspaceDir
-        existing.spawnDepth = Self.intValue(from: patch.spawndepth) ?? existing.spawnDepth
         existing.sendPolicy = Self.sendPolicyValue(from: patch.sendpolicy) ?? existing.sendPolicy
         existing.groupActivation = Self.groupActivationValue(from: patch.groupactivation) ?? existing.groupActivation
         existing.execHost = Self.execHostValue(from: patch.exechost) ?? existing.execHost
@@ -560,16 +557,6 @@ public actor SessionStore {
         }
         if case .bool(let boolValue) = value.value {
             return boolValue
-        }
-        return nil
-    }
-
-    private static func intValue(from value: AnyCodable?) -> Int? {
-        guard let value else {
-            return nil
-        }
-        if case .int(let intValue) = value.value {
-            return intValue
         }
         return nil
     }

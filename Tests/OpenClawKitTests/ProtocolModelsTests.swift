@@ -7,8 +7,11 @@ import Testing
 struct ProtocolModelsTests {
     @Test
     func protocolVersionAndErrorCodesAreStable() {
-        #expect(GATEWAY_PROTOCOL_VERSION == 3)
+        #expect(GATEWAY_PROTOCOL_VERSION == 4)
+        #expect(GATEWAY_MIN_PROTOCOL_VERSION == 4)
+        #expect(GATEWAY_MIN_NODE_PROTOCOL_VERSION == 3)
         #expect(ErrorCode.notLinked.rawValue == "NOT_LINKED")
+        #expect(ErrorCode.forbidden.rawValue == "FORBIDDEN")
         #expect(ErrorCode.approvalNotFound.rawValue == "APPROVAL_NOT_FOUND")
         #expect(ErrorCode.unavailable.rawValue == "UNAVAILABLE")
     }
@@ -287,12 +290,12 @@ struct ProtocolModelsTests {
     }
 
     @Test
-    func helloOkDecodeIncludesCanvasHostURLAndStateVersion() throws {
+    func helloOkDecodeIncludesPluginSurfacesAndStateVersion() throws {
         let payload = Data(
             #"""
             {
               "type": "hello.ok",
-              "protocol": 3,
+              "protocol": 4,
               "server": { "name": "openclaw-gateway" },
               "features": { "push": true },
               "snapshot": {
@@ -304,9 +307,9 @@ struct ProtocolModelsTests {
                 "stateDir": "/tmp/openclaw-state",
                 "sessionDefaults": { "fastMode": true },
                 "authMode": "token",
-                "updateAvailable": { "version": "2026.3.13" }
+                "updateAvailable": { "currentVersion": "2026.9.5", "latestVersion": "2026.9.6", "channel": "stable" }
               },
-              "canvasHostUrl": "https://canvas.openclaw.ai",
+              "pluginSurfaceUrls": { "canvas": "https://canvas.openclaw.ai" },
               "auth": { "mode": "token" },
               "policy": { "sessionPatch": true }
             }
@@ -315,12 +318,14 @@ struct ProtocolModelsTests {
 
         let decoded = try JSONDecoder().decode(HelloOk.self, from: payload)
 
-        #expect(decoded._protocol == 3)
-        #expect(decoded.canvashosturl == "https://canvas.openclaw.ai")
+        #expect(decoded._protocol == 4)
+        #expect(decoded.pluginsurfaceurls?["canvas"] == AnyCodable("https://canvas.openclaw.ai"))
+        #expect(decoded.auth["mode"] == AnyCodable("token"))
         #expect(decoded.snapshot.stateversion.presence == 11)
         #expect(decoded.snapshot.stateversion.health == 7)
         #expect(decoded.snapshot.sessiondefaults?["fastMode"] == AnyCodable(true))
-        #expect(decoded.snapshot.updateavailable?["version"] == AnyCodable("2026.3.13"))
+        #expect(decoded.snapshot.updateavailable?.latestversion == "2026.9.6")
+        #expect(decoded.snapshot.updateavailable?.channel == "stable")
     }
 
     @Test
@@ -348,10 +353,11 @@ struct ProtocolModelsTests {
         let decoded = try JSONDecoder().decode(ResponseFrame.self, from: payload)
 
         #expect(decoded.ok == false)
-        #expect(decoded.error?["code"] == AnyCodable("UNAVAILABLE"))
-        #expect(decoded.error?["retryable"] == AnyCodable(true))
-        #expect(decoded.error?["retryAfterMs"] == AnyCodable(250))
-        #expect(decoded.error?["details"] == AnyCodable(["queueDepth": AnyCodable(2)]))
+        #expect(decoded.error?.code == "UNAVAILABLE")
+        #expect(decoded.error?.message == "busy")
+        #expect(decoded.error?.retryable == true)
+        #expect(decoded.error?.retryafterms == 250)
+        #expect(decoded.error?.details == AnyCodable(["queueDepth": AnyCodable(2)]))
     }
 
     @Test
@@ -375,13 +381,14 @@ struct ProtocolModelsTests {
     }
 
     @Test
-    func sessionsPatchDecodeIncludesFastModeAndSpawnedWorkspaceDir() throws {
+    func sessionsPatchDecodeIncludesFastModeAndIgnoresRemovedSpawnFields() throws {
         let payload = Data(
             #"""
             {
               "key": "session-main",
               "fastMode": true,
               "spawnedWorkspaceDir": "/tmp/workspace",
+              "pinned": true,
               "label": "Main Session",
               "groupActivation": "foreground"
             }
@@ -392,12 +399,12 @@ struct ProtocolModelsTests {
 
         #expect(decoded.key == "session-main")
         #expect(decoded.fastmode == AnyCodable(true))
-        #expect(decoded.spawnedworkspacedir == AnyCodable("/tmp/workspace"))
+        #expect(decoded.pinned == true)
         #expect(decoded.groupactivation == AnyCodable("foreground"))
     }
 
     @Test
-    func protocol20260425RequestTypesRoundTrip() throws {
+    func protocol20260906RequestTypesRoundTrip() throws {
         let action = MessageActionParams(
             channel: "telegram",
             action: "react",
@@ -429,18 +436,11 @@ struct ProtocolModelsTests {
             key: "session-main",
             message: "continue",
             thinking: "adaptive",
-            attachments: [AnyCodable(["kind": AnyCodable("image")])],
+            attachments: [["kind": AnyCodable("image")]],
             timeoutms: 1_000,
             idempotencykey: "idem-send"
         )
         let abort = SessionsAbortParams(key: "session-main", runid: "run-1")
-        let compaction = SessionsCompactionGetParams(key: "session-main", checkpointid: "checkpoint-1")
-        let realtime = TalkRealtimeSessionParams(
-            sessionkey: "session-main",
-            provider: "openai",
-            model: "gpt-realtime",
-            voice: "alloy"
-        )
         let speak = TalkSpeakParams(
             text: "hello",
             voiceid: "voice-1",
@@ -483,8 +483,6 @@ struct ProtocolModelsTests {
         _ = try GatewayPayloadCodec.encode(create)
         _ = try GatewayPayloadCodec.encode(send)
         _ = try GatewayPayloadCodec.encode(abort)
-        _ = try GatewayPayloadCodec.encode(compaction)
-        _ = try GatewayPayloadCodec.encode(realtime)
         _ = try GatewayPayloadCodec.encode(speak)
         _ = try GatewayPayloadCodec.encode(commands)
         _ = try GatewayPayloadCodec.encode(tools)

@@ -18,22 +18,38 @@ public protocol GatewaySocket: Sendable {
 }
 
 /// In-process loopback socket used by tests and local transport flows.
+///
+/// When backed by a ``GatewayServer`` the socket also forwards server-emitted events
+/// (``GatewayServer/broadcast(event:payload:)`` and handler ``GatewayEventEmitter`` calls) as event frames.
 public actor LoopbackGatewaySocket: GatewaySocket {
     private let server: GatewayServer?
+    private let connection: GatewayConnectionContext
     private var open = false
     private var queue: [String] = []
     private var waiters: [CheckedContinuation<String, Error>] = []
+    private var eventPump: Task<Void, Never>?
 
     /// Creates a loopback socket.
-    /// - Parameter server: Optional in-process gateway server dispatcher.
-    public init(server: GatewayServer? = nil) {
+    /// - Parameters:
+    ///   - server: Optional in-process gateway server dispatcher.
+    ///   - connection: Connection identity and grants presented to the server.
+    public init(server: GatewayServer? = nil, connection: GatewayConnectionContext = .inProcess) {
         self.server = server
+        self.connection = connection
     }
 
-    /// Marks the loopback socket as connected.
+    /// Marks the loopback socket as connected and starts forwarding server events.
     /// - Parameter url: Ignored loopback URL placeholder.
     public func connect(url _: URL) async throws {
         self.open = true
+        guard let server, self.eventPump == nil else { return }
+        let events = await server.events()
+        self.eventPump = Task { [weak self] in
+            for await frame in events {
+                guard let self else { return }
+                await self.forward(frame)
+            }
+        }
     }
 
     /// Enqueues a synthesized response frame for the provided request frame.
@@ -48,7 +64,7 @@ public actor LoopbackGatewaySocket: GatewaySocket {
         let request = try decoder.decode(RequestFrame.self, from: Data(text.utf8))
         let response: ResponseFrame
         if let server {
-            response = await server.handle(request)
+            response = await server.handle(request, connection: self.connection)
         } else {
             response = ResponseFrame(
                 type: "res",
@@ -79,15 +95,22 @@ public actor LoopbackGatewaySocket: GatewaySocket {
         }
     }
 
-    /// Closes the socket and fails all suspended receivers.
+    /// Closes the socket, stops event forwarding, and fails all suspended receivers.
     public func close() async {
         self.open = false
+        self.eventPump?.cancel()
+        self.eventPump = nil
         let error = OpenClawCoreError.unavailable("Socket closed")
         let pending = self.waiters
         self.waiters.removeAll()
         for waiter in pending {
             waiter.resume(throwing: error)
         }
+    }
+
+    private func forward(_ frame: EventFrame) {
+        guard self.open, let data = try? JSONEncoder().encode(frame) else { return }
+        self.enqueue(String(decoding: data, as: UTF8.self))
     }
 
     private func enqueue(_ raw: String) {

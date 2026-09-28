@@ -250,8 +250,7 @@ public actor GatewayClient {
 
     private static func decodeResponse<T: Decodable>(_ type: T.Type, from response: ResponseFrame) throws -> T {
         guard response.ok else {
-            if let error = response.error {
-                let shape = try GatewayPayloadCodec.decode(ErrorShape.self, from: AnyCodable(error))
+            if let shape = response.error {
                 throw GatewayTransportError.remote(shape)
             }
             throw GatewayTransportError.invalidFrame("Gateway response marked as failed without an error payload")
