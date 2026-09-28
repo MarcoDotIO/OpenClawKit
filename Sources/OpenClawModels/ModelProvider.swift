@@ -3,17 +3,63 @@ import OpenClawCore
 import OpenClawProtocol
 
 /// Reasoning budget preference for providers that expose explicit reasoning controls.
+///
+/// Values follow upstream reasoning efforts in rank order (`none` disables reasoning). Providers
+/// clamp the requested value to what the selected model accepts (see ``ReasoningEffortResolver``);
+/// provider-native labels use ``ModelReasoningEffortValue``.
+///
+/// - Note: 2026.3.0 added `none`, `minimal`, `xhigh` and `max`.
 public enum ModelReasoningEffort: String, Sendable, Equatable, CaseIterable {
+    /// Reasoning disabled.
+    case none
+    /// Minimal reasoning.
+    case minimal
+    /// Low reasoning.
     case low
+    /// Medium reasoning.
     case medium
+    /// High reasoning.
     case high
+    /// Extra-high reasoning.
+    case xhigh
+    /// Maximum reasoning.
+    case max
 }
 
 /// Service tier preference for providers that expose tiered latency or cost controls.
+///
+/// OpenAI accepts `auto`, `default`, `flex` and `priority`; Anthropic accepts `auto` and
+/// `standard_only` (``standard`` maps to `standard_only`, `priority` to `auto`).
+///
+/// - Note: 2026.3.0 added `default` and `flex`.
 public enum ModelServiceTier: String, Sendable, Equatable, CaseIterable {
+    /// Provider-chosen tier.
     case auto
+    /// Standard tier (Anthropic `standard_only`).
     case standard
+    /// Priority tier.
     case priority
+    /// OpenAI default tier.
+    case `default`
+    /// OpenAI flex tier.
+    case flex
+}
+
+/// Prompt-cache preferences for providers that support prompt caching.
+public struct ModelPromptCachePolicy: Sendable, Equatable {
+    /// Whether cache markers / cache keys are sent.
+    public var enabled: Bool
+    /// Whether long retention (Anthropic `ttl: "1h"`, OpenAI `prompt_cache_retention: "24h"`) is requested.
+    public var longRetention: Bool
+
+    /// Creates a prompt-cache policy.
+    /// - Parameters:
+    ///   - enabled: Whether caching hints are sent.
+    ///   - longRetention: Whether long retention is requested.
+    public init(enabled: Bool = true, longRetention: Bool = false) {
+        self.enabled = enabled
+        self.longRetention = longRetention
+    }
 }
 
 /// Transport selection used by Codex-style response APIs.
@@ -49,8 +95,14 @@ public struct ModelGenerationPolicy: Sendable, Equatable {
     public let reasoningEffort: ModelReasoningEffort?
     /// Optional provider service tier hint.
     public let serviceTier: ModelServiceTier?
-    /// Optional fast-mode override.
+    /// Optional fast-mode override (legacy boolean view; `auto` reads as `nil`).
     public let fastMode: Bool?
+    /// Optional fast-mode setting including `auto`; takes precedence over ``fastMode``.
+    public let fastModeSetting: FastMode?
+    /// Run start used to evaluate `auto` fast mode (defaults to request time when `nil`).
+    public let runStartedAt: Date?
+    /// Optional prompt-cache preferences.
+    public let promptCache: ModelPromptCachePolicy?
     /// Requests provider-side response persistence when supported.
     public let storeResponse: Bool?
     /// Preferred transport for Codex response APIs.
@@ -78,6 +130,19 @@ public struct ModelGenerationPolicy: Sendable, Equatable {
     ///   - requestTimeoutMs: Optional timeout override in milliseconds.
     ///   - fallbackProviderIDs: Ordered provider fallback chain.
     ///   - localRuntimeHints: Optional local runtime hints.
+    ///   - reasoningEffort: Optional explicit reasoning effort (clamped per model).
+    ///   - serviceTier: Optional service tier.
+    ///   - fastMode: Optional legacy fast-mode flag.
+    ///   - storeResponse: Requests provider-side persistence when supported.
+    ///   - codexTransport: Preferred Codex transport.
+    ///   - thinkingLevel: Thinking level; providers resolve it to native effort/thinking payloads.
+    ///   - reasoningLevel: Reasoning visibility override.
+    ///   - verboseLevel: Verbosity override.
+    ///   - responseUsage: Response-usage override.
+    ///   - elevatedLevel: Elevated-execution override.
+    ///   - fastModeSetting: Fast-mode setting including `auto`; wins over `fastMode`.
+    ///   - runStartedAt: Run start used for `auto` fast mode.
+    ///   - promptCache: Prompt-cache preferences.
     public init(
         streamTokens: Bool = false,
         allowCancellation: Bool = true,
@@ -98,7 +163,10 @@ public struct ModelGenerationPolicy: Sendable, Equatable {
         reasoningLevel: ReasoningLevel? = nil,
         verboseLevel: VerboseLevel? = nil,
         responseUsage: UsageDisplayLevel? = nil,
-        elevatedLevel: ElevatedLevel? = nil
+        elevatedLevel: ElevatedLevel? = nil,
+        fastModeSetting: FastMode? = nil,
+        runStartedAt: Date? = nil,
+        promptCache: ModelPromptCachePolicy? = nil
     ) {
         self.streamTokens = streamTokens
         self.allowCancellation = allowCancellation
@@ -112,7 +180,10 @@ public struct ModelGenerationPolicy: Sendable, Equatable {
         self.localRuntimeHints = localRuntimeHints
         self.reasoningEffort = reasoningEffort
         self.serviceTier = serviceTier
-        self.fastMode = fastMode
+        self.fastMode = fastMode ?? fastModeSetting?.legacyBoolValue
+        self.fastModeSetting = fastModeSetting ?? fastMode.map(FastMode.init(enabled:))
+        self.runStartedAt = runStartedAt
+        self.promptCache = promptCache
         self.storeResponse = storeResponse
         self.codexTransport = codexTransport
         self.thinkingLevel = thinkingLevel
@@ -286,6 +357,9 @@ public struct ModelGenerationResponse: Sendable, Equatable {
     public let stopReason: ModelStopReason
     /// Provider reasoning text, when exposed.
     public let reasoningText: String?
+    /// Opaque signature of the reasoning block (Anthropic thinking signatures), required to replay
+    /// thinking before tool use on the next turn.
+    public let reasoningSignature: String?
 
     /// Creates a model generation response.
     /// - Parameters:
@@ -296,6 +370,7 @@ public struct ModelGenerationResponse: Sendable, Equatable {
     ///   - usage: Optional token accounting.
     ///   - stopReason: Stop reason; defaults to `.toolUse` when `toolCalls` is non-empty, else `.stop`.
     ///   - reasoningText: Optional reasoning text.
+    ///   - reasoningSignature: Optional opaque reasoning signature.
     public init(
         text: String,
         providerID: String,
@@ -303,7 +378,8 @@ public struct ModelGenerationResponse: Sendable, Equatable {
         toolCalls: [ModelToolCall] = [],
         usage: ModelUsage? = nil,
         stopReason: ModelStopReason? = nil,
-        reasoningText: String? = nil
+        reasoningText: String? = nil,
+        reasoningSignature: String? = nil
     ) {
         self.text = text
         self.providerID = providerID
@@ -312,13 +388,14 @@ public struct ModelGenerationResponse: Sendable, Equatable {
         self.usage = usage
         self.stopReason = stopReason ?? (toolCalls.isEmpty ? .stop : .toolUse)
         self.reasoningText = reasoningText
+        self.reasoningSignature = reasoningSignature
     }
 
     /// Assistant content parts in transcript order: reasoning, text, then tool calls.
     public var assistantContent: [ModelAssistantPart] {
         var parts: [ModelAssistantPart] = []
         if let reasoningText, !reasoningText.isEmpty {
-            parts.append(.thinking(reasoningText, signature: nil))
+            parts.append(.thinking(reasoningText, signature: self.reasoningSignature))
         }
         if !self.text.isEmpty {
             parts.append(.text(self.text))
@@ -369,6 +446,8 @@ public struct ModelStreamChunk: Sendable, Equatable {
     public let stopReason: ModelStopReason?
     /// Complete tool calls, usually on the `.final` chunk.
     public let toolCalls: [ModelToolCall]
+    /// Opaque reasoning signature, usually on the `.final` chunk.
+    public let reasoningSignature: String?
 
     /// Creates a text chunk (v1 initializer).
     /// - Parameters:
@@ -387,6 +466,7 @@ public struct ModelStreamChunk: Sendable, Equatable {
     ///   - usage: Usage update.
     ///   - stopReason: Stop reason.
     ///   - toolCalls: Complete tool calls.
+    ///   - reasoningSignature: Opaque reasoning signature.
     public init(
         kind: Kind,
         text: String = "",
@@ -394,7 +474,8 @@ public struct ModelStreamChunk: Sendable, Equatable {
         toolCallDelta: ModelToolCallDelta? = nil,
         usage: ModelUsage? = nil,
         stopReason: ModelStopReason? = nil,
-        toolCalls: [ModelToolCall] = []
+        toolCalls: [ModelToolCall] = [],
+        reasoningSignature: String? = nil
     ) {
         self.text = text
         self.isFinal = kind == .final
@@ -404,6 +485,7 @@ public struct ModelStreamChunk: Sendable, Equatable {
         self.usage = usage
         self.stopReason = stopReason
         self.toolCalls = toolCalls
+        self.reasoningSignature = reasoningSignature
     }
 
     /// Creates a `.reasoning` chunk.
@@ -438,7 +520,8 @@ public struct ModelStreamChunk: Sendable, Equatable {
             text: text,
             usage: response.usage,
             stopReason: response.stopReason,
-            toolCalls: response.toolCalls
+            toolCalls: response.toolCalls,
+            reasoningSignature: response.reasoningSignature
         )
     }
 }

@@ -97,6 +97,8 @@ public actor RuntimeProviderAuthResolver: ProviderRuntimeAuthResolving {
             return try await self.resolveGitHubCopilot(credential)
         case QwenPortalModelProvider.providerID:
             return try await self.resolveQwenPortal(credential)
+        case OpenAIModelProvider.providerID, "openai-codex", "codex":
+            return try await self.resolveOpenAIChatGPT(credential)
         default:
             return ProviderRuntimeAuthResolution(credential: credential)
         }
@@ -221,6 +223,71 @@ public actor RuntimeProviderAuthResolver: ProviderRuntimeAuthResolving {
         return ProviderRuntimeAuthResolution(
             credential: .oauth(updatedCredential),
             persistCredential: true
+        )
+    }
+
+    /// Refreshes ChatGPT/Codex OAuth tokens (upstream `openai-chatgpt-oauth-token.runtime.ts`) and
+    /// surfaces the ChatGPT account id for the `chatgpt-account-id` header.
+    private func resolveOpenAIChatGPT(
+        _ credential: AuthProfileCredential
+    ) async throws -> ProviderRuntimeAuthResolution {
+        guard case .oauth(let value) = credential else {
+            return ProviderRuntimeAuthResolution(credential: credential)
+        }
+        func accountMetadata(_ token: String?) -> [String: String] {
+            let accountID = token.flatMap(OpenAIRouteResolution.chatGPTAccountID(fromAccessToken:))
+                ?? Self.normalized(value.metadata["accountId"])
+                ?? Self.normalized(value.metadata["chatgptAccountId"])
+            return accountID.map { ["openai.chatgptAccountID": $0] } ?? [:]
+        }
+        let accessToken = Self.normalized(value.accessToken)
+        let refreshToken = Self.normalized(value.refreshToken)
+        let now = Int64(self.now())
+        let needsRefresh: Bool
+        if let expires = value.expires {
+            needsRefresh = Int64(expires) <= now + Self.preemptiveRefreshWindowMs
+        } else {
+            needsRefresh = accessToken == nil
+        }
+        guard needsRefresh, let refreshToken else {
+            return ProviderRuntimeAuthResolution(credential: credential, metadata: accountMetadata(accessToken))
+        }
+
+        var request = URLRequest(url: OpenAIChatGPTOAuthConfiguration.tokenURL)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.timeoutInterval = 30
+        request.httpBody = Self.formEncodedBody([
+            "grant_type": "refresh_token",
+            "refresh_token": refreshToken,
+            "client_id": Self.normalized(value.clientID) ?? OpenAIChatGPTOAuthConfiguration.clientID,
+        ])
+        let response = try await self.transport.data(for: request)
+        if response.statusCode == 400 || response.statusCode == 401 {
+            throw OpenClawCoreError.unavailable("ChatGPT OAuth refresh token expired or invalid; sign in to OpenAI again.")
+        }
+        guard (200..<300).contains(response.statusCode) else {
+            throw OpenClawCoreError.unavailable("ChatGPT OAuth refresh failed with status \(response.statusCode)")
+        }
+        let payload = try JSONDecoder().decode(QwenRefreshTokenResponse.self, from: response.body)
+        guard let nextAccessToken = Self.normalized(payload.accessToken) else {
+            throw OpenClawCoreError.unavailable("ChatGPT OAuth refresh response missing access token")
+        }
+        let expires = payload.expiresIn.map { Self.clampedMilliseconds(now + Int64(max(1, $0)) * 1000) }
+        let updated = OAuthAuthProfileCredential(
+            provider: value.provider,
+            accessToken: nextAccessToken,
+            refreshToken: Self.normalized(payload.refreshToken) ?? refreshToken,
+            expires: expires,
+            clientID: Self.normalized(value.clientID) ?? OpenAIChatGPTOAuthConfiguration.clientID,
+            email: value.email,
+            metadata: value.metadata
+        )
+        return ProviderRuntimeAuthResolution(
+            credential: .oauth(updated),
+            persistCredential: true,
+            metadata: accountMetadata(nextAccessToken)
         )
     }
 

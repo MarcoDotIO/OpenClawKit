@@ -70,8 +70,8 @@ struct ProviderCatalogThinkingProfileTests {
         #expect(ClaudeModelIdentity(modelID: "us.anthropic.claude-opus-5-5-v1").isOpus55)
         #expect(ClaudeModelIdentity(modelID: "vendor/claude-sonnet-5@2026").isSonnet5)
         #expect(!ClaudeModelIdentity(modelID: "claude-sonnet-50").isSonnet5)
-        #expect(ClaudeModelIdentity(modelID: "claude-mythos-preview").requiresMandatoryAdaptive)
-        #expect(!ClaudeModelIdentity(modelID: "claude-opus-4-5").supportsAdaptive)
+        #expect(ClaudeModelIdentity(modelID: "claude-mythos-preview").requiresMandatoryAdaptiveThinking)
+        #expect(!ClaudeModelIdentity(modelID: "claude-opus-4-5").supportsAdaptiveThinking)
     }
 
     @Test

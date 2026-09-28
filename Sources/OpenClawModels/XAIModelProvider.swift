@@ -14,32 +14,12 @@ public protocol XAIHTTPTransport: Sendable {
 
 extension HTTPClient: XAIHTTPTransport {}
 
-private struct XAIGenerationRequest: Encodable, Sendable {
-    let model: String
-    let messages: [XAIGenerationMessage]
-}
-
-private struct XAIGenerationMessage: Encodable, Sendable {
-    let role: String
-    let content: OpenAIStyleMessageContent
-}
-
-private struct XAIGenerationResponse: Codable, Sendable {
-    struct Choice: Codable, Sendable {
-        struct Message: Codable, Sendable {
-            let role: String
-            let content: String
-        }
-
-        let index: Int
-        let message: Message
-    }
-
-    let model: String?
-    let choices: [Choice]
-}
-
-/// First-class xAI/Grok provider implementation.
+/// First-class xAI/Grok provider.
+///
+/// Uses Chat Completions by default and the Responses API when the runtime context selects
+/// `openai-responses` (upstream's current xAI API). Fast mode swaps to the `-fast` model variants
+/// (`grok-3` → `grok-3-fast`, `grok-3-mini` → `grok-3-mini-fast`, `grok-4`/`grok-4-0709` →
+/// `grok-4-fast`).
 public struct XAIModelProvider: ModelProvider {
     /// Canonical provider identifier for xAI.
     public static let providerID = "xai"
@@ -50,13 +30,15 @@ public struct XAIModelProvider: ModelProvider {
     public let id: String
 
     private let configuration: ProviderServiceConfig
-    private let transport: any XAIHTTPTransport
+    private let completions: OpenAIChatCompletionsEngine
+    private let responses: OpenAIResponsesEngine?
 
     /// Creates an xAI/Grok provider.
     /// - Parameters:
     ///   - id: Provider identifier.
     ///   - configuration: Provider service configuration.
     ///   - transport: HTTP transport implementation.
+    ///   - runtime: Canonical provider config and effective API.
     public init(
         id: String = XAIModelProvider.providerID,
         configuration: ProviderServiceConfig = ProviderServiceConfig(
@@ -67,120 +49,71 @@ public struct XAIModelProvider: ModelProvider {
             baseURL: "https://api.x.ai/v1",
             chatCompletionsPath: "chat/completions"
         ),
-        transport: any XAIHTTPTransport = HTTPClient()
+        transport: any XAIHTTPTransport = ModelStreamingHTTPClient(),
+        runtime: ModelProviderRuntimeContext = .empty
     ) {
         self.id = id
         self.configuration = configuration
-        self.transport = transport
+        let exchange = ProviderHTTPExchange(
+            providerID: id,
+            send: { try await transport.data(for: $0) },
+            streamingTransport: transport as? any ModelHTTPStreamingTransport
+        )
+        self.completions = OpenAIChatCompletionsEngine(
+            settings: ProviderEndpointSettings(providerID: id, service: configuration, api: .openAICompletions, runtime: runtime),
+            exchange: exchange,
+            defaultBaseURL: "https://api.x.ai/v1"
+        )
+        if runtime.api == .openAIResponses {
+            self.responses = OpenAIResponsesEngine(
+                settings: ProviderEndpointSettings(providerID: id, service: configuration, api: .openAIResponses, runtime: runtime),
+                exchange: exchange
+            )
+        } else {
+            self.responses = nil
+        }
     }
 
-    /// Generates text using xAI chat completions endpoint.
+    /// Contract v2 features of the active engine.
+    public var capabilities: ModelProviderCapabilities {
+        self.responses == nil ? OpenAIChatCompletionsEngine.capabilities : OpenAIResponsesEngine.capabilities
+    }
+
+    /// Generates a response from xAI.
     /// - Parameter request: Model generation request.
     /// - Returns: Generated response payload.
     public func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
+        try self.validate()
+        if let responses {
+            return try await responses.generate(request)
+        }
+        return try await self.completions.generate(request)
+    }
+
+    /// Streams chunks from xAI.
+    /// - Parameter request: Model generation request.
+    /// - Returns: Chunk stream ending with a `.final` chunk.
+    public func generateStream(_ request: ModelGenerationRequest) async -> AsyncThrowingStream<ModelStreamChunk, Error> {
+        do {
+            try self.validate()
+        } catch {
+            return AsyncThrowingStream { $0.finish(throwing: error) }
+        }
+        if let responses {
+            return responses.stream(request)
+        }
+        return self.completions.stream(request)
+    }
+
+    private func validate() throws {
         guard self.configuration.enabled else {
             throw OpenClawCoreError.unavailable("xAI model provider is disabled")
         }
-        let endpoint = try self.resolveEndpoint()
-        let modelID = self.resolveModelID(request: request)
-        let payload = XAIGenerationRequest(
-            model: modelID,
-            messages: self.buildMessages(from: request)
-        )
-
-        var urlRequest = URLRequest(url: endpoint)
-        urlRequest.httpMethod = "POST"
-        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        urlRequest.setValue("Bearer \(try self.resolveBearerToken(request: request))", forHTTPHeaderField: "Authorization")
-        if let organizationID = self.configuration.organizationID?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !organizationID.isEmpty
-        {
-            urlRequest.setValue(organizationID, forHTTPHeaderField: "x-organization-id")
-        }
-        ProviderRequestResolution.applyHeaders(
-            ProviderRequestResolution.mergedHeaders(configured: self.configuration.headers, request: request),
-            request: &urlRequest
-        )
-        urlRequest.timeoutInterval = 30
-        urlRequest.httpBody = try JSONEncoder().encode(payload)
-
-        let response = try await self.transport.data(for: urlRequest)
-        guard (200..<300).contains(response.statusCode) else {
-            throw OpenClawCoreError.unavailable("xAI request failed with status \(response.statusCode)")
-        }
-        let decoded = try JSONDecoder().decode(XAIGenerationResponse.self, from: response.body)
-        guard let content = decoded.choices.first?.message.content.trimmingCharacters(in: .whitespacesAndNewlines),
-              !content.isEmpty
-        else {
-            throw OpenClawCoreError.unavailable("xAI response did not include message content")
-        }
-        return ModelGenerationResponse(
-            text: content,
-            providerID: self.id,
-            modelID: decoded.model ?? modelID
-        )
-    }
-
-    private func resolveModelID(request: ModelGenerationRequest) -> String {
-        ProviderRequestResolution.resolveModelID(
-            request: request,
-            configured: self.configuration.modelID,
-            fallback: "grok-3-mini"
-        )
-    }
-
-    private func resolveBearerToken(request: ModelGenerationRequest) throws -> String {
         switch self.configuration.authMode {
-        case .apiKey:
-            return try ProviderRequestResolution.resolveAPIKey(
-                configured: self.configuration.apiKey,
-                request: request,
-                providerID: self.id
-            )
-        case .bearerToken, .oauthToken:
-            return try ProviderRequestResolution.resolveAccessToken(
-                configured: self.configuration.accessToken,
-                request: request,
-                providerID: self.id
-            )
         case .none, .awsSDK:
             throw OpenClawCoreError.invalidConfiguration("xAI provider requires token-based authentication")
+        case .apiKey, .bearerToken, .oauthToken:
+            return
         }
-    }
-
-    private func buildMessages(from request: ModelGenerationRequest) -> [XAIGenerationMessage] {
-        var messages: [XAIGenerationMessage] = []
-        let systemPrompt = request.systemPrompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !systemPrompt.isEmpty {
-            messages.append(XAIGenerationMessage(role: "system", content: .text(systemPrompt)))
-        }
-        messages.append(
-            XAIGenerationMessage(
-                role: "user",
-                content: OpenAIStyleMultimodalSupport.userContent(
-                    prompt: request.prompt,
-                    attachments: request.attachments
-                )
-            )
-        )
-        return messages
-    }
-
-    private func resolveEndpoint() throws -> URL {
-        let baseRaw = self.configuration.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !baseRaw.isEmpty, let baseURL = URL(string: baseRaw) else {
-            throw OpenClawCoreError.invalidConfiguration("xAI base URL is invalid")
-        }
-        let path = self.configuration.chatCompletionsPath
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        guard !path.isEmpty else {
-            throw OpenClawCoreError.invalidConfiguration("xAI chat completions path is required")
-        }
-        var endpoint = baseURL
-        for segment in path.split(separator: "/") {
-            endpoint = endpoint.appendingPathComponent(String(segment))
-        }
-        return endpoint
     }
 }

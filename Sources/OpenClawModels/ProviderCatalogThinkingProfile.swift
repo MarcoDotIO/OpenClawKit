@@ -292,110 +292,16 @@ struct ThinkingProfileResolver {
         if identity.isOpus5 || identity.isSonnet5 {
             return sonnet5
         }
-        if identity.requiresMandatoryAdaptive {
+        if identity.requiresMandatoryAdaptiveThinking {
             return PluginProfile(levels: [.minimal, .low, .medium, .high, .adaptive], defaultLevel: .adaptive, preserveWhenCatalogReasoningFalse: true)
         }
-        if identity.supportsNativeXHigh {
+        if identity.supportsNativeXhighEffort {
             return PluginProfile(levels: ModelThinkingProfile.baseLevels + [.xhigh, .adaptive, .max], defaultLevel: .off)
         }
-        if identity.supportsAdaptive {
+        if identity.supportsAdaptiveThinking {
             return PluginProfile(levels: ModelThinkingProfile.baseLevels + [.adaptive, .max], defaultLevel: .adaptive)
         }
         return PluginProfile(levels: ModelThinkingProfile.baseLevels)
     }
 }
 
-/// Claude model family detection (ports `resolveClaudeModelIdentity` and friends).
-struct ClaudeModelIdentity {
-    let normalized: String
-    let identity: String
-
-    init(modelID: String) {
-        var normalized = modelID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if normalized.hasPrefix("anthropic/") {
-            normalized = String(normalized.dropFirst("anthropic/".count))
-        }
-        var collapsed = ""
-        var previousWasSeparator = false
-        for character in normalized {
-            if character == "." || character == "_" || character.isWhitespace {
-                if !previousWasSeparator {
-                    collapsed.append("-")
-                }
-                previousWasSeparator = true
-            } else {
-                collapsed.append(character)
-                previousWasSeparator = false
-            }
-        }
-        self.normalized = collapsed
-        // Only the final path component identifies the backing model: /(?:^|[-/])(claude-[^/]+)$/.
-        let lastComponent = collapsed.split(separator: "/", omittingEmptySubsequences: false).last.map(String.init) ?? collapsed
-        if let range = Self.lastFamilyStart(in: lastComponent) {
-            self.identity = String(lastComponent[range.lowerBound...])
-        } else {
-            self.identity = collapsed
-        }
-    }
-
-    private static func lastFamilyStart(in component: String) -> Range<String.Index>? {
-        var searchStart = component.startIndex
-        while let range = component.range(of: "claude-", range: searchStart..<component.endIndex) {
-            if range.lowerBound == component.startIndex || component[component.index(before: range.lowerBound)] == "-" {
-                return range
-            }
-            searchStart = range.upperBound
-        }
-        return nil
-    }
-
-    /// Matches `(?:^|-)claude-<family>(?=$|[^a-z0-9])` against the identity.
-    func contains(family: String) -> Bool {
-        let needle = "claude-\(family)"
-        var searchStart = self.identity.startIndex
-        while let range = self.identity.range(of: needle, range: searchStart..<self.identity.endIndex) {
-            let startsCleanly = range.lowerBound == self.identity.startIndex
-                || self.identity[self.identity.index(before: range.lowerBound)] == "-"
-            let endsCleanly = range.upperBound == self.identity.endIndex
-                || !Self.isLowercaseAlphanumeric(self.identity[range.upperBound])
-            if startsCleanly && endsCleanly {
-                return true
-            }
-            searchStart = self.identity.index(after: range.lowerBound)
-        }
-        return false
-    }
-
-    private static func isLowercaseAlphanumeric(_ character: Character) -> Bool {
-        character.isASCII && (character.isNumber || ("a"..."z").contains(character))
-    }
-
-    var isOpus55: Bool {
-        self.normalized == "opus-5-5" || (self.identity.hasPrefix("claude-opus-5-5") && {
-            let rest = self.identity.dropFirst("claude-opus-5-5".count)
-            return rest.first.map { !Self.isLowercaseAlphanumeric($0) } ?? true
-        }())
-    }
-
-    var isFable5: Bool { self.contains(family: "fable-5") }
-    var isMythos5: Bool { self.contains(family: "mythos-5") }
-    var isSonnet5: Bool { self.contains(family: "sonnet-5") }
-
-    var isOpus5: Bool {
-        self.isOpus55 || self.identity == "opus" || self.identity == "opus-5" || self.contains(family: "opus-5")
-    }
-
-    var requiresMandatoryAdaptive: Bool {
-        self.isOpus55 || self.isFable5 || self.isMythos5 || self.contains(family: "mythos-preview")
-    }
-
-    var supportsNativeXHigh: Bool {
-        self.isOpus5 || ["fable-5", "mythos-5", "opus-4-7", "opus-4-8", "sonnet-5"].contains { self.contains(family: $0) }
-    }
-
-    var supportsAdaptive: Bool {
-        self.isOpus5
-            || ["fable-5", "mythos-5", "mythos-preview", "opus-4-6", "opus-4-7", "opus-4-8", "sonnet-5", "sonnet-4-6"]
-            .contains { self.contains(family: $0) }
-    }
-}

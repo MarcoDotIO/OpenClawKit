@@ -364,123 +364,13 @@ extension ModelCatalogModel {
 /// Factory for constructing runtime providers from canonical provider catalog configs.
 public enum ModelProviderFactory {
     /// Instantiates a model provider implementation for the given provider ID and config.
+    ///
+    /// The runtime factory (per-model routing, legacy `openai-codex` migration, unknown-api refusal)
+    /// lives in `ModelProviderFactoryRouting.swift`.
     public static func makeProvider(
         providerID: String,
         config: ModelProviderConfig
     ) throws -> any ModelProvider {
-        let normalizedProviderID = OpenClawReferenceProviderCatalog.normalize(providerID: providerID)
-        let legacy = config.legacyServiceConfig(providerID: normalizedProviderID)
-        switch normalizedProviderID {
-        case OpenAIModelProvider.providerID:
-            return OpenAIModelProvider(
-                configuration: OpenAIModelConfig(
-                    enabled: config.enabled,
-                    modelID: config.defaultModel?.id ?? "gpt-6-astra",
-                    apiKey: config.apiKey,
-                    baseURL: config.baseURL
-                )
-            )
-        case OpenAICompatibleModelProvider.providerID:
-            return OpenAICompatibleModelProvider(
-                configuration: OpenAICompatibleModelConfig(
-                    enabled: config.enabled,
-                    modelID: config.defaultModel?.id ?? "gpt-4.1-mini",
-                    apiKey: config.apiKey,
-                    baseURL: config.baseURL,
-                    chatCompletionsPath: config.chatCompletionsPath
-                )
-            )
-        case AnthropicModelProvider.providerID:
-            return AnthropicModelProvider(
-                configuration: AnthropicModelConfig(
-                    enabled: config.enabled,
-                    modelID: config.defaultModel?.id ?? "claude-3-5-haiku-latest",
-                    apiKey: config.apiKey,
-                    baseURL: config.baseURL,
-                    apiVersion: config.apiVersion ?? "2023-06-01",
-                    maxTokens: config.defaultModel?.maxTokens ?? 8_192
-                )
-            )
-        case GeminiModelProvider.providerID, "google", "google-vertex", "google-antigravity", "google-gemini-cli":
-            return GoogleGenerativeAIModelProvider(id: normalizedProviderID, configuration: legacy)
-        case FoundationModelsProvider.providerID, "apple-fm":
-            return FoundationModelsProvider()
-        case LocalModelProvider.providerID:
-            return LocalModelProvider(
-                configuration: LocalModelConfig(
-                    enabled: config.enabled,
-                    runtime: "llmfarm",
-                    modelPath: nil
-                ),
-                engine: StubLocalModelEngine()
-            )
-        case XAIModelProvider.providerID, XAIModelProvider.grokAliasProviderID:
-            return XAIModelProvider(id: normalizedProviderID, configuration: legacy)
-        case MinimaxModelProvider.providerID:
-            return MinimaxModelProvider(configuration: legacy)
-        case MinimaxPortalModelProvider.providerID:
-            return MinimaxPortalModelProvider(configuration: legacy)
-        case SyntheticModelProvider.providerID:
-            return SyntheticModelProvider(configuration: legacy)
-        case XiaomiModelProvider.providerID where (config.defaultModel?.api ?? config.api) == .anthropicMessages:
-            return XiaomiModelProvider(configuration: legacy)
-        case CloudflareAIGatewayModelProvider.providerID:
-            return CloudflareAIGatewayModelProvider(configuration: legacy)
-        case VercelAIGatewayModelProvider.providerID:
-            return VercelAIGatewayModelProvider(configuration: legacy)
-        case BedrockConverseModelProvider.providerID:
-            return BedrockConverseModelProvider(configuration: legacy)
-        case GitHubCopilotModelProvider.providerID:
-            return GitHubCopilotModelProvider(configuration: legacy)
-        case OllamaModelProvider.providerID:
-            return OllamaModelProvider(configuration: legacy)
-        case VLLMModelProvider.providerID:
-            return VLLMModelProvider(configuration: legacy)
-        case QwenPortalModelProvider.providerID:
-            return QwenPortalModelProvider(configuration: legacy)
-        case OpenRouterModelProvider.providerID:
-            return OpenRouterModelProvider(configuration: legacy)
-        case GroqModelProvider.providerID:
-            return GroqModelProvider(configuration: legacy)
-        case MistralModelProvider.providerID:
-            return MistralModelProvider(configuration: legacy)
-        case CerebrasModelProvider.providerID:
-            return CerebrasModelProvider(configuration: legacy)
-        case MoonshotModelProvider.providerID:
-            return MoonshotModelProvider(configuration: legacy)
-        case LiteLLMModelProvider.providerID:
-            return LiteLLMModelProvider(configuration: legacy)
-        case TogetherModelProvider.providerID:
-            return TogetherModelProvider(configuration: legacy)
-        case HuggingFaceModelProvider.providerID:
-            return HuggingFaceModelProvider(configuration: legacy)
-        case QianfanModelProvider.providerID:
-            return QianfanModelProvider(configuration: legacy)
-        case NVIDIAModelProvider.providerID:
-            return NVIDIAModelProvider(configuration: legacy)
-        case ZAIModelProvider.providerID:
-            return ZAIModelProvider(configuration: legacy)
-        default:
-            switch config.api ?? .openAICompletions {
-            case .anthropicMessages:
-                return ProviderServiceAnthropicModelProvider(id: normalizedProviderID, configuration: legacy)
-            case .bedrockConverseStream:
-                return BedrockConverseModelProvider(id: normalizedProviderID, configuration: legacy)
-            case .githubCopilot:
-                return GitHubCopilotModelProvider(id: normalizedProviderID, configuration: legacy)
-            case .googleGenerativeAI, .googleVertex:
-                return GoogleGenerativeAIModelProvider(id: normalizedProviderID, configuration: legacy)
-            case .openAIResponses, .openAIChatGPTResponses, .azureOpenAIResponses:
-                return OpenAIResponsesModelProvider(id: normalizedProviderID, configuration: legacy)
-            case .piMessages:
-                throw OpenClawCoreError.unavailable(
-                    "The pi-messages transport is not implemented in OpenClawKit (provider \(normalizedProviderID))"
-                )
-            case .ollama:
-                return OllamaModelProvider(id: normalizedProviderID, configuration: legacy)
-            case .openAICompletions:
-                return ProviderServiceOpenAIModelProvider(id: normalizedProviderID, configuration: legacy)
-            }
-        }
+        try self.makeRuntimeProvider(providerID: providerID, config: config)
     }
 }
