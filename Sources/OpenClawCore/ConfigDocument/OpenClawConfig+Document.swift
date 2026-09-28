@@ -496,7 +496,7 @@ extension OpenClawConfig {
         if channels.isEmpty, tree["channels"] == nil {
             return
         }
-        tree["channels"] = AnyCodable(.object(channels))
+        tree["channels"] = ConfigTree.preservingAuthoredSecretTemplates(AnyCodable(.object(channels)), original: tree["channels"])
     }
 }
 
@@ -523,5 +523,27 @@ public enum ConfigTree {
             result[key] = self.deepMerge(baseObject[key], value)
         }
         return AnyCodable(.object(result))
+    }
+
+    /// Returns `projected` with authored `${NAME}` / `$NAME` strings from `original` restored where the
+    /// projection wrote the equivalent SecretRef object. Unlike ``deepMerge(_:_:)`` it never re-adds
+    /// keys the projection removed.
+    /// - Parameters:
+    ///   - projected: Newly projected value.
+    ///   - original: Authored value at the same path.
+    /// - Returns: The projection with authored secret templates kept.
+    public static func preservingAuthoredSecretTemplates(_ projected: AnyCodable, original: AnyCodable?) -> AnyCodable {
+        if let originalString = original?.stringValue, let object = projected.dictionaryValue,
+           let ref = try? ConfigTreeCoding.decode(SecretRef.self, from: AnyCodable(.object(object)), issues: nil),
+           SecretInput.parse(originalString).input == .ref(ref)
+        {
+            return AnyCodable(.string(originalString))
+        }
+        if let object = projected.dictionaryValue, let originalObject = original?.dictionaryValue {
+            return AnyCodable(.object(object.reduce(into: [:]) { result, entry in
+                result[entry.key] = self.preservingAuthoredSecretTemplates(entry.value, original: originalObject[entry.key])
+            }))
+        }
+        return projected
     }
 }

@@ -149,6 +149,8 @@ struct CoreConfigIntegrationTests {
         let telegram = try #require(channels["telegram"]?.dictionaryValue)
         #expect(telegram["customUpstreamKey"] != nil)
         #expect(telegram["requireMention"] == nil)
+        // The authored env template survives instead of becoming a SecretRef object.
+        #expect(telegram["botToken"]?.stringValue == "${TELEGRAM_BOT_TOKEN}")
         #expect(telegram["groups"]?.dictionaryValue?["*"]?.dictionaryValue?["requireMention"]?.boolValue == false)
         #expect(channels["matrix"]?.dictionaryValue?["homeserver"]?.stringValue == "https://matrix.example.com")
         #expect(channels["whatsapp"] != nil)
