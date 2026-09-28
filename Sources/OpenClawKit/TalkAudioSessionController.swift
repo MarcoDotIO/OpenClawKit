@@ -257,7 +257,7 @@ final class SystemTalkAudioSession: TalkAudioSessionControlling {
 }
 #endif
 
-#if canImport(AVFAudio) && (os(iOS) || os(visionOS))
+#if canImport(AVFAudio) && (os(iOS) || os(macOS) || os(visionOS))
 extension RealtimeTalkRelaySession {
     /// Applies an audio-session event: interruptions pause microphone input (the relay stays open)
     /// and a `shouldResume` recommendation resumes it.

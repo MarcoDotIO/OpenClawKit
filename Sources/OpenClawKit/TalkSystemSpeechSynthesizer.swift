@@ -9,6 +9,8 @@ public protocol TalkSystemSpeaking: AnyObject {
     func speak(text: String, language: String?, onStart: (() -> Void)?) async throws
     /// Stops the current utterance.
     func stop()
+    /// Stops speech for a system audio interruption (the default calls ``stop()``).
+    func interruptForAudioSession()
 }
 
 /// On-device speech synthesis (`AVSpeechSynthesizer`) for Talk replies.

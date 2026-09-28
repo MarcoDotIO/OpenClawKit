@@ -46,7 +46,8 @@ public enum TalkWakeWordMatcher {
         return .command(remainder, trigger: trigger)
     }
 
-    /// The text after the first trigger occurrence, trimmed.
+    /// The text after the first trigger occurrence, without the separator that follows the trigger
+    /// (`OpenClaw, what time is it?` → `what time is it?`).
     /// - Parameters:
     ///   - text: Transcript.
     ///   - triggers: Trigger phrases.
@@ -54,8 +55,10 @@ public enum TalkWakeWordMatcher {
         guard let match = self.bestRawTriggerMatch(transcript: text, triggers: triggers) else {
             return text.trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        return String(text[match.range.upperBound...])
-            .trimmingCharacters(in: self.whitespaceAndPunctuation)
+        let remainder = text[match.range.upperBound...].drop { character in
+            character.unicodeScalars.allSatisfy { self.whitespaceAndPunctuation.contains($0) }
+        }
+        return remainder.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// The normalized trigger phrase found earliest (longest at the same offset) in the transcript.

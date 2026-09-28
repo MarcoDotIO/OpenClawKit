@@ -192,10 +192,11 @@ public final class MediaPlayerNowPlayingPublisher: OpenClawNowPlayingPublishing 
 
     /// Builds the `nowPlayingInfo` dictionary for `metadata`.
     nonisolated static func makeNowPlayingInfo(_ metadata: OpenClawNowPlayingMetadata) -> [String: Any] {
+        let playbackRate: Double = metadata.state == .playing ? metadata.playbackRate : 0
         var info: [String: Any] = [
             MPMediaItemPropertyTitle: metadata.title,
             MPNowPlayingInfoPropertyElapsedPlaybackTime: metadata.elapsed,
-            MPNowPlayingInfoPropertyPlaybackRate: metadata.state == .playing ? metadata.playbackRate : 0,
+            MPNowPlayingInfoPropertyPlaybackRate: playbackRate,
             MPNowPlayingInfoPropertyIsLiveStream: metadata.duration == nil,
         ]
         if let subtitle = metadata.subtitle {
