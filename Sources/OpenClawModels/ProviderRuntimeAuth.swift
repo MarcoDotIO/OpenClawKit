@@ -68,7 +68,7 @@ public actor RuntimeProviderAuthResolver: ProviderRuntimeAuthResolving {
 
     private struct CachedCopilotToken: Sendable {
         var token: String
-        var expiresAt: Int
+        var expiresAt: Int64
         var baseURL: String
     }
 
@@ -246,7 +246,7 @@ public actor RuntimeProviderAuthResolver: ProviderRuntimeAuthResolving {
         return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
     }
 
-    private static func parseCopilotExpiry(_ raw: JSONScalar?) throws -> Int {
+    private static func parseCopilotExpiry(_ raw: JSONScalar?) throws -> Int64 {
         guard let raw else {
             throw OpenClawCoreError.unavailable("github-copilot token exchange response missing expires_at")
         }
@@ -276,8 +276,8 @@ public actor RuntimeProviderAuthResolver: ProviderRuntimeAuthResolving {
     }
 
     /// Narrows an Int64 millisecond value to `Int`, saturating on 32-bit platforms instead of trapping.
-    private static func clampedMilliseconds(_ value: Int64) -> Int {
-        Int(clamping: value)
+    private static func clampedMilliseconds(_ value: Int64) -> Int64 {
+        value
     }
 
     private static func deriveCopilotBaseURL(from token: String) -> String? {
