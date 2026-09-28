@@ -16,6 +16,9 @@ public enum AgentRuntimeError: Error, LocalizedError, Sendable {
     case aborted(runID: String)
     /// The operation needs a transcript store and the runtime has none.
     case transcriptUnavailable
+    /// A `before_agent_run` hook blocked the run; `message` is the user-facing block message that
+    /// replaced the prompt in the transcript.
+    case blocked(message: String)
 
     /// Human-readable message.
     public var errorDescription: String? {
@@ -28,6 +31,8 @@ public enum AgentRuntimeError: Error, LocalizedError, Sendable {
             return "Agent run aborted: \(runID)"
         case .transcriptUnavailable:
             return "This runtime has no session transcript store"
+        case .blocked(let message):
+            return message
         }
     }
 }
@@ -376,13 +381,15 @@ public actor EmbeddedAgentRuntime {
     nonisolated public let contextEngines: ContextEngineRegistry
     /// Default agent id.
     nonisolated public let defaultAgentID: String
+    /// Shared typed hook registry (plugins register handlers here); `nil` when hooks are disabled.
+    nonisolated public let hookRegistry: HookRegistry?
 
     private let mediaPipeline: MediaPipeline
+    private let mediaServices: MediaUnderstandingServices
     private let diagnosticsSink: RuntimeDiagnosticSink?
     private var toolsConfiguration: AgentToolsConfiguration
     private var loopConfiguration: AgentLoopConfiguration
     private var hooks: AgentLoopHooks
-    private let hookRegistry: HookRegistry?
     private let lanes = AgentSessionLanes()
     private let eventHub = AgentEventHub()
     private var activeRuns: [String: ActiveRun] = [:]
@@ -390,7 +397,7 @@ public actor EmbeddedAgentRuntime {
     private var completedOrder: [String] = []
     private var runWaiters: [String: [UUID: CheckedContinuation<AgentRunWaitResult?, Never>]] = [:]
     private var internalEventQueues: [String: [String]] = [:]
-    private var promptContributors: [@Sendable (String, SessionRecord?) async -> String?] = []
+    private var promptContributors: [@Sendable (AgentPromptContext) async -> String?] = []
     private static let completedRunLimit = 512
 
     /// Creates an embedded runtime.
@@ -407,9 +414,13 @@ public actor EmbeddedAgentRuntime {
     ///   - contextEngines: Context engine registry (defaults to the legacy engine when a transcript store exists).
     ///   - toolsConfiguration: Tool policy, loop detection and tool search settings.
     ///   - loopConfiguration: Loop settings.
-    ///   - hooks: Loop hooks.
-    ///   - hookRegistry: Optional hook registry receiving `after_tool_call`.
+    ///   - hooks: Loop closure hooks.
+    ///   - hookRegistry: Shared typed hook registry; runs emit the lifecycle hooks (`before_agent_run`,
+    ///     `before_model_resolve`, `before_prompt_build`, `llm_input`/`llm_output`, `before_tool_call`,
+    ///     `after_tool_call`, `tool_result_persist`, `before_message_write`, `message_sending`/`message_sent`,
+    ///     compaction, session lifecycle and `agent_end`).
     ///   - defaultAgentID: Default agent id.
+    ///   - mediaUnderstandingServices: On-device services converting media the model cannot read.
     public init(
         gatewayClient: GatewayClient? = nil,
         toolRegistry: AgentToolRegistry? = nil,
@@ -425,11 +436,13 @@ public actor EmbeddedAgentRuntime {
         loopConfiguration: AgentLoopConfiguration = AgentLoopConfiguration(),
         hooks: AgentLoopHooks = AgentLoopHooks(),
         hookRegistry: HookRegistry? = nil,
-        defaultAgentID: String = SessionKey.defaultAgentID
+        defaultAgentID: String = SessionKey.defaultAgentID,
+        mediaUnderstandingServices: MediaUnderstandingServices = .platformDefault
     ) {
         self.gatewayClient = gatewayClient
         self.modelRouter = modelRouter
         self.mediaPipeline = mediaPipeline
+        self.mediaServices = mediaUnderstandingServices
         self.diagnosticsSink = diagnosticsSink
         self.toolRegistry = toolRegistry ?? AgentToolRegistry(tools: [LLMTaskTool(modelRouter: modelRouter)])
         self.sessionStore = sessionStore
@@ -500,6 +513,11 @@ public actor EmbeddedAgentRuntime {
         self.loopConfiguration = configuration
     }
 
+    /// Current loop configuration.
+    public func currentLoopConfiguration() -> AgentLoopConfiguration {
+        self.loopConfiguration
+    }
+
     /// Replaces the loop hooks.
     /// - Parameter hooks: Hooks.
     public func setHooks(_ hooks: AgentLoopHooks) {
@@ -509,6 +527,15 @@ public actor EmbeddedAgentRuntime {
     /// Adds a system-prompt contributor evaluated for every model turn (for example a tool directory).
     /// - Parameter contributor: Returns a section for the session, or `nil`.
     public func addSystemPromptContributor(_ contributor: @escaping @Sendable (_ sessionKey: String, _ session: SessionRecord?) async -> String?) {
+        self.promptContributors.append { context in
+            await contributor(context.sessionKey, context.session)
+        }
+    }
+
+    /// Adds a system-prompt contributor that sees the turn's provider, model and offered tools (for
+    /// example the memory-recall section, which only applies when memory tools are offered).
+    /// - Parameter contributor: Returns a section for the turn, or `nil`.
+    public func addPromptContributor(_ contributor: @escaping @Sendable (AgentPromptContext) async -> String?) {
         self.promptContributors.append(contributor)
     }
 
@@ -531,14 +558,21 @@ public actor EmbeddedAgentRuntime {
         self.internalEventQueues.removeValue(forKey: sessionKey) ?? []
     }
 
-    private func promptSections(_ sessionKey: String, _ record: SessionRecord?) async -> [String] {
+    private func promptSections(_ context: AgentPromptContext) async -> [String] {
         var sections: [String] = []
         for contributor in self.promptContributors {
-            if let section = await contributor(sessionKey, record) {
+            if let section = await contributor(context) {
                 sections.append(section)
             }
         }
         return sections
+    }
+
+    /// System-prompt sections contributed for a context (used by embedded sessions outside the loop).
+    /// - Parameter context: Prompt context.
+    /// - Returns: Non-empty sections in registration order.
+    public func promptContributions(for context: AgentPromptContext) async -> [String] {
+        await self.promptSections(context).filter { !$0.isEmpty }
     }
 
     // MARK: - Events
@@ -768,7 +802,11 @@ public actor EmbeddedAgentRuntime {
         await self.lanes.acquire(sessionKey)
         do {
             let record = await self.sessionStore?.recordForKey(sessionKey)
+            let messageCount = try await transcriptStore.contextMessages(sessionID: sessionID).count
             await self.hooks.onCompaction?(sessionKey, .manual, 0, nil)
+            await self.observeHook(.beforeCompaction, sessionKey: sessionKey, metadata: ["trigger": AnyCodable("manual")]) {
+                CompactionHookEvent(sessionKey: sessionKey, messageCount: messageCount)
+            }
             let result = try await engine.compact(
                 ContextCompactParams(
                     sessionID: sessionID,
@@ -780,6 +818,18 @@ public actor EmbeddedAgentRuntime {
                 )
             )
             await self.hooks.onCompaction?(sessionKey, .manual, result.tokensBefore, result.tokensAfter ?? result.tokensBefore)
+            await self.observeHook(
+                .afterCompaction,
+                sessionKey: sessionKey,
+                metadata: ["trigger": AnyCodable("manual"), "compacted": AnyCodable(result.compacted)]
+            ) {
+                CompactionHookEvent(
+                    sessionKey: sessionKey,
+                    messageCount: messageCount,
+                    tokensBefore: result.tokensBefore,
+                    tokensAfter: result.tokensAfter ?? result.tokensBefore
+                )
+            }
             await self.lanes.release(sessionKey)
             return result
         } catch {
@@ -797,6 +847,7 @@ public actor EmbeddedAgentRuntime {
     public func resetSession(sessionKey: String, reason: SessionResetReason = .reset) async throws -> SessionRecord? {
         await self.abort(sessionKey: sessionKey)
         let oldSessionID = await self.transcriptSessionID(for: sessionKey)
+        await self.emitSessionEnding(sessionKey: sessionKey, sessionID: oldSessionID, reason: reason.rawValue, isReset: true)
         if let transcriptStore, try await transcriptStore.header(sessionID: oldSessionID) != nil {
             try await transcriptStore.append(SessionTranscriptEntry(payload: .reset(reason: reason, firstKeptEntryID: nil)), sessionID: oldSessionID)
         }
@@ -804,6 +855,9 @@ public actor EmbeddedAgentRuntime {
         let rotated = await sessionStore.rotateSession(forKey: sessionKey)
         if let rotated, let newSessionID = rotated.sessionID, let transcriptStore {
             try await transcriptStore.ensureSession(id: newSessionID, cwd: self.loopConfiguration.transcriptWorkingDirectory, parentSession: oldSessionID)
+            await self.observeHook(.sessionStart, sessionKey: sessionKey) {
+                SessionLifecycleHookEvent(sessionId: newSessionID, sessionKey: sessionKey, resumedFrom: oldSessionID)
+            }
         }
         try? await sessionStore.save()
         return rotated
@@ -816,6 +870,7 @@ public actor EmbeddedAgentRuntime {
     public func deleteSession(sessionKey: String) async throws -> Bool {
         await self.abort(sessionKey: sessionKey)
         let sessionID = await self.transcriptSessionID(for: sessionKey)
+        await self.emitSessionEnding(sessionKey: sessionKey, sessionID: sessionID, reason: "deleted", isReset: false)
         var existed = false
         if let transcriptStore, try await transcriptStore.header(sessionID: sessionID) != nil {
             try await transcriptStore.delete(sessionID: sessionID)
@@ -826,6 +881,49 @@ public actor EmbeddedAgentRuntime {
             try? await sessionStore.save()
         }
         return existed
+    }
+
+    /// Emits `before_reset` (resets only) and `session_end` for a session that has a transcript.
+    private func emitSessionEnding(sessionKey: String, sessionID: String, reason: String, isReset: Bool) async {
+        guard let hookRegistry, let transcriptStore else { return }
+        let wantsReset = isReset ? await hookRegistry.hasHandlers(for: .beforeReset) : false
+        let wantsEnd = await hookRegistry.hasHandlers(for: .sessionEnd)
+        guard wantsReset || wantsEnd, let header = try? await transcriptStore.header(sessionID: sessionID) else { return }
+        let messages = (try? await transcriptStore.contextMessages(sessionID: sessionID)) ?? []
+        let context = HookContext(sessionKey: sessionKey)
+        if wantsReset {
+            await hookRegistry.emitObserving(
+                .beforeReset,
+                event: AgentSessionResetHookEvent(messages: AgentLoopHookEmitter.encode(messages), reason: reason),
+                context: context
+            )
+        }
+        if wantsEnd {
+            let started = SessionTranscriptClock.milliseconds(fromISO: header.timestamp)
+            let duration = started.map { Int(max(0, SessionTranscriptClock.nowMs() - $0)) }
+            await hookRegistry.emitObserving(
+                .sessionEnd,
+                event: SessionLifecycleHookEvent(
+                    sessionId: sessionID,
+                    sessionKey: sessionKey,
+                    messageCount: messages.count,
+                    durationMs: duration,
+                    reason: reason
+                ),
+                context: context
+            )
+        }
+    }
+
+    /// Emits an observe-only hook when handlers exist.
+    private func observeHook<Event: Encodable & Sendable>(
+        _ hook: HookName,
+        sessionKey: String,
+        metadata: [String: AnyCodable] = [:],
+        _ event: @Sendable () -> Event
+    ) async {
+        guard let hookRegistry, await hookRegistry.hasHandlers(for: hook) else { return }
+        await hookRegistry.emitObserving(hook, event: event(), context: HookContext(sessionKey: sessionKey, metadata: metadata))
     }
 
     // MARK: - Intent graph
@@ -961,8 +1059,10 @@ public actor EmbeddedAgentRuntime {
     private func makeDependencies() -> AgentLoopDependencies {
         AgentLoopDependencies(
             toolRegistry: self.toolRegistry,
+            runTools: AgentToolRegistry(),
             modelRouter: self.modelRouter,
             mediaPipeline: self.mediaPipeline,
+            mediaServices: self.mediaServices,
             transcriptStore: self.transcriptStore,
             sessionStore: self.sessionStore,
             contextEngines: self.contextEngines,
@@ -974,7 +1074,7 @@ public actor EmbeddedAgentRuntime {
             diagnostics: self.diagnosticsSink,
             defaultAgentID: self.defaultAgentID,
             internalEvents: { [weak self] key in await self?.drainInternalEvents(key) ?? [] },
-            promptContributors: { [weak self] key, record in await self?.promptSections(key, record) ?? [] }
+            promptContributors: { [weak self] context in await self?.promptSections(context) ?? [] }
         )
     }
 

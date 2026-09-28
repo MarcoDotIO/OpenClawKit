@@ -89,8 +89,13 @@ public enum AgentMessageConversion {
         timestamp: Int64
     ) -> AgentAssistantMessage {
         var content: [AgentContentBlock] = []
+        // Keep the reasoning signature so Anthropic thinking replays before tool use on the next turn
+        // (a signed block with empty text is redacted thinking and must be replayed too).
+        let signature = response.reasoningSignature?.isEmpty == false ? response.reasoningSignature : nil
         if let reasoning = response.reasoningText, !reasoning.isEmpty {
-            content.append(.thinking(AgentThinkingBlock(thinking: reasoning)))
+            content.append(.thinking(AgentThinkingBlock(thinking: reasoning, thinkingSignature: signature)))
+        } else if let signature {
+            content.append(.thinking(AgentThinkingBlock(thinking: "", thinkingSignature: signature)))
         }
         let text = visibleText ?? response.text
         if !text.isEmpty {
