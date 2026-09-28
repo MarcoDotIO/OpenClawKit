@@ -1,5 +1,7 @@
 import Foundation
 
+/// Retired A2UI canvas surface; scheduled for removal in the next breaking release.
+@available(*, deprecated, message: "Retired upstream in OpenClaw 2026.8.1 (#126030); canvas is a widget presenter")
 public enum OpenClawCanvasA2UICommand: String, Codable, Sendable {
     /// Render A2UI content on the device canvas.
     case push = "canvas.a2ui.push"
@@ -9,6 +11,8 @@ public enum OpenClawCanvasA2UICommand: String, Codable, Sendable {
     case reset = "canvas.a2ui.reset"
 }
 
+/// Retired A2UI canvas surface; scheduled for removal in the next breaking release.
+@available(*, deprecated, message: "Retired upstream in OpenClaw 2026.8.1 (#126030); canvas is a widget presenter")
 public struct OpenClawCanvasA2UIPushParams: Codable, Sendable, Equatable {
     public var messages: [AnyCodable]
 
@@ -17,6 +21,8 @@ public struct OpenClawCanvasA2UIPushParams: Codable, Sendable, Equatable {
     }
 }
 
+/// Retired A2UI canvas surface; scheduled for removal in the next breaking release.
+@available(*, deprecated, message: "Retired upstream in OpenClaw 2026.8.1 (#126030); canvas is a widget presenter")
 public struct OpenClawCanvasA2UIPushJSONLParams: Codable, Sendable, Equatable {
     public var jsonl: String
 

@@ -32,15 +32,37 @@ public enum OpenClawNetworkInterfaceType: String, Codable, Sendable {
     case other
 }
 
+/// Battery section of `device.status`.
 public struct OpenClawBatteryStatusPayload: Codable, Sendable, Equatable {
+    /// Battery charge level as a normalized fraction of full charge, 0.0–1.0.
+    /// Not a percentage: 1.0 == fully charged. `nil` when unavailable.
     public var level: Double?
+    /// Convenience percentage view of `level`, 0–100 (rounded). `nil` when `level` is `nil`.
+    public var levelPercent: Int?
+    /// Charging state.
     public var state: OpenClawBatteryState
+    /// Whether Low Power Mode is enabled.
     public var lowPowerModeEnabled: Bool
 
-    public init(level: Double?, state: OpenClawBatteryState, lowPowerModeEnabled: Bool) {
+    /// Creates a battery payload. Platform providers should set both `level` and `levelPercent`
+    /// (see ``percent(fromLevel:)``).
+    public init(
+        level: Double?,
+        state: OpenClawBatteryState,
+        lowPowerModeEnabled: Bool,
+        levelPercent: Int? = nil)
+    {
         self.level = level
+        self.levelPercent = levelPercent
         self.state = state
         self.lowPowerModeEnabled = lowPowerModeEnabled
+    }
+
+    /// Converts a 0.0–1.0 level to a rounded 0–100 percentage; `nil` for missing, negative or
+    /// non-finite levels (UIKit reports -1 when monitoring is off).
+    public static func percent(fromLevel level: Double?) -> Int? {
+        guard let level, level.isFinite, level >= 0 else { return nil }
+        return Int((min(1, level) * 100).rounded())
     }
 }
 

@@ -105,28 +105,6 @@ struct OpenClawSharedHelpersTests {
     }
 
     @Test
-    func canvasJSONLValidationRejectsA2UIV09Messages() throws {
-        let valid = """
-        {"beginRendering":{"surfaceId":"surface-1"}}
-        {"surfaceUpdate":{"surfaceId":"surface-1","html":"<p>Hello</p>"}}
-        """
-
-        let messages = try OpenClawCanvasA2UIJSONL.decodeMessagesFromJSONL(valid)
-        let encoded = try OpenClawCanvasA2UIJSONL.encodeMessagesJSONArray(messages)
-
-        #expect(messages.count == 2)
-        #expect(encoded.contains("beginRendering"))
-        #expect(encoded.contains("surfaceUpdate"))
-
-        do {
-            _ = try OpenClawCanvasA2UIJSONL.decodeMessagesFromJSONL(#"{"createSurface":{"id":"surface-2"}}"#)
-            Issue.record("Expected A2UI v0.9 payload to be rejected")
-        } catch {
-            #expect(error.localizedDescription.contains("createSurface"))
-        }
-    }
-
-    @Test
     func shareToAgentDeepLinkBuildsCanonicalMessageAndQueryItems() {
         let payload = SharedContentPayload(
             title: " OpenClaw Docs ",

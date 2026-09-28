@@ -35,13 +35,23 @@ public enum ShareToAgentDeepLink {
     }
 
     /// Builds the text payload inserted into the deep link.
+    ///
+    /// "Shared from iOS." is only added when there is shared content, only an explicit `instruction`
+    /// is appended (the SDK no longer injects a stored default instruction), and the result is empty
+    /// when there is neither content nor an instruction. Capped at 2,400 characters.
     public static func buildMessage(from payload: SharedContentPayload, instruction: String? = nil) -> String {
         let title = self.clean(payload.title)
         let text = self.clean(payload.text)
         let urlText = payload.url?.absoluteString.trimmingCharacters(in: .whitespacesAndNewlines)
-        let resolvedInstruction = self.clean(instruction) ?? ShareToAgentSettings.loadDefaultInstruction()
+        let resolvedInstruction = self.clean(instruction)
+        let hasSharedContent = title != nil || text != nil || self.clean(urlText) != nil
 
-        var lines: [String] = ["Shared from iOS."]
+        guard hasSharedContent || resolvedInstruction != nil else { return "" }
+
+        var lines: [String] = []
+        if hasSharedContent {
+            lines.append("Shared from iOS.")
+        }
         if let title, !title.isEmpty {
             lines.append("Title: \(title)")
         }
@@ -51,7 +61,9 @@ public enum ShareToAgentDeepLink {
         if let text, !text.isEmpty {
             lines.append("Text:\n\(text)")
         }
-        lines.append(resolvedInstruction)
+        if let resolvedInstruction {
+            lines.append(resolvedInstruction)
+        }
 
         let message = lines.joined(separator: "\n\n")
         return self.limit(message, maxCharacters: 2400)
