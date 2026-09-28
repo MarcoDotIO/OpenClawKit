@@ -11,8 +11,9 @@ import OpenClawKit
 /// Host app setup:
 /// 1. Call ``configure(host:)`` at launch with ``GatewayOpenClawIntentHost``,
 ///    ``EmbeddedOpenClawIntentHost`` or your own ``OpenClawIntentHost``.
-/// 2. Declare an `AppIntentsPackage` in the app target whose `includedPackages` contains
-///    ``OpenClawAppIntentsPackage``, so the app's App Intents metadata includes the SDK types.
+/// 2. Link the `OpenClawAppIntents` product in the app target; Xcode merges the SDK's App Intents
+///    metadata into the app. Also declare an app `AppIntentsPackage` whose `includedPackages`
+///    contains ``OpenClawAppIntentsPackage`` (recommended; required by older toolchains).
 /// 3. Keep the app's single `AppShortcutsProvider` in the app target and reference the SDK intents
 ///    there (the SDK cannot declare App Shortcuts for the host).
 public enum OpenClawAppIntents {
