@@ -106,4 +106,51 @@ struct LiveProviderAgentLoopTests {
     func xaiAgentLoopRunsCalculatorTool() async throws {
         try await self.runCalculatorLoop(.xai, thinkingLevel: nil)
     }
+
+    @Test(
+        .enabled(
+            if: LiveProviderEnvironment.isEnabled(.openAI) && LiveProviderEnvironment.isEnabled(.xai),
+            "needs OPENCLAW_LIVE_PROVIDER_TESTS=1, OPENAI_API_KEY and XAI_API_KEY"
+        )
+    )
+    func routerFallsBackFromRejectedKeyToNextProvider() async throws {
+        // The OpenAI provider carries a wrong key (rejected before billing); the router falls back to xAI.
+        let rejected = try LiveProviderConfigs.factoryProvider(.openAI, apiKey: LiveProviderKind.openAI.invalidKey, maxTokens: LiveProviderFixtures.smallOutput)
+        let fallback = try LiveProviderConfigs.factoryProvider(.xai, maxTokens: LiveProviderFixtures.smallOutput)
+        let router = ModelRouter(defaultProviderID: rejected.id, providers: [rejected, fallback])
+        // An explicit providerID keeps the rejected provider first (without it the router tries the
+        // fallback IDs before the default provider).
+        let request = ModelGenerationRequest(
+            sessionKey: "live-router-fallback",
+            prompt: LiveProviderFixtures.pongPrompt,
+            providerID: rejected.id,
+            policy: ModelGenerationPolicy(fallbackProviderIDs: [fallback.id])
+        )
+        let response = try await liveCall { try await router.generate(request) }
+        LiveUsageLedger.record("router.fallback.generate", model: response.modelID, usage: response.usage)
+        #expect(response.providerID == fallback.id)
+        #expect(response.text.lowercased().contains("pong"))
+
+        // Known gap (ModelProvider.swift, outside the provider files): generateStream returns the first
+        // provider's stream before any HTTP response, so a 401 surfaces while iterating and never
+        // reaches the fallback chain. Remove the known-issue wrapper once the router falls back on
+        // streams that fail before their first chunk.
+        // A fresh router: the failed generate above may already have deprioritized the rejected provider.
+        let streamRouter = ModelRouter(defaultProviderID: rejected.id, providers: [rejected, fallback])
+        try await withKnownIssue("ModelRouter.generateStream does not fall back when a stream fails before its first chunk") {
+            var streamed = ""
+            try await liveCall {
+                for try await chunk in await streamRouter.generateStream(request) {
+                    streamed += chunk.text
+                }
+            }
+            LiveUsageLedger.record("router.fallback.stream", model: LiveProviderEnvironment.model(.xai), usage: nil)
+            #expect(streamed.lowercased().contains("pong"))
+        } matching: { issue in
+            if case .errorCaught(let error) = issue.kind {
+                return String(describing: error).contains("401")
+            }
+            return false
+        }
+    }
 }

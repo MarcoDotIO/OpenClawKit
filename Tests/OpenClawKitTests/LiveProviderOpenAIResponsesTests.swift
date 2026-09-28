@@ -185,6 +185,56 @@ struct LiveProviderOpenAIResponsesTests {
     }
 
     @Test
+    func namedToolChoiceAndSystemMessagesInTranscript() async throws {
+        let response = try await liveCall {
+            try await self.makeProvider().generate(
+                ModelGenerationRequest(
+                    sessionKey: "live-openai-responses-named",
+                    prompt: "",
+                    policy: self.policy(maxTokens: LiveProviderFixtures.toolOutput),
+                    messages: [
+                        .system("Always use tools for arithmetic."),
+                        .user("What is 40 plus 2?"),
+                    ],
+                    tools: [LiveProviderFixtures.addTool],
+                    toolChoice: .named("add_numbers")
+                )
+            )
+        }
+        LiveUsageLedger.record("openai-responses.namedToolChoice", model: response.modelID, usage: response.usage)
+        let call = try #require(response.toolCalls.first)
+        #expect(call.name == "add_numbers")
+        #expect(LiveProviderFixtures.addArguments(call).map { $0.a + $0.b } == 42)
+    }
+
+    @Test
+    func cancellingStreamIterationStopsEarly() async throws {
+        let stream = await self.makeProvider().generateStream(
+            ModelGenerationRequest(
+                sessionKey: "live-openai-responses-cancel",
+                prompt: "Write the numbers from 1 to 60 separated by spaces.",
+                policy: self.policy(maxTokens: 200, stream: true)
+            )
+        )
+        var textChunks = 0
+        var sawFinal = false
+        try await liveCall {
+            for try await chunk in stream {
+                if chunk.kind == .text {
+                    textChunks += 1
+                    if textChunks == 2 {
+                        break
+                    }
+                }
+                sawFinal = sawFinal || chunk.isFinal
+            }
+        }
+        LiveUsageLedger.record("openai-responses.cancelledStream", model: self.model, usage: nil)
+        #expect(textChunks == 2)
+        #expect(!sawFinal)
+    }
+
+    @Test
     func imageInputThroughAttachmentsAndMessages() async throws {
         let legacy = try await liveCall {
             try await self.makeProvider().generate(

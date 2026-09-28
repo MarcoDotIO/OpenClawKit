@@ -180,6 +180,29 @@ struct LiveProviderOpenAIChatCompletionsTests {
     }
 
     @Test
+    func namedToolChoiceAndSystemMessagesInTranscript() async throws {
+        let response = try await liveCall {
+            try await self.makeProvider().generate(
+                ModelGenerationRequest(
+                    sessionKey: "live-openai-chat-named",
+                    prompt: "",
+                    policy: self.policy(maxTokens: LiveProviderFixtures.toolOutput),
+                    messages: [
+                        .system("Always use tools for arithmetic."),
+                        .user("What is 40 plus 2?"),
+                    ],
+                    tools: [LiveProviderFixtures.addTool],
+                    toolChoice: .named("add_numbers")
+                )
+            )
+        }
+        LiveUsageLedger.record("openai-chat.namedToolChoice", model: response.modelID, usage: response.usage)
+        let call = try #require(response.toolCalls.first)
+        #expect(call.name == "add_numbers")
+        #expect(LiveProviderFixtures.addArguments(call).map { $0.a + $0.b } == 42)
+    }
+
+    @Test
     func imageInputThroughAttachmentsAndMessages() async throws {
         let legacy = try await liveCall {
             try await self.makeProvider().generate(

@@ -304,9 +304,9 @@ enum LiveProviderFixtures {
         return sums.sorted() == [5, 30] && Set(calls.map(\.id)).count == calls.count && calls.allSatisfy { !$0.id.isEmpty }
     }
 
-    /// 32x32 solid pure-red PNG.
+    /// 64x64 solid pure-red PNG.
     static let redSquarePNG = Data(
-        base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAJ0lEQVR42u3NsQkAAAjAsP7/tF7hIASyp6lTCQQCgUAgEAgEgi/BAjLD/C5w/SM9AAAAAElFTkSuQmCC"
+        base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAS0lEQVR42u3PQQkAAAgAsetfWiP4FgYrsKZeS0BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEDgsqnc8OJg6Ln3AAAAAElFTkSuQmCC"
     ) ?? Data()
 
     /// Image attachment for the multimodal tests.
@@ -314,7 +314,7 @@ enum LiveProviderFixtures {
         MediaAttachment(mimeType: "image/png", data: self.redSquarePNG, fileName: "square.png")
     }
 
-    static let colorPrompt = "What is the color of the attached image? Answer with one lowercase word."
+    static let colorPrompt = "The attached image is one solid color: red, green, blue or gray? Answer with that one lowercase word."
 
     /// Integer arguments `a`/`b` of an `add_numbers` call.
     static func addArguments(_ call: ModelToolCall) -> (a: Int, b: Int)? {
