@@ -9,10 +9,10 @@ import OpenClawCore
 
 /// OpenAI-backed model provider using the Chat Completions API.
 ///
-/// Simple text requests use OpenAIKit on Apple platforms. Requests with attachments, transcripts,
-/// tools, response formats, reasoning controls or streaming use the contract-v2 Chat Completions
-/// engine (see ``ProviderServiceOpenAIModelProvider``) and send `OpenAI-Organization` /
-/// `OpenAI-Project` from request metadata.
+/// Every request uses the contract-v2 Chat Completions engine (see
+/// ``ProviderServiceOpenAIModelProvider``) and sends `OpenAI-Organization` / `OpenAI-Project` from
+/// request metadata. OpenAIKit 3.0.0 is not used: it resolves endpoint paths against the host root
+/// (`https://api.openai.com/chat/completions`, a 404).
 public struct OpenAIModelProvider: ModelProvider {
     /// Canonical provider identifier.
     public static let providerID = "openai"
@@ -28,7 +28,7 @@ public struct OpenAIModelProvider: ModelProvider {
     /// - Parameters:
     ///   - id: Provider identifier.
     ///   - configuration: OpenAI provider settings.
-    ///   - httpClient: HTTP client used for API calls.
+    ///   - httpClient: HTTP client used for API calls (buffered; streams replay the buffered body).
     public init(
         id: String = OpenAIModelProvider.providerID,
         configuration: OpenAIModelConfig,
@@ -38,6 +38,7 @@ public struct OpenAIModelProvider: ModelProvider {
             id: id,
             configuration: configuration,
             legacyTransport: httpClient,
+            usesOpenAIKit: false,
             clientFactory: { providerID, resolved in
                 try OpenAIKitClientFactory.makeChatClient(providerID: providerID, resolved: resolved)
             }
@@ -46,7 +47,7 @@ public struct OpenAIModelProvider: ModelProvider {
 
     /// Creates an OpenAI model provider with an explicit transport and runtime context.
     ///
-    /// Every request then goes through `transport` (OpenAIKit is not used).
+    /// Every request goes through `transport`.
     /// - Parameters:
     ///   - id: Provider identifier.
     ///   - configuration: OpenAI provider settings.
