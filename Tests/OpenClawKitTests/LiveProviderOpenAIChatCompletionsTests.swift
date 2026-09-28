@@ -265,6 +265,23 @@ struct LiveProviderOpenAIChatCompletionsTests {
     }
 
     @Test
+    func reasoningThatExhaustsTheOutputLimitReportsLength() async throws {
+        // Reasoning consumes the whole 16-token budget, so `content` comes back empty.
+        let response = try await liveCall {
+            try await self.makeProvider().generate(
+                ModelGenerationRequest(
+                    sessionKey: "live-openai-chat-exhausted",
+                    prompt: "Think carefully: how many prime numbers are there below 200? Reply with only the number.",
+                    policy: ModelGenerationPolicy(maxTokens: 16, reasoningEffort: .high)
+                )
+            )
+        }
+        LiveUsageLedger.record("openai-chat.exhaustedLimit.generate", model: response.modelID, usage: response.usage)
+        #expect(response.stopReason == .length)
+        #expect(response.usage?.outputTokens == 16)
+    }
+
+    @Test
     func invalidKeyMapsToAuthenticationError() async throws {
         await expectAuthenticationFailure("openai-chat.generate.defaultPath") {
             _ = try await self.makeDefaultProvider(apiKey: LiveProviderKind.openAI.invalidKey)

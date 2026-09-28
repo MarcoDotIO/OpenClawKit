@@ -190,6 +190,92 @@ struct LiveProviderRegressionTests {
         #expect(requests.first?.value(forHTTPHeaderField: "Authorization") == "Bearer sk-test")
     }
 
+    // MARK: - Output limit reached before any visible text
+
+    /// Live finding: when reasoning used the whole output budget, `generate` threw "did not include
+    /// text output" (dropping usage and the stop reason) while `generateStream` finished with
+    /// `.length`.
+    @Test
+    func responsesGenerateReturnsLengthWhenReasoningExhaustsTheLimit() async throws {
+        let transport = RegressionStubTransport(body: """
+        {"id":"resp_2","object":"response","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},\
+        "model":"gpt-6-luna","output":[{"type":"reasoning","id":"rs_1","summary":[]}],\
+        "usage":{"input_tokens":20,"output_tokens":16,"output_tokens_details":{"reasoning_tokens":16},"total_tokens":36}}
+        """)
+        let provider = OpenAIResponsesModelProvider(
+            id: "openai",
+            configuration: ProviderServiceConfig(enabled: true, modelID: "gpt-6-luna", apiKey: "sk-test", baseURL: "https://api.openai.com/v1"),
+            transport: transport
+        )
+
+        let response = try await provider.generate(
+            ModelGenerationRequest(sessionKey: "s", prompt: "hard", policy: ModelGenerationPolicy(maxTokens: 16, reasoningEffort: .high))
+        )
+
+        #expect(response.text.isEmpty)
+        #expect(response.toolCalls.isEmpty)
+        #expect(response.stopReason == .length)
+        #expect(response.usage?.reasoningTokens == 16)
+        #expect(response.usage?.totalTokens == 36)
+    }
+
+    @Test
+    func responsesGenerateStillRejectsCompletedEmptyOutput() async throws {
+        let transport = RegressionStubTransport(body: #"{"id":"resp_3","status":"completed","model":"gpt-6-luna","output":[]}"#)
+        let provider = OpenAIResponsesModelProvider(
+            id: "openai",
+            configuration: ProviderServiceConfig(enabled: true, modelID: "gpt-6-luna", apiKey: "sk-test", baseURL: "https://api.openai.com/v1"),
+            transport: transport
+        )
+
+        await #expect(throws: OpenClawCoreError.self) {
+            _ = try await provider.generate(ModelGenerationRequest(sessionKey: "s", prompt: "hi"))
+        }
+    }
+
+    @Test
+    func chatCompletionsGenerateReturnsLengthWhenReasoningExhaustsTheLimit() async throws {
+        let transport = RegressionStubTransport(body: """
+        {"id":"chatcmpl-2","model":"gpt-6-luna","choices":[{"index":0,"finish_reason":"length","message":{"role":"assistant","content":""}}],\
+        "usage":{"prompt_tokens":20,"completion_tokens":16,"total_tokens":36,"completion_tokens_details":{"reasoning_tokens":16}}}
+        """)
+        let provider = OpenAIModelProvider(
+            configuration: OpenAIModelConfig(enabled: true, modelID: "gpt-6-luna", apiKey: "sk-test"),
+            transport: transport
+        )
+
+        let response = try await provider.generate(
+            ModelGenerationRequest(sessionKey: "s", prompt: "hard", policy: ModelGenerationPolicy(maxTokens: 16, reasoningEffort: .high))
+        )
+
+        #expect(response.text.isEmpty)
+        #expect(response.stopReason == .length)
+        #expect(response.usage?.reasoningTokens == 16)
+    }
+
+    @Test
+    func anthropicGenerateReturnsLengthWhenThinkingExhaustsTheLimit() async throws {
+        let transport = RegressionStubTransport(body: """
+        {"id":"msg_2","type":"message","role":"assistant","model":"claude-haiku-4-5",\
+        "content":[{"type":"thinking","thinking":"Counting primes...","signature":"sig_1"}],\
+        "stop_reason":"max_tokens","usage":{"input_tokens":20,"output_tokens":2048}}
+        """)
+        let provider = AnthropicModelProvider(
+            configuration: AnthropicModelConfig(enabled: true, modelID: "claude-haiku-4-5", apiKey: "sk-ant-test", maxTokens: 64),
+            transport: transport
+        )
+
+        let response = try await provider.generate(
+            ModelGenerationRequest(sessionKey: "s", prompt: "hard", policy: ModelGenerationPolicy(thinkingLevel: .low))
+        )
+
+        #expect(response.text.isEmpty)
+        #expect(response.stopReason == .length)
+        #expect(response.reasoningText == "Counting primes...")
+        #expect(response.reasoningSignature == "sig_1")
+        #expect(response.usage?.outputTokens == 2048)
+    }
+
     // MARK: - Provider headers on factory-built providers
 
     /// Live finding: unscoped Anthropic keys need `anthropic-workspace-id`, but the factory-built

@@ -355,6 +355,24 @@ struct LiveProviderOpenAIResponsesTests {
     }
 
     @Test
+    func reasoningThatExhaustsTheOutputLimitReportsLength() async throws {
+        // Reasoning consumes the whole 16-token budget, so no visible text is produced.
+        let request = ModelGenerationRequest(
+            sessionKey: "live-openai-responses-exhausted",
+            prompt: "Think carefully: how many prime numbers are there below 200? Reply with only the number.",
+            policy: ModelGenerationPolicy(maxTokens: 16, reasoningEffort: .high)
+        )
+        let response = try await liveCall { try await self.makeProvider().generate(request) }
+        LiveUsageLedger.record("openai-responses.exhaustedLimit.generate", model: response.modelID, usage: response.usage)
+        #expect(response.stopReason == .length)
+        #expect(response.usage?.reasoningTokens ?? 0 > 0)
+
+        let capture = try await liveCollect(await self.makeProvider().generateStream(request))
+        LiveUsageLedger.record("openai-responses.exhaustedLimit.stream", model: self.model, usage: capture.usage)
+        #expect(capture.final?.stopReason == .length)
+    }
+
+    @Test
     func invalidKeyMapsToAuthenticationError() async throws {
         let provider = self.makeProvider(apiKey: LiveProviderKind.openAI.invalidKey)
         await expectAuthenticationFailure("openai-responses.generate.defaultPath") {

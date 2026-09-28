@@ -628,7 +628,7 @@ struct OpenAIResponsesEngine: Sendable {
             let message = root[wireKey: "error"]?.wireString("message") ?? "response failed"
             throw OpenClawCoreError.unavailable("\(self.settings.providerID) response failed: \(message)")
         }
-        guard !parsed.text.isEmpty || !parsed.toolCalls.isEmpty else {
+        guard !parsed.text.isEmpty || !parsed.toolCalls.isEmpty || parsed.stopReason.permitsEmptyOutput else {
             throw OpenClawCoreError.unavailable("\(self.settings.providerID) response did not include text output")
         }
         return parsed
