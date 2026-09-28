@@ -124,9 +124,6 @@ public extension InteractiveAuthFlowCatalog {
     static func descriptors(forProvider providerID: String) -> [InteractiveAuthFlowDescriptor] {
         let normalized = providerID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let canonical = self.legacyProviderAliases[normalized] ?? normalized
-        let upstream = self.upstreamProviderDescriptors.filter { $0.providerID == canonical }
-        let builtIn = self.descriptors.filter { $0.providerID == canonical || $0.providerID == normalized }
-        let upstreamKinds = Set(upstream.map(\.kind))
-        return upstream + builtIn.filter { !(upstreamKinds.contains($0.kind) && self.legacyProviderAliases[$0.providerID] != nil) }
+        return self.descriptors.filter { $0.providerID == canonical }
     }
 }
