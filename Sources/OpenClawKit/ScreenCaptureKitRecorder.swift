@@ -68,7 +68,7 @@ public final class ScreenCaptureKitRecorder {
             self.activeObserver = nil
         }
         self.picker.isActive = true
-        return try await withTaskCancellationHandler {
+        let picked = try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 observer.install(continuation)
                 self.picker.present()
@@ -76,6 +76,7 @@ public final class ScreenCaptureKitRecorder {
         } onCancel: {
             observer.finish(.failure(CancellationError()))
         }
+        return picked.filter
     }
 
     /// Records the picked content for the requested duration and returns the `screen.record` payload.
@@ -125,14 +126,20 @@ public final class ScreenCaptureKitRecorder {
     }
 }
 
+/// Hands the picked (non-Sendable) filter from the picker callback queue to the recorder exactly once.
+@available(iOS 27.0, visionOS 27.0, *)
+private struct PickedFilter: @unchecked Sendable {
+    let filter: SCContentFilter
+}
+
 @available(iOS 27.0, visionOS 27.0, *)
 private final class PickerObserver: NSObject, SCContentSharingPickerObserver, @unchecked Sendable {
     private let lock = NSLock()
-    private var continuation: CheckedContinuation<SCContentFilter, any Error>?
-    private var pending: Result<SCContentFilter, any Error>?
+    private var continuation: CheckedContinuation<PickedFilter, any Error>?
+    private var pending: Result<PickedFilter, any Error>?
 
-    func install(_ continuation: CheckedContinuation<SCContentFilter, any Error>) {
-        let pending: Result<SCContentFilter, any Error>? = self.lock.withLock {
+    func install(_ continuation: CheckedContinuation<PickedFilter, any Error>) {
+        let pending: Result<PickedFilter, any Error>? = self.lock.withLock {
             if let pending = self.pending { return pending }
             self.continuation = continuation
             return nil
@@ -142,8 +149,8 @@ private final class PickerObserver: NSObject, SCContentSharingPickerObserver, @u
         }
     }
 
-    func finish(_ result: Result<SCContentFilter, any Error>) {
-        let continuation: CheckedContinuation<SCContentFilter, any Error>? = self.lock.withLock {
+    func finish(_ result: Result<PickedFilter, any Error>) {
+        let continuation: CheckedContinuation<PickedFilter, any Error>? = self.lock.withLock {
             guard let continuation = self.continuation else {
                 if self.pending == nil { self.pending = result }
                 return nil
@@ -159,7 +166,7 @@ private final class PickerObserver: NSObject, SCContentSharingPickerObserver, @u
     }
 
     func contentSharingPicker(_ picker: SCContentSharingPicker, didUpdateWith filter: SCContentFilter, for stream: SCStream?) {
-        self.finish(.success(filter))
+        self.finish(.success(PickedFilter(filter: filter)))
     }
 
     func contentSharingPickerStartDidFailWithError(_ error: any Error) {
