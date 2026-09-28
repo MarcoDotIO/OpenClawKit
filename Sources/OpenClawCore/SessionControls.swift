@@ -1,4 +1,5 @@
 import Foundation
+import OpenClawProtocol
 
 /// Thinking budget preference aligned with the OpenClaw session model.
 ///
@@ -527,11 +528,307 @@ public enum ExecMode: String, Sendable, Equatable, CaseIterable, Codable {
     }
 }
 
+/// Trace output level for a session (upstream `TraceLevel`, `src/auto-reply/thinking.shared.ts`).
+public enum TraceLevel: String, Sendable, Equatable, CaseIterable, Codable {
+    /// Tracing disabled.
+    case off
+    /// Filtered trace output.
+    case on
+    /// Unfiltered trace output.
+    case raw
+
+    /// Decodes a trace level, accepting every alias handled by ``normalize(_:)``.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let raw = try container.decode(String.self)
+        guard let normalized = Self.normalize(raw) else {
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid TraceLevel value: \(raw)")
+        }
+        self = normalized
+    }
+
+    /// Encodes the canonical raw value.
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(self.rawValue)
+    }
+
+    /// Normalizes a raw trace level (upstream `normalizeTraceLevel`).
+    /// - Parameter raw: Raw user or wire value.
+    /// - Returns: Canonical level, or `nil` when empty or unknown.
+    public static func normalize(_ raw: String?) -> TraceLevel? {
+        guard let raw else { return nil }
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "off", "false", "no", "0":
+            return .off
+        case "on", "true", "yes", "1":
+            return .on
+        case "raw", "unfiltered":
+            return .raw
+        default:
+            return nil
+        }
+    }
+}
+
+/// Session permission mode helpers (the enum itself is the generated protocol type
+/// `OpenClawProtocol.SessionPermissionMode`, upstream `SessionPermissionModeSchema`; see
+/// `docs/gateway/permission-modes.md`).
+///
+/// A mode sets one session's filesystem boundary and exec escalation reviewer:
+/// - `read-only`: reads under the session root; managed mutation tools are omitted; exec is denied.
+/// - `guarded`: reads and writes under the session root; a human reviews exec after the allowlist fast path.
+/// - `workspace`: reads and writes under the session root; an LLM reviewer answers allow/deny/ask; a
+///   reviewer denial goes back to the agent without a human approval card.
+/// - `full`: unrestricted; setting it requires `operator.admin` (the other modes need `operator.write`).
+///
+/// `nil` on a session means "Default": the configured global or per-agent exec policy applies.
+///
+/// - Note: 2026.3.0 replaces the retired session `execSecurity`/`execAsk` overrides with this mode.
+public extension SessionPermissionMode {
+    /// Every mode, most restrictive first.
+    static let supportedModes: [SessionPermissionMode] = [.readOnly, .guarded, .workspace, .full]
+
+    /// Normalizes a raw mode string.
+    /// - Parameter raw: Raw user or wire value.
+    /// - Returns: Canonical mode, or `nil` when unknown.
+    static func normalize(_ raw: String?) -> SessionPermissionMode? {
+        guard let raw else { return nil }
+        let key = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().replacingOccurrences(of: "_", with: "-")
+        if key == "readonly" {
+            return .readOnly
+        }
+        return SessionPermissionMode(rawValue: key)
+    }
+
+    /// Operator scope required to select this mode (`operator.admin` for `full`, else `operator.write`).
+    var requiredScope: String {
+        self == .full ? "operator.admin" : "operator.write"
+    }
+
+    /// Exec mode this permission mode projects to (upstream `EXEC_MODE_BY_PERMISSION_MODE`).
+    var execMode: ExecMode {
+        switch self {
+        case .readOnly:
+            return .deny
+        case .guarded:
+            return .ask
+        case .workspace:
+            return .auto
+        case .full:
+            return .full
+        }
+    }
+
+    /// Whether file tools are confined to the session root (every mode except `full`).
+    var isWorkspaceOnly: Bool {
+        self != .full
+    }
+
+    /// Whether managed mutation tools (write, edit, apply_patch, exec, process) are omitted.
+    var isReadOnly: Bool {
+        self == .readOnly
+    }
+
+    /// Permission mode for an exec mode (upstream `SESSION_PERMISSION_BY_EXEC_MODE`).
+    /// - Parameter mode: Exec mode.
+    /// - Returns: The matching permission mode.
+    static func from(execMode mode: ExecMode) -> SessionPermissionMode {
+        switch mode {
+        case .deny:
+            return .readOnly
+        case .allowlist, .ask:
+            return .guarded
+        case .auto:
+            return .workspace
+        case .full:
+            return .full
+        }
+    }
+
+    /// Migrates a retired session `execSecurity`/`execAsk` override (upstream
+    /// `repairLegacySessionExecPolicy`).
+    ///
+    /// Missing values inherit the stricter base (`deny` for sandbox hosts, `full` otherwise, ask `off`).
+    /// `ask == always` has no mode equivalent and retires to `read-only`; a full-access policy is
+    /// never converted into a `full` grant (returns `nil`, so configuration applies).
+    /// - Parameters:
+    ///   - security: Legacy session security override.
+    ///   - ask: Legacy session ask override.
+    ///   - execHost: Session exec host, used to pick the base security.
+    /// - Returns: The migrated mode, or `nil` when the configured default should apply.
+    static func migratingLegacyExecPolicy(
+        security: ExecSecurity?,
+        ask: ExecAsk?,
+        execHost: ExecHost? = nil
+    ) -> SessionPermissionMode? {
+        guard security != nil || ask != nil else {
+            return nil
+        }
+        let baseSecurity: ExecSecurity = execHost == .sandbox ? .deny : .full
+        let resolvedAsk = ask ?? .off
+        if resolvedAsk == .always {
+            return .readOnly
+        }
+        let mode = ExecMode.from(security: security ?? baseSecurity, ask: resolvedAsk)
+        return mode == .full ? nil : Self.from(execMode: mode)
+    }
+}
+
+/// Fast-mode preference for a session: on, off, or provider-chosen `auto` (upstream `FastMode`).
+///
+/// Wire shape: `true`, `false` or `"auto"`; decoding also accepts the upstream string aliases.
+public enum FastModeSetting: String, Sendable, Equatable, CaseIterable, Codable {
+    /// Fast mode enabled.
+    case on
+    /// Fast mode disabled.
+    case off
+    /// The runtime decides per request.
+    case auto
+
+    /// Boolean projection: `true`/`false` for on/off, `nil` for `auto`.
+    public var boolValue: Bool? {
+        switch self {
+        case .on:
+            return true
+        case .off:
+            return false
+        case .auto:
+            return nil
+        }
+    }
+
+    /// Creates a setting from a boolean.
+    /// - Parameter value: `true` for on, `false` for off.
+    public init(_ value: Bool) {
+        self = value ? .on : .off
+    }
+
+    /// Normalizes a raw string (upstream `normalizeFastMode`).
+    /// - Parameter raw: Raw user or wire value.
+    /// - Returns: The setting, or `nil` when unknown.
+    public static func normalize(_ raw: String?) -> FastModeSetting? {
+        guard let raw else { return nil }
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "off", "false", "no", "0", "disable", "disabled", "normal":
+            return .off
+        case "on", "true", "yes", "1", "enable", "enabled", "fast":
+            return .on
+        case "auto", "automatic":
+            return .auto
+        default:
+            return nil
+        }
+    }
+
+    /// Decodes a boolean or a string alias.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let flag = try? container.decode(Bool.self) {
+            self.init(flag)
+            return
+        }
+        let raw = try container.decode(String.self)
+        guard let setting = Self.normalize(raw) else {
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid fastMode value: \(raw)")
+        }
+        self = setting
+    }
+
+    /// Encodes `true`, `false` or `"auto"`.
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .on:
+            try container.encode(true)
+        case .off:
+            try container.encode(false)
+        case .auto:
+            try container.encode("auto")
+        }
+    }
+}
+
+/// Sparse per-session tool policy overlay (upstream `SessionToolOverridesSchema`).
+///
+/// Patches replace the overlay atomically; ``normalized()`` sorts and de-duplicates entries, drops
+/// empty maps, and keeps `webSearch` only when it disables web search (upstream
+/// `normalizeSessionToolOverrides`).
+public struct SessionToolOverrides: Codable, Sendable, Equatable, Hashable {
+    /// MCP servers enabled (`true`) or disabled (`false`) for the session.
+    public var mcpServers: [String: Bool]?
+    /// MCP tool names denied per server.
+    public var mcpToolsDeny: [String: [String]]?
+    /// Skills enabled or disabled for the session.
+    public var skills: [String: Bool]?
+    /// `false` disables web search for the session.
+    public var webSearch: Bool?
+
+    /// Creates a tool overlay.
+    /// - Parameters:
+    ///   - mcpServers: MCP server toggles.
+    ///   - mcpToolsDeny: Denied MCP tools per server.
+    ///   - skills: Skill toggles.
+    ///   - webSearch: `false` disables web search.
+    public init(
+        mcpServers: [String: Bool]? = nil,
+        mcpToolsDeny: [String: [String]]? = nil,
+        skills: [String: Bool]? = nil,
+        webSearch: Bool? = nil
+    ) {
+        self.mcpServers = mcpServers
+        self.mcpToolsDeny = mcpToolsDeny
+        self.skills = skills
+        self.webSearch = webSearch
+    }
+
+    /// Whether the overlay changes nothing.
+    public var isEmpty: Bool {
+        self.normalized() == nil
+    }
+
+    /// Canonical stored form, or `nil` when the overlay is empty.
+    /// - Returns: The normalized overlay.
+    public func normalized() -> SessionToolOverrides? {
+        let servers = self.mcpServers.flatMap { $0.isEmpty ? nil : $0 }
+        let skills = self.skills.flatMap { $0.isEmpty ? nil : $0 }
+        var deny: [String: [String]] = [:]
+        for (server, tools) in self.mcpToolsDeny ?? [:] {
+            let unique = Array(Set(tools.filter { !$0.isEmpty })).sorted()
+            if !server.isEmpty, !unique.isEmpty {
+                deny[server] = unique
+            }
+        }
+        let result = SessionToolOverrides(
+            mcpServers: servers,
+            mcpToolsDeny: deny.isEmpty ? nil : deny,
+            skills: skills,
+            webSearch: self.webSearch == false ? false : nil
+        )
+        if result.mcpServers == nil, result.mcpToolsDeny == nil, result.skills == nil, result.webSearch == nil {
+            return nil
+        }
+        return result
+    }
+
+    /// Whether the overlay denies an MCP tool (server disabled or tool listed in `mcpToolsDeny`).
+    /// - Parameters:
+    ///   - server: MCP server name.
+    ///   - tool: MCP tool name.
+    /// - Returns: `true` when the tool is denied.
+    public func deniesMCPTool(server: String, tool: String) -> Bool {
+        if self.mcpServers?[server] == false {
+            return true
+        }
+        return self.mcpToolsDeny?[server]?.contains(tool) == true
+    }
+}
+
 /// Session controls resolved from persisted state and agent defaults.
 public struct ResolvedSessionState: Sendable, Equatable {
     public let key: String
     public let agentID: String
-    public let updatedAtMs: Int
+    public let updatedAtMs: Int64
     public let lastRoute: SessionRoute?
     public let label: String?
     public let modelOverride: String?
@@ -547,6 +844,12 @@ public struct ResolvedSessionState: Sendable, Equatable {
     public let execSecurity: ExecSecurity?
     public let execAsk: ExecAsk?
     public let execNode: String?
+    /// Session permission mode (`nil` = configured default).
+    public var permissionMode: SessionPermissionMode? = nil
+    /// Session trace level.
+    public var traceLevel: TraceLevel? = nil
+    /// Session tool overlay.
+    public var toolOverrides: SessionToolOverrides? = nil
 
     public var providerOverrideID: String? {
         guard let modelOverride else { return nil }
@@ -597,12 +900,8 @@ extension SessionRecord {
         if self.execHost == nil {
             self.execHost = defaults.execHost
         }
-        if self.execSecurity == nil {
-            self.execSecurity = defaults.execSecurity
-        }
-        if self.execAsk == nil {
-            self.execAsk = defaults.execAsk
-        }
+        // Exec security/ask stay configuration-level policy (see `resolved(using:)`); session
+        // records no longer carry them.
         if self.execNode == nil {
             self.execNode = defaults.execNode
         }
@@ -610,7 +909,7 @@ extension SessionRecord {
 
     /// Resolves the effective session controls by applying agent defaults.
     public func resolved(using defaults: AgentsConfig) -> ResolvedSessionState {
-        ResolvedSessionState(
+        var state = ResolvedSessionState(
             key: self.key,
             agentID: self.agentID,
             updatedAtMs: self.updatedAtMs,
@@ -630,5 +929,9 @@ extension SessionRecord {
             execAsk: self.execAsk ?? defaults.execAsk,
             execNode: self.execNode ?? defaults.execNode
         )
+        state.permissionMode = self.permissionMode
+        state.traceLevel = self.traceLevel
+        state.toolOverrides = self.toolOverrides
+        return state
     }
 }
