@@ -256,6 +256,23 @@ struct CoreConfigIntegrationTests {
     }
 
     @Test
+    func routingSessionKeyFormatDrivesDerivedKeys() throws {
+        let canonical = try JSONDecoder().decode(OpenClawConfig.self, from: Data(#"{"routing": {"sessionKeyFormat": "canonical"}}"#.utf8))
+        #expect(canonical.routing.sessionKeyFormat == .canonical)
+        let context = SessionRoutingContext(channel: "telegram", accountID: "work", peerID: "42")
+        let key = SessionKeyResolver.derive(context: context, config: canonical)
+        #expect(key.hasPrefix("agent:"))
+        #expect(key == SessionKeyResolver.derive(context: context, config: canonical, format: .canonical))
+        let legacy = OpenClawConfig()
+        #expect(SessionKeyResolver.derive(context: context, config: legacy) == "telegram:work:42")
+        // The default format is not written, so existing SDK files stay byte-stable.
+        #expect(ConfigTreeCoding.encodeObject(legacy.routing)["sessionKeyFormat"] == nil)
+        #expect(ConfigTreeCoding.encodeObject(canonical.routing)["sessionKeyFormat"]?.stringValue == "canonical")
+        let unknown = try JSONDecoder().decode(RoutingConfig.self, from: Data(#"{"sessionKeyFormat": "galactic"}"#.utf8))
+        #expect(unknown.sessionKeyFormat == .legacy)
+    }
+
+    @Test
     func legacyCanvasHostMigratesToTheCanvasPlugin() throws {
         let collector = ConfigDecodeIssueCollector()
         let document = try OpenClawConfigDocument.decode(

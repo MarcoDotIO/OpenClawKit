@@ -487,12 +487,17 @@ public struct SessionRoutingContext: Sendable, Equatable {
 /// The default ``SessionKeyFormat/legacy`` format joins `channel:account:peer`. The opt-in
 /// ``SessionKeyFormat/canonical`` format produces upstream agent-scoped keys (see ``SessionKey``).
 public enum SessionKeyResolver {
-    /// Derives a session key from routing context and config flags.
+    /// Derives a session key from routing context and config flags, in the configured
+    /// ``RoutingConfig/sessionKeyFormat`` (legacy by default).
     /// - Parameters:
     ///   - context: Routing context.
     ///   - config: Runtime configuration.
     /// - Returns: Sanitized derived session key.
     public static func derive(context: SessionRoutingContext, config: OpenClawConfig) -> String {
+        Self.derive(context: context, config: config, format: config.routing.sessionKeyFormat)
+    }
+
+    private static func deriveLegacy(context: SessionRoutingContext, config: OpenClawConfig) -> String {
         let cleanChannel = config.routing.includeChannelID ? sanitizeOptional(context.channel) : nil
         let account = config.routing.includeAccountID ? sanitizeOptional(context.accountID) : nil
         let peer = config.routing.includePeerID ? sanitizeOptional(context.peerID) : nil
@@ -508,7 +513,7 @@ public enum SessionKeyResolver {
     ///
     /// `.canonical` builds `agent:<agentId>:…` keys with ``SessionKey/peerKey(agentID:channel:accountID:peerKind:peerID:dmScope:groupScope:mainKey:)``
     /// using the `per-account-channel-peer` DM scope when account and peer ids are included, mirroring the legacy
-    /// key's specificity; `.legacy` is ``derive(context:config:)``.
+    /// key's specificity; `.legacy` joins `channel:account:peer`.
     /// - Parameters:
     ///   - context: Routing context.
     ///   - config: Runtime configuration.
@@ -525,7 +530,7 @@ public enum SessionKeyResolver {
     ) -> String {
         switch format {
         case .legacy:
-            return Self.derive(context: context, config: config)
+            return Self.deriveLegacy(context: context, config: config)
         case .canonical:
             let agent = agentID ?? config.agents.defaultAgentID
             let channel = config.routing.includeChannelID ? sanitizeOptional(context.channel) : nil
