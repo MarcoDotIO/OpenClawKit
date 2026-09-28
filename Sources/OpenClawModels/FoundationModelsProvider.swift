@@ -461,6 +461,32 @@ public struct FoundationModelsProvider: ModelProvider {
         }
     }
 
+    /// Whether a backend supports a locale, so hosts can route unsupported languages elsewhere
+    /// before sending a request (system model: OS 26+; Private Cloud Compute: OS 27+).
+    /// - Parameters:
+    ///   - locale: Locale to check.
+    ///   - target: Backend.
+    /// - Returns: `false` where the backend does not exist.
+    public static func supportsLocale(_ locale: Locale = .current, target: AppleFoundationModelTarget = .system) async -> Bool {
+        switch target {
+        case .system:
+            #if canImport(FoundationModels) && !os(tvOS) && !os(watchOS)
+            if #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) {
+                return SystemLanguageModel.default.supportsLocale(locale)
+            }
+            #endif
+            return false
+        case .privateCloudCompute:
+            #if compiler(>=6.4) && canImport(FoundationModels) && !os(tvOS)
+            if #available(iOS 27.0, macOS 27.0, visionOS 27.0, watchOS 27.0, *) {
+                return (try? await PrivateCloudComputeLanguageModel().supportsLocale(locale)) ?? false
+            }
+            #endif
+            _ = locale
+            return false
+        }
+    }
+
     // MARK: Private Cloud Compute quota
 
     /// Current Private Cloud Compute quota (OS 27), or `nil` where PCC does not exist.

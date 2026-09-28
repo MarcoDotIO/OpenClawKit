@@ -81,11 +81,12 @@ struct AppleFoundationModelsEngine: Sendable {
         if #available(iOS 27.0, macOS 27.0, visionOS 27.0, watchOS 27.0, *) {
             let model = PrivateCloudComputeLanguageModel()
             let preflight: FoundationModelsError?
-            if case .unavailable(let reason) = model.availability {
-                let mapped: FoundationModelsRuntimeAvailability.Reason = reason == .deviceNotEligible
-                    ? .privateCloudDeviceNotEligible
-                    : .privateCloudSystemNotReady
-                preflight = FoundationModelsError(code: .unavailable, message: FoundationModelsRuntimeAvailability.unavailable(mapped).message)
+            let availability = FoundationModelsProvider.runtimeAvailability(
+                target: .privateCloudCompute,
+                treatSimulatorAsUnavailable: self.options.treatSimulatorAsUnavailable
+            )
+            if !availability.isAvailable {
+                preflight = FoundationModelsError(code: .unavailable, message: availability.message)
             } else if model.quotaUsage.isLimitReached {
                 preflight = FoundationModelsError(
                     code: .rateLimited,

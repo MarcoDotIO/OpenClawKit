@@ -636,6 +636,7 @@ struct AppleFoundationModelsLiveTests {
         #expect(!facts.modelName.isEmpty)
         let count = try await self.provider.tokenCount(prompt: "Hello there", systemPrompt: "Be brief.")
         #expect(count > 0)
+        #expect(await FoundationModelsProvider.supportsLocale(Locale(identifier: "en_US")))
     }
 
     @Test
