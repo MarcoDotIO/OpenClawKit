@@ -309,6 +309,24 @@ struct WatchNodeClientTests {
     }
 
     @Test(.stateDirectoryIsolated)
+    func `a foreground restart right after stop reconnects once`() async throws {
+        let gateway = FakeWatchNodeGateway(bootstrapTokens: ["bootstrap-1"])
+        let client = Self.makeClient(gateway: gateway)
+        try await client.install(Self.setup())
+        await client.start()
+        #expect(await Self.eventually { await client.isConnected })
+        await client.stop()
+        await client.start()
+        #expect(await Self.eventually { await gateway.records("connect").count == 2 })
+        #expect(await Self.eventually { await client.isConnected })
+        await gateway.enqueueInvoke(id: "after-restart", command: "device.info")
+        #expect(await Self.eventually { await gateway.records("result").count == 1 })
+        #expect(await gateway.records("result").first?.authorization == "Bearer session-2")
+        #expect(await gateway.records("connect").count == 2)
+        await client.stop()
+    }
+
+    @Test(.stateDirectoryIsolated)
     func `a consumed bootstrap falls back to the stored device token`() async throws {
         let gateway = FakeWatchNodeGateway(bootstrapTokens: [], deviceTokens: ["stored-token"])
         let client = Self.makeClient(gateway: gateway)

@@ -158,7 +158,7 @@ public actor OpenClawWatchNodeClient {
     private var inFlight: [UUID: Task<(Data, HTTPURLResponse), any Error>] = [:]
     private var runTask: Task<Void, Never>?
     private var runToken: UUID?
-    private var isRunning = false
+    private var runnerID: UUID?
 
     /// Current state.
     public private(set) var state: State
@@ -252,7 +252,7 @@ public actor OpenClawWatchNodeClient {
         self.store.saveLastAcceptedSetupSentAtMs(setup.sentAtMs)
         self.retireCurrentConnection()
         self.configuration = configuration
-        if !self.isRunning { self.setState(.idle) }
+        if self.runnerID == nil { self.setState(.idle) }
         return configuration
     }
 
@@ -286,6 +286,8 @@ public actor OpenClawWatchNodeClient {
     }
 
     /// Starts polling in a background task (call when the app becomes active).
+    ///
+    /// The running task keeps the client alive until ``stop()`` or ``forget()``.
     public func start() {
         guard self.runTask == nil else { return }
         let token = UUID()
@@ -305,12 +307,15 @@ public actor OpenClawWatchNodeClient {
     /// Connects and polls until the calling task is cancelled or the configuration is forgotten.
     ///
     /// ``start()`` runs this in its own task; hosts that manage their own tasks may call it directly.
-    /// Only one loop runs at a time; a second concurrent call returns immediately.
+    /// Only one loop runs at a time: a newer call takes over, and the earlier loop disconnects and returns.
     public func run() async {
-        guard !self.isRunning else { return }
-        self.isRunning = true
-        defer { self.isRunning = false }
-        while !Task.isCancelled {
+        let runner = UUID()
+        if self.runnerID != nil { self.retireCurrentConnection() }
+        self.runnerID = runner
+        defer {
+            if self.runnerID == runner { self.runnerID = nil }
+        }
+        while !Task.isCancelled, self.runnerID == runner {
             guard let configuration = self.configuration else {
                 self.setState(.notConfigured)
                 return
