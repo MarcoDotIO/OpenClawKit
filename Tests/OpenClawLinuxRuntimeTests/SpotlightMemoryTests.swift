@@ -26,7 +26,10 @@ struct SpotlightMemoryTests {
         #expect(parsed.path == "memory/2026-01-01.md" && parsed.startLine == 3 && parsed.endLine == 9)
         #expect(SpotlightMemoryIndexer.parse(identifier: id, agentID: "other") == nil)
 
-        let item = SpotlightMemoryIndex.item(for: MemoryDocument(id: "x", source: .toolResult, text: String(repeating: "t", count: 100)), domain: "openclaw.memory.main")
+        let item = SpotlightMemoryIndex.item(
+            for: MemoryDocument(id: "x", source: .toolResult, text: String(repeating: "t", count: 100)),
+            domain: "openclaw.memory.main"
+        )
         #expect(item.uniqueIdentifier == "x")
         #expect(item.domainIdentifier == "openclaw.memory.main")
         #expect(item.attributeSet.title?.count == 80)

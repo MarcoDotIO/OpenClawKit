@@ -202,7 +202,10 @@ public struct SpotlightSearchAgentTool: AgentTool {
                 }
             }
             lines.append(contentsOf: rows.map { $0.joined(separator: " | ") })
-            details["table"] = AnyCodable(["columns": AnyCodable(table.columns.map { AnyCodable($0.name) }), "rows": AnyCodable(rows.map { AnyCodable($0.map { AnyCodable($0) }) })])
+            details["table"] = AnyCodable([
+                "columns": AnyCodable(table.columns.map { AnyCodable($0.name) }),
+                "rows": AnyCodable(rows.map { AnyCodable($0.map { AnyCodable($0) }) })
+            ])
         case .statistic(let statistic):
             lines.append("\(statistic.name): \(statistic.value)")
             details["statistic"] = AnyCodable(["name": AnyCodable(statistic.name), "value": AnyCodable(statistic.value)])

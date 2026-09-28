@@ -160,7 +160,11 @@ public struct MemorySearchTool: AgentTool {
     ///   - engine: Memory engine.
     ///   - configuration: Engine settings (for the source description and session corpus).
     ///   - sessionSearch: Session transcript search.
-    public init(engine: MemoryEngine, configuration: MemoryEngineConfiguration = MemoryEngineConfiguration(), sessionSearch: (any MemorySessionSearching)? = nil) {
+    public init(
+        engine: MemoryEngine,
+        configuration: MemoryEngineConfiguration = MemoryEngineConfiguration(),
+        sessionSearch: (any MemorySessionSearching)? = nil
+    ) {
         self.engine = engine
         self.sessionSearch = sessionSearch
         self.hasExtraPaths = !configuration.extraPaths.isEmpty
@@ -222,7 +226,11 @@ public struct MemorySearchTool: AgentTool {
         if corpus == "wiki" {
             details["disabled"] = AnyCodable(true)
             details["warning"] = AnyCodable(MemoryToolSupport.wikiWarning)
-            corpora.append(AnyCodable(["corpus": AnyCodable("wiki"), "status": AnyCodable("unavailable"), "warning": AnyCodable(MemoryToolSupport.wikiWarning)]))
+            corpora.append(AnyCodable([
+                "corpus": AnyCodable("wiki"),
+                "status": AnyCodable("unavailable"),
+                "warning": AnyCodable(MemoryToolSupport.wikiWarning)
+            ]))
         }
         if corpus == "memory" || corpus == "all" {
             let outcome = try await self.engine.search(query: query, maxResults: maxResults, minScore: minScore)
@@ -234,7 +242,11 @@ public struct MemorySearchTool: AgentTool {
             }
             corpora.append(AnyCodable(["corpus": AnyCodable("memory"), "status": AnyCodable("ok")]))
             if corpus == "all" {
-                corpora.append(AnyCodable(["corpus": AnyCodable("wiki"), "status": AnyCodable("unavailable"), "warning": AnyCodable(MemoryToolSupport.wikiWarning)]))
+                corpora.append(AnyCodable([
+                    "corpus": AnyCodable("wiki"),
+                    "status": AnyCodable("unavailable"),
+                    "warning": AnyCodable(MemoryToolSupport.wikiWarning)
+                ]))
             }
         }
         if corpus == "sessions" {

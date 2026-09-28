@@ -123,7 +123,14 @@ public actor MCPClientManager {
         self.now = now
         let allowUnlisted = config.allowUnlistedStdioCommands == true
         self.transportFactory = transportFactory ?? { name, server, kind in
-            try MCPClientManager.defaultTransport(name: name, config: server, kind: kind, allowlist: stdioAllowlist, allowUnlisted: allowUnlisted, diagnostics: diagnostics)
+            try MCPClientManager.defaultTransport(
+                name: name,
+                config: server,
+                kind: kind,
+                allowlist: stdioAllowlist,
+                allowUnlisted: allowUnlisted,
+                diagnostics: diagnostics
+            )
         }
     }
 

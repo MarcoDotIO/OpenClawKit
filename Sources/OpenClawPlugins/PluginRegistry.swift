@@ -111,7 +111,7 @@ public actor PluginRegistry {
     }
 
     /// Hook registry plugin hooks are registered into.
-    public nonisolated let hookRegistry: HookRegistry
+    nonisolated public let hookRegistry: HookRegistry
     private let toolRegistry: AgentToolRegistry?
     private let skillRegistry: SkillRegistry?
     private let mcpManager: MCPClientManager?
@@ -376,7 +376,11 @@ public actor PluginRegistry {
         guard let entry = self.gatewayMethods[method] else {
             throw OpenClawCoreError.unavailable("Plugin gateway method not found: \(method)")
         }
-        return try await entry.handler(GatewayMethodRequest(method: method, rawParams: AnyCodable(params), descriptor: entry.descriptor)) ?? AnyCodable.nullValue
+        return try await entry.handler(GatewayMethodRequest(
+            method: method,
+            rawParams: AnyCodable(params),
+            descriptor: entry.descriptor
+        )) ?? AnyCodable.nullValue
     }
 
     /// Handler for a plugin gateway method, enforcing the registered role and scope.
@@ -400,7 +404,7 @@ public actor PluginRegistry {
     }
 
     /// Resolver for ``GatewayServer/addMethodResolver(_:)`` (upstream dispatch order: core, plugin, unknown).
-    public nonisolated func gatewayMethodResolver() -> GatewayMethodResolver {
+    nonisolated public func gatewayMethodResolver() -> GatewayMethodResolver {
         { [weak self] method in
             await self?.gatewayHandler(for: method)
         }

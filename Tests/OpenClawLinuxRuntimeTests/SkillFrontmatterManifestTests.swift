@@ -208,7 +208,11 @@ struct SkillFrontmatterManifestTests {
         #expect(skill.commandDispatch == SkillCommandDispatch(toolName: "exec", argMode: .raw))
         #expect(skill.displayName == "Deploy Now!")
 
-        let defaults = try #require(SkillRegistry.parseSkill(contents: "---\nname: plain\ncommand_dispatch: tool\n---\n", filePath: "/tmp/p/SKILL.md", source: .workspace))
+        let defaults = try #require(SkillRegistry.parseSkill(
+            contents: "---\nname: plain\ncommand_dispatch: tool\n---\n",
+            filePath: "/tmp/p/SKILL.md",
+            source: .workspace
+        ))
         #expect(defaults.invocation.userInvocable)
         #expect(!defaults.invocation.disableModelInvocation)
         #expect(defaults.commandDispatch == nil)

@@ -166,7 +166,7 @@ enum MCPHTTPSupport {
 /// session is DELETEd on close.
 public actor MCPStreamableHTTPTransport: MCPTransport {
     /// Messages and close events from the server.
-    public nonisolated let events: AsyncStream<MCPTransportEvent>
+    nonisolated public let events: AsyncStream<MCPTransportEvent>
     private let continuation: AsyncStream<MCPTransportEvent>.Continuation
     private let url: URL
     private let headers: [String: String]
@@ -337,7 +337,7 @@ public actor MCPStreamableHTTPTransport: MCPTransport {
 /// the SSE stream.
 public actor MCPLegacySSETransport: MCPTransport {
     /// Messages and close events from the server.
-    public nonisolated let events: AsyncStream<MCPTransportEvent>
+    nonisolated public let events: AsyncStream<MCPTransportEvent>
     private let continuation: AsyncStream<MCPTransportEvent>.Continuation
     private let url: URL
     private let headers: [String: String]

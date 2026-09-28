@@ -13,9 +13,9 @@ import UniformTypeIdentifiers
 /// watchOS and Linux, which keep ``MemoryIndex``.
 public actor SpotlightMemoryIndex: MemorySearchBackend {
     /// Index name.
-    public nonisolated let indexName: String
+    nonisolated public let indexName: String
     /// Domain identifier prefix.
-    public nonisolated let domainPrefix: String
+    nonisolated public let domainPrefix: String
     private let index: CSSearchableIndex
     private let mirror = MemoryIndex()
     private var documents: [String: MemoryDocument] = [:]
@@ -44,12 +44,12 @@ public actor SpotlightMemoryIndex: MemorySearchBackend {
     }
 
     /// Whether this device supports Spotlight indexing.
-    public nonisolated static var isIndexingAvailable: Bool {
+    nonisolated public static var isIndexingAvailable: Bool {
         CSSearchableIndex.isIndexingAvailable()
     }
 
     /// Warms up semantic search (call early, for example at app launch; iOS 18/macOS 15/visionOS 2+).
-    public nonisolated static func prepare() {
+    nonisolated public static func prepare() {
         if #available(macOS 15.0, iOS 18.0, visionOS 2.0, *) {
             CSUserQuery.prepare()
         }
@@ -214,7 +214,10 @@ public final class SpotlightMemoryIndexDelegate: NSObject, CSSearchableIndexDele
     }
 
     /// Reindexes everything.
-    public func searchableIndex(_ searchableIndex: CSSearchableIndex, reindexAllSearchableItemsWithAcknowledgementHandler acknowledgementHandler: @escaping () -> Void) {
+    public func searchableIndex(
+        _ searchableIndex: CSSearchableIndex,
+        reindexAllSearchableItemsWithAcknowledgementHandler acknowledgementHandler: @escaping () -> Void
+    ) {
         nonisolated(unsafe) let index = searchableIndex
         nonisolated(unsafe) let acknowledge = acknowledgementHandler
         let domain = self.domain
@@ -264,7 +267,7 @@ public final class SpotlightMemoryIndexDelegate: NSObject, CSSearchableIndexDele
 /// Spotlight hits back to ``MemorySearchHit`` values by parsing the identifier.
 public actor SpotlightMemoryIndexer {
     /// Agent identifier.
-    public nonisolated let agentID: String
+    nonisolated public let agentID: String
     private let index: SpotlightMemoryIndex
     private var indexedIDs: Set<String> = []
 

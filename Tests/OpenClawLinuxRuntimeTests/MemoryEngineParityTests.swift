@@ -201,7 +201,8 @@ struct MemoryEngineParityTests {
         let engine = MemoryEngine(workspaceRoot: root)
         let search = MemorySearchTool(engine: engine)
         #expect(search.descriptor.parameters["additionalProperties"] == AnyCodable(false))
-        #expect(search.descriptor.description.hasPrefix("Mandatory recall step: semantically search MEMORY.md, USER.md, Markdown files recursively under memory/"))
+        let expectedPrefix = "Mandatory recall step: semantically search MEMORY.md, USER.md, Markdown files recursively under memory/"
+        #expect(search.descriptor.description.hasPrefix(expectedPrefix))
         let registry = AgentToolRegistry(tools: [search, MemoryGetTool(engine: engine)])
 
         let found = try await registry.invoke(AgentToolCall(name: "memory_search", arguments: ["query": AnyCodable("falcon")]))
@@ -222,7 +223,10 @@ struct MemoryEngineParityTests {
         #expect(details["lines"]?.intValue == 200)
         #expect(details["truncated"]?.boolValue == true)
         #expect(details["nextFrom"]?.intValue == 201)
-        let tail = try await registry.invoke(AgentToolCall(name: "memory_get", arguments: ["path": AnyCodable("memory/log.md"), "from": AnyCodable(240), "lines": AnyCodable(50)]))
+        let tail = try await registry.invoke(AgentToolCall(
+            name: "memory_get",
+            arguments: ["path": AnyCodable("memory/log.md"), "from": AnyCodable(240), "lines": AnyCodable(50)]
+        ))
         #expect(tail.value.dictionaryValue?["lines"]?.intValue == 11)
         #expect(tail.value.dictionaryValue?["nextFrom"] == nil)
         let missing = try await registry.invoke(AgentToolCall(name: "memory_get", arguments: ["path": AnyCodable("memory/none.md")]))
@@ -278,7 +282,11 @@ struct MemoryEngineParityTests {
         let server = RuntimeExtTestSupport.makeGatewayServer(root: root)
         await registerMemoryGatewayMethods(on: server, configuration: MemoryGatewayConfiguration(engineProvider: { $0 == "main" ? engine : nil }))
 
-        let response = await RuntimeExtTestSupport.call(server, "memory.search", params: ["query": AnyCodable("falcon"), "maxResults": AnyCodable(500), "minScore": AnyCodable(0)])
+        let response = await RuntimeExtTestSupport.call(
+            server,
+            "memory.search",
+            params: ["query": AnyCodable("falcon"), "maxResults": AnyCodable(500), "minScore": AnyCodable(0)]
+        )
         #expect(response.ok)
         let payload = try #require(response.payload?.dictionaryValue)
         #expect(payload["agentId"]?.stringValue == "main")

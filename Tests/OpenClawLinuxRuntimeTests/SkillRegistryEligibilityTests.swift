@@ -32,7 +32,11 @@ struct SkillRegistryEligibilityTests {
         try RuntimeExtTestSupport.writeSkill(root: extra, directory: "shared", contents: self.skill("shared", description: "extra"))
         try RuntimeExtTestSupport.writeSkill(root: bundled, directory: "shared", contents: self.skill("shared", description: "bundled"))
         try RuntimeExtTestSupport.writeSkill(root: managed, directory: "shared", contents: self.skill("shared", description: "managed"))
-        try RuntimeExtTestSupport.writeSkill(root: workspace.appendingPathComponent(".agents/skills"), directory: "shared", contents: self.skill("shared", description: "project"))
+        try RuntimeExtTestSupport.writeSkill(
+            root: workspace.appendingPathComponent(".agents/skills"),
+            directory: "shared",
+            contents: self.skill("shared", description: "project")
+        )
         try RuntimeExtTestSupport.writeSkill(root: bundled, directory: "only-bundled", contents: self.skill("only-bundled"))
 
         let registry = SkillRegistry(
@@ -52,7 +56,11 @@ struct SkillRegistryEligibilityTests {
         #expect(shared.source == .projectAgents)
         #expect(await registry.collisions().count == 3)
 
-        try RuntimeExtTestSupport.writeSkill(root: workspace.appendingPathComponent("skills"), directory: "shared", contents: self.skill("shared", description: "workspace"))
+        try RuntimeExtTestSupport.writeSkill(
+            root: workspace.appendingPathComponent("skills"),
+            directory: "shared",
+            contents: self.skill("shared", description: "workspace")
+        )
         let reloaded = try await registry.loadSkills()
         #expect(reloaded.first { $0.name == "shared" }?.source == .workspace)
         #expect(SkillSource.projectAgents.upstreamID == "agents-skills-project")
@@ -66,19 +74,32 @@ struct SkillRegistryEligibilityTests {
             filePath: "/s/mac/SKILL.md",
             source: .workspace
         ))
-        let onMac = SkillEligibilityEvaluator.evaluate(darwinOnly, context: SkillEligibilityContext(platform: "darwin", environment: [:], hasBinary: { $0 == "remindctl" }))
+        let onMac = SkillEligibilityEvaluator.evaluate(
+            darwinOnly,
+            context: SkillEligibilityContext(platform: "darwin", environment: [:], hasBinary: { $0 == "remindctl" })
+        )
         #expect(onMac.eligible)
         #expect(!onMac.platformIncompatible)
-        let onIOS = SkillEligibilityEvaluator.evaluate(darwinOnly, context: SkillEligibilityContext(platform: "ios", environment: [:], hasBinary: { _ in false }))
+        let onIOS = SkillEligibilityEvaluator.evaluate(
+            darwinOnly,
+            context: SkillEligibilityContext(platform: "ios", environment: [:], hasBinary: { _ in false })
+        )
         #expect(onIOS.platformIncompatible)
         #expect(!onIOS.eligible)
         #expect(onIOS.missing.bins == ["remindctl"])
-        let macMissingBin = SkillEligibilityEvaluator.evaluate(darwinOnly, context: SkillEligibilityContext(platform: "macos", environment: [:], hasBinary: { _ in false }))
+        let macMissingBin = SkillEligibilityEvaluator.evaluate(
+            darwinOnly,
+            context: SkillEligibilityContext(platform: "macos", environment: [:], hasBinary: { _ in false })
+        )
         #expect(!macMissingBin.platformIncompatible)
         #expect(macMissingBin.missing.bins == ["remindctl"])
 
         let needsEnv = try #require(SkillRegistry.parseSkill(
-            contents: self.skill("envy", manifest: #"{"openclaw": {"primaryEnv": "API_KEY", "requires": {"env": ["API_KEY", "REGION"], "anyBins": ["a", "b"], "config": ["browser.enabled", "tools.web.enabled"]}}}"#),
+            contents: self.skill(
+                "envy",
+                manifest: #"{"openclaw": {"primaryEnv": "API_KEY", "requires": {"env": ["API_KEY", "REGION"], "anyBins": ["a", "b"], "#
+                    + #""config": ["browser.enabled", "tools.web.enabled"]}}}"#
+            ),
             filePath: "/s/envy/SKILL.md",
             source: .workspace
         ))
@@ -91,7 +112,10 @@ struct SkillRegistryEligibilityTests {
         )
         #expect(satisfied.missing.isEmpty, "\(satisfied.missing)")
         #expect(satisfied.configChecks.map(\.satisfied) == [true, true])
-        let unsatisfied = SkillEligibilityEvaluator.evaluate(needsEnv, context: SkillEligibilityContext(platform: "linux", environment: [:], hasBinary: { _ in false }))
+        let unsatisfied = SkillEligibilityEvaluator.evaluate(
+            needsEnv,
+            context: SkillEligibilityContext(platform: "linux", environment: [:], hasBinary: { _ in false })
+        )
         #expect(unsatisfied.missing.env == ["API_KEY", "REGION"])
         #expect(unsatisfied.missing.anyBins == ["a", "b"])
         #expect(unsatisfied.missing.config == ["tools.web.enabled"])
@@ -116,7 +140,11 @@ struct SkillRegistryEligibilityTests {
 
     @Test
     func catalogPromptGoldenAndEscaping() throws {
-        let alpha = try #require(SkillRegistry.parseSkill(contents: self.skill("alpha", description: "Uses <tags> & \"quotes\" 'here'"), filePath: "/skills/alpha/SKILL.md", source: .workspace))
+        let alpha = try #require(SkillRegistry.parseSkill(
+            contents: self.skill("alpha", description: "Uses <tags> & \"quotes\" 'here'"),
+            filePath: "/skills/alpha/SKILL.md",
+            source: .workspace
+        ))
         let beta = try #require(SkillRegistry.parseSkill(contents: self.skill("Beta"), filePath: "/skills/beta/SKILL.md", source: .workspace))
         let rendered = SkillPromptFormatter.catalog(skills: [beta, alpha])
         let expected = """
@@ -148,7 +176,11 @@ struct SkillRegistryEligibilityTests {
     func catalogFallsBackToCompactFormAndTruncates() throws {
         let long = String(repeating: "word ", count: 120)
         let skills = try (0..<40).map { index in
-            try #require(SkillRegistry.parseSkill(contents: self.skill("skill-\(index)", description: long), filePath: "/s/\(index)/SKILL.md", source: .workspace))
+            try #require(SkillRegistry.parseSkill(
+                contents: self.skill("skill-\(index)", description: long),
+                filePath: "/s/\(index)/SKILL.md",
+                source: .workspace
+            ))
         }
         let compact = SkillPromptFormatter.catalog(skills: skills, maxSkillsPromptChars: 12_000)
         #expect(compact.prompt.utf16.count <= 12_000)
@@ -175,7 +207,11 @@ struct SkillRegistryEligibilityTests {
             manifest: #"{"openclaw": {"os": ["darwin"], "emoji": "🍎", "install": [{"kind": "brew", "formula": "tool", "bins": ["tool"]}]}}"#
         ))
         try RuntimeExtTestSupport.writeSkill(root: skillsDir, directory: "hidden", contents: self.skill("hidden", extra: "disable-model-invocation: true"))
-        try RuntimeExtTestSupport.writeSkill(root: skillsDir, directory: "portable", contents: self.skill("portable", manifest: #"{"openclaw": {"requires": {"anyBins": ["zz1"]}}}"#))
+        try RuntimeExtTestSupport.writeSkill(
+            root: skillsDir,
+            directory: "portable",
+            contents: self.skill("portable", manifest: #"{"openclaw": {"requires": {"anyBins": ["zz1"]}}}"#)
+        )
         let registry = SkillRegistry(workspaceRoot: root, managedSkillsRoot: root.appendingPathComponent("managed"), includePersonalAgentsRoot: false)
 
         let macContext = SkillEligibilityContext(platform: "darwin", environment: [:], hasBinary: { $0 == "zz1" || $0 == "brew" })
@@ -224,7 +260,10 @@ struct SkillRegistryEligibilityTests {
         }
         let specs = SkillCommandNaming.commandSpecs(for: skills, reservedNames: ["reset"])
         #expect(specs.map(\.name) == ["gh_issues", "gh_issues_2", "gh_issues_3", "reset_2"])
-        #expect(SkillCommandNaming.unique(String(repeating: "b", count: 32), used: [String(repeating: "b", count: 32)]) == String(repeating: "b", count: 30) + "_2")
+        #expect(SkillCommandNaming.unique(
+            String(repeating: "b", count: 32),
+            used: [String(repeating: "b", count: 32)]
+        ) == String(repeating: "b", count: 30) + "_2")
     }
 
     @Test

@@ -439,7 +439,16 @@ public struct MCPConfig: Codable, Sendable, Equatable {
             if name == "__proto__" {
                 issues.append(MCPConfigIssue(server: name, path: "", message: "server name \"__proto__\" is reserved"))
             }
-            for retired in ["connectTimeout", "connect_timeout", "timeout", "workingDirectory", "supports_parallel_tool_calls", "ssl_verify", "client_cert", "client_key"]
+            for retired in [
+                "connectTimeout",
+                "connect_timeout",
+                "timeout",
+                "workingDirectory",
+                "supports_parallel_tool_calls",
+                "ssl_verify",
+                "client_cert",
+                "client_key"
+            ]
                 where server.extra[retired] != nil
             {
                 issues.append(MCPConfigIssue(server: name, path: retired, message: "Unrecognized key: \"\(retired)\""))
@@ -457,15 +466,27 @@ public struct MCPConfig: Codable, Sendable, Equatable {
                     issues.append(MCPConfigIssue(server: name, path: "oauth.identity", message: "oauth.identity \"per-requester\" requires auth: \"oauth\""))
                 }
                 if server.oauth?.authProfileId != nil {
-                    issues.append(MCPConfigIssue(server: name, path: "oauth.authProfileId", message: "oauth.authProfileId cannot be used with oauth.identity \"per-requester\""))
+                    issues.append(MCPConfigIssue(
+                        server: name,
+                        path: "oauth.authProfileId",
+                        message: "oauth.authProfileId cannot be used with oauth.identity \"per-requester\""
+                    ))
                 }
                 if server.url == nil {
                     issues.append(MCPConfigIssue(server: name, path: "oauth.identity", message: "oauth.identity \"per-requester\" requires an HTTP server URL"))
                 }
                 if server.command != nil || server.transport == MCPTransportKind.stdio.rawValue {
-                    issues.append(MCPConfigIssue(server: name, path: "oauth.identity", message: "oauth.identity \"per-requester\" cannot be combined with a command or \"stdio\" transport"))
+                    issues.append(MCPConfigIssue(
+                        server: name,
+                        path: "oauth.identity",
+                        message: "oauth.identity \"per-requester\" cannot be combined with a command or \"stdio\" transport"
+                    ))
                 }
-                issues.append(MCPConfigIssue(server: name, path: "oauth.identity", message: "oauth.identity \"per-requester\" is not supported by the embedded runtime"))
+                issues.append(MCPConfigIssue(
+                    server: name,
+                    path: "oauth.identity",
+                    message: "oauth.identity \"per-requester\" is not supported by the embedded runtime"
+                ))
             }
             if let clientMetadataUrl = server.oauth?.clientMetadataUrl {
                 let parsed = URL(string: clientMetadataUrl)

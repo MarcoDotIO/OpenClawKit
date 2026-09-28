@@ -20,7 +20,7 @@ import Darwin
 /// finally SIGKILL after the grace period.
 public actor MCPStdioTransport: MCPTransport {
     /// Messages and close events from the server.
-    public nonisolated let events: AsyncStream<MCPTransportEvent>
+    nonisolated public let events: AsyncStream<MCPTransportEvent>
     private let continuation: AsyncStream<MCPTransportEvent>.Continuation
     private let process: Process
     private let stdinPipe = Pipe()
@@ -337,7 +337,15 @@ final class StderrCollector: @unchecked Sendable {
         guard index >= 0 else { return 0 }
         let lead = bytes[index]
         let expected: Int
-        if lead & 0x80 == 0 { expected = 1 } else if lead & 0xE0 == 0xC0 { expected = 2 } else if lead & 0xF0 == 0xE0 { expected = 3 } else if lead & 0xF8 == 0xF0 { expected = 4 } else { expected = 1 }
+        if lead & 0xE0 == 0xC0 {
+            expected = 2
+        } else if lead & 0xF0 == 0xE0 {
+            expected = 3
+        } else if lead & 0xF8 == 0xF0 {
+            expected = 4
+        } else {
+            expected = 1
+        }
         return continuation + 1 >= expected ? bytes.count : index
     }
 }

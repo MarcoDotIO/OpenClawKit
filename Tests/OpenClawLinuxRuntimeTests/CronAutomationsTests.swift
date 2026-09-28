@@ -55,7 +55,12 @@ struct CronAutomationsTests {
 
     @Test
     func everyAtAndStaggerSchedules() throws {
-        let every = AutomationJob(name: "e", createdAtMs: 1_000, schedule: .every(everyMs: 60_000, anchorMs: 10_000), payload: .systemEvent(text: "x", toolsAllow: nil))
+        let every = AutomationJob(
+            name: "e",
+            createdAtMs: 1_000,
+            schedule: .every(everyMs: 60_000, anchorMs: 10_000),
+            payload: .systemEvent(text: "x", toolsAllow: nil)
+        )
         #expect(every.nextRunAtMs(after: 5_000) == 10_000)
         #expect(every.nextRunAtMs(after: 10_000) == 70_000)
         #expect(every.nextRunAtMs(after: 69_999) == 70_000)
@@ -67,7 +72,12 @@ struct CronAutomationsTests {
         let stagger = AutomationJob.staggerOffset(jobID: "job-1", staggerMs: 60_000)
         #expect(stagger == AutomationJob.staggerOffset(jobID: "job-1", staggerMs: 60_000))
         #expect((0..<60_000).contains(stagger))
-        let cron = AutomationJob(id: "job-1", name: "c", schedule: .cron(expr: "0 * * * *", tz: "UTC", staggerMs: 60_000), payload: .systemEvent(text: "x", toolsAllow: nil))
+        let cron = AutomationJob(
+            id: "job-1",
+            name: "c",
+            schedule: .cron(expr: "0 * * * *", tz: "UTC", staggerMs: 60_000),
+            payload: .systemEvent(text: "x", toolsAllow: nil)
+        )
         let next = try #require(cron.nextRunAtMs(after: 1_767_225_600_000))
         #expect(next == 1_767_225_600_000 + 3_600_000 + stagger || next == 1_767_225_600_000 + stagger)
     }
@@ -121,10 +131,18 @@ struct CronAutomationsTests {
             payload: .systemEvent(text: "tick", toolsAllow: nil)
         ))
         await #expect(throws: OpenClawCoreError.self) {
-            _ = try await scheduler.addJob(AutomationJob(name: "bad", schedule: .unsupported(kind: "on-exit", raw: [:]), payload: .systemEvent(text: "x", toolsAllow: nil)))
+            _ = try await scheduler.addJob(AutomationJob(
+                name: "bad",
+                schedule: .unsupported(kind: "on-exit", raw: [:]),
+                payload: .systemEvent(text: "x", toolsAllow: nil)
+            ))
         }
         await #expect(throws: OpenClawCoreError.self) {
-            _ = try await scheduler.addJob(AutomationJob(name: "badtz", schedule: .cron(expr: "* * * * *", tz: "Mars/Olympus", staggerMs: nil), payload: .systemEvent(text: "x", toolsAllow: nil)))
+            _ = try await scheduler.addJob(AutomationJob(
+                name: "badtz",
+                schedule: .cron(expr: "* * * * *", tz: "Mars/Olympus", staggerMs: nil),
+                payload: .systemEvent(text: "x", toolsAllow: nil)
+            ))
         }
 
         let records = await scheduler.runDueJobs()
@@ -145,7 +163,16 @@ struct CronAutomationsTests {
         try await reloaded.load()
         #expect(await reloaded.automationJobList().map(\.id) == ["rec"])
         #expect(await reloaded.runs(jobID: "rec").first?.status == .ok)
-        #expect(CronScheduler.sessionKey(for: AutomationJob(name: "c", sessionKey: "chat:1", schedule: .every(everyMs: 1, anchorMs: nil), payload: .systemEvent(text: "x", toolsAllow: nil), sessionTarget: .current), runID: "r") == "chat:1")
+        #expect(CronScheduler.sessionKey(
+            for: AutomationJob(
+                name: "c",
+                sessionKey: "chat:1",
+                schedule: .every(everyMs: 1, anchorMs: nil),
+                payload: .systemEvent(text: "x", toolsAllow: nil),
+                sessionTarget: .current
+            ),
+            runID: "r"
+        ) == "chat:1")
     }
 
     @Test
@@ -179,9 +206,15 @@ struct CronAutomationsTests {
         #expect(updated.value.dictionaryValue?["enabled"]?.boolValue == false)
         #expect(updated.value.dictionaryValue?["payload"]?.dictionaryValue?["message"]?.stringValue == "Post it now")
 
-        let ran = try await registry.invoke(AgentToolCall(name: "automations", arguments: ["action": AnyCodable("run"), "jobId": AnyCodable(jobID), "runMode": AnyCodable("force")]), context: context)
+        let ran = try await registry.invoke(
+            AgentToolCall(name: "automations", arguments: ["action": AnyCodable("run"), "jobId": AnyCodable(jobID), "runMode": AnyCodable("force")]),
+            context: context
+        )
         #expect(ran.value.dictionaryValue?["status"]?.stringValue == "ok")
-        let runs = try await registry.invoke(AgentToolCall(name: "automations", arguments: ["action": AnyCodable("runs"), "jobId": AnyCodable(jobID)]), context: context)
+        let runs = try await registry.invoke(
+            AgentToolCall(name: "automations", arguments: ["action": AnyCodable("runs"), "jobId": AnyCodable(jobID)]),
+            context: context
+        )
         #expect(runs.value.dictionaryValue?["runs"]?.arrayValue?.count == 1)
 
         let unsupported = try await registry.invoke(AgentToolCall(name: "automations", arguments: [
@@ -192,11 +225,17 @@ struct CronAutomationsTests {
         #expect(unsupported.isError)
         #expect(unsupported.output.text.contains("on-exit"))
 
-        let nextCheck = try await registry.invoke(AgentToolCall(name: "automations", arguments: ["action": AnyCodable("next_check"), "in": AnyCodable("15m")]), context: context)
+        let nextCheck = try await registry.invoke(
+            AgentToolCall(name: "automations", arguments: ["action": AnyCodable("next_check"), "in": AnyCodable("15m")]),
+            context: context
+        )
         #expect(nextCheck.value.dictionaryValue?["schedule"]?.dictionaryValue?["kind"]?.stringValue == "at")
         #expect(AutomationJobDraft.parseDurationMs("2h") == 7_200_000)
 
-        let removed = try await registry.invoke(AgentToolCall(name: "automations", arguments: ["action": AnyCodable("remove"), "jobId": AnyCodable(jobID)]), context: context)
+        let removed = try await registry.invoke(
+            AgentToolCall(name: "automations", arguments: ["action": AnyCodable("remove"), "jobId": AnyCodable(jobID)]),
+            context: context
+        )
         #expect(removed.value.dictionaryValue?["removed"]?.boolValue == true)
     }
 
@@ -229,7 +268,11 @@ struct CronAutomationsTests {
         #expect(run.payload?.dictionaryValue?["ran"]?.boolValue == true)
         let runs = await RuntimeExtTestSupport.call(server, "cron.runs", params: ["id": AnyCodable(id)])
         #expect(runs.payload?.dictionaryValue?["entries"]?.arrayValue?.first?.dictionaryValue?["summary"]?.stringValue == "ran")
-        let update = await RuntimeExtTestSupport.call(server, "cron.update", params: ["jobId": AnyCodable(id), "patch": AnyCodable(["description": AnyCodable("hourly tick")])])
+        let update = await RuntimeExtTestSupport.call(
+            server,
+            "cron.update",
+            params: ["jobId": AnyCodable(id), "patch": AnyCodable(["description": AnyCodable("hourly tick")])]
+        )
         #expect(update.payload?.dictionaryValue?["description"]?.stringValue == "hourly tick")
         let status = await RuntimeExtTestSupport.call(server, "cron.status", params: [:])
         #expect(status.payload?.dictionaryValue?["jobs"]?.intValue == 1)
@@ -256,7 +299,12 @@ struct CronAutomationsTests {
         let job = try #require(rule.automationJob)
         #expect(job.schedule == .every(everyMs: 600_000, anchorMs: nil))
         #expect(job.sessionTarget == .session("main"))
-        #expect(AutomationRule(name: "evt", sessionKey: "m", prompt: "p", trigger: AutomationTrigger(diagnosticEventSubsystem: "runtime", eventName: "x")).automationJob == nil)
+        #expect(AutomationRule(
+            name: "evt",
+            sessionKey: "m",
+            prompt: "p",
+            trigger: AutomationTrigger(diagnosticEventSubsystem: "runtime", eventName: "x")
+        ).automationJob == nil)
 
         let scheduler = CronScheduler()
         await scheduler.addOrUpdate(OpenClawCore.CronJob(id: "legacy", intervalSeconds: 60, payload: "run", nextRunAt: Date().addingTimeInterval(-1)))

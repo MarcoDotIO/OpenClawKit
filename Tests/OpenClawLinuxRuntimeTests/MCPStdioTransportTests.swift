@@ -70,7 +70,12 @@ struct MCPStdioTransportTests {
         #expect(throws: OpenClawCoreError.self) {
             _ = try MCPStdioTransport(serverName: "empty", config: MCPServerConfig(command: " "), allowlist: ExecCommandAllowlist(patterns: ["/bin/*"]))
         }
-        #expect((try? MCPStdioTransport(serverName: "sh", config: self.config("true"), allowlist: ExecCommandAllowlist(patterns: []), allowUnlistedCommands: true)) != nil)
+        #expect((try? MCPStdioTransport(
+            serverName: "sh",
+            config: self.config("true"),
+            allowlist: ExecCommandAllowlist(patterns: []),
+            allowUnlistedCommands: true
+        )) != nil)
     }
 
     @Test

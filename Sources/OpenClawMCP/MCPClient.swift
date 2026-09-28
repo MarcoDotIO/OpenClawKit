@@ -145,7 +145,7 @@ public actor MCPClient {
     public static let clientName = "openclawkit"
 
     /// Server name the client was created for (diagnostics).
-    public nonisolated let serverName: String
+    nonisolated public let serverName: String
     private let transport: any MCPTransport
     private let requestTimeoutMs: Int
     private let connectionTimeoutMs: Int

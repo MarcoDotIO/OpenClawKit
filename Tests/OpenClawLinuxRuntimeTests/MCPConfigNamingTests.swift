@@ -150,7 +150,9 @@ struct MCPConfigNamingTests {
         let data = try request.encoded()
         #expect(!String(decoding: data, as: UTF8.self).contains("\n"))
         #expect(try MCPJSONRPCMessage.decode(data) == [request])
-        let batch = try MCPJSONRPCMessage.decode(Data(#"[{"jsonrpc":"2.0","id":"a","error":{"code":-32601,"message":"nope"}},{"jsonrpc":"2.0","method":"notifications/x"}]"#.utf8))
+        let batchJSON = #"[{"jsonrpc":"2.0","id":"a","error":{"code":-32601,"message":"nope"}},"#
+            + #"{"jsonrpc":"2.0","method":"notifications/x"}]"#
+        let batch = try MCPJSONRPCMessage.decode(Data(batchJSON.utf8))
         #expect(batch == [
             .error(id: .string("a"), error: MCPJSONRPCError(code: -32601, message: "nope")),
             .notification(method: "notifications/x", params: nil),

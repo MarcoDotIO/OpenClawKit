@@ -349,7 +349,7 @@ public actor MemoryEngine {
     }
 
     /// Corpus.
-    public nonisolated let corpus: MemoryCorpus
+    nonisolated public let corpus: MemoryCorpus
     private var configuration: MemoryEngineConfiguration
     private let embeddingProvider: (any MemoryEmbeddingProvider)?
     private let indexURL: URL?
@@ -549,7 +549,11 @@ public actor MemoryEngine {
     /// - Returns: The excerpt, `not_found`, or `error` for disallowed paths.
     public func read(path: String, from: Int? = nil, lines: Int? = nil) -> MemoryReadResult {
         guard let url = self.corpus.resolveReadablePath(path) else {
-            return MemoryReadResult(status: "error", text: "path is not a readable memory file (MEMORY.md, USER.md, memory/**, or a configured extra path)", path: path)
+            return MemoryReadResult(
+                status: "error",
+                text: "path is not a readable memory file (MEMORY.md, USER.md, memory/**, or a configured extra path)",
+                path: path
+            )
         }
         guard let data = try? Data(contentsOf: url) else {
             return MemoryReadResult(status: "not_found", text: "", path: path)

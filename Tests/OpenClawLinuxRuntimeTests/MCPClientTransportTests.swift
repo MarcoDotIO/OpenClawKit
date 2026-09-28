@@ -265,7 +265,11 @@ struct MCPClientTransportTests {
             }
             return FakeMCPHTTP.Reply(status: 202, headers: [:], chunks: [])
         }
-        let client = MCPClient(serverName: "slow", transport: MCPStreamableHTTPTransport(url: URL(string: "http://localhost/mcp")!, http: http, openServerStream: false), requestTimeoutMs: 100)
+        let client = MCPClient(
+            serverName: "slow",
+            transport: MCPStreamableHTTPTransport(url: URL(string: "http://localhost/mcp")!, http: http, openServerStream: false),
+            requestTimeoutMs: 100
+        )
         try await client.connect()
         await #expect(throws: MCPTransportError.timeout(method: "tools/list", milliseconds: 100)) {
             _ = try await client.listTools()
@@ -280,7 +284,10 @@ struct MCPClientTransportTests {
     @Test
     func unsupportedProtocolVersionIsRejected() async {
         let http = FakeMCPHTTP { _, json in
-            FakeMCPHTTP.json(FakeMCPHTTP.result(json?["id"], ["protocolVersion": AnyCodable("1999-01-01"), "serverInfo": AnyCodable(["name": AnyCodable("old")])]))
+            FakeMCPHTTP.json(FakeMCPHTTP.result(
+                json?["id"],
+                ["protocolVersion": AnyCodable("1999-01-01"), "serverInfo": AnyCodable(["name": AnyCodable("old")])]
+            ))
         }
         let client = MCPClient(serverName: "old", transport: MCPStreamableHTTPTransport(url: URL(string: "http://localhost/mcp")!, http: http))
         await #expect(throws: MCPTransportError.unsupportedProtocolVersion("1999-01-01")) {
