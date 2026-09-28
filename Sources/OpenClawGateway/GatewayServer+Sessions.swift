@@ -164,7 +164,7 @@ extension GatewayServer {
         } else if runID == nil, let key {
             target = self.trackedRuns
                 .filter { $0.value.sessionKey == key }
-                .max { ($0.value.startedAt, $0.key) < ($1.value.startedAt, $1.key) }?
+                .max { $0.value.order < $1.value.order }?
                 .key
         }
         var abortedIDs: [String] = []

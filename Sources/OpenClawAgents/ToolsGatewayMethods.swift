@@ -76,8 +76,8 @@ public extension EmbeddedAgentRuntime {
     /// and tool policy (upstream `tools-catalog.ts`, `tools-effective.ts`, `tools-invoke.ts`).
     ///
     /// - `tools.catalog {agentId?, includePlugins?}` → `{agentId, profiles, groups}`: the core sections
-    ///   of ``CoreToolCatalog``, runtime-registered SDK tools (group `runtime`), and one group per
-    ///   plugin (`plugin:<id>`).
+    ///   of ``CoreToolCatalog``, app-registered tools outside the core catalog (group `sdk`, an SDK
+    ///   extension), and one group per plugin (`plugin:<id>`).
     /// - `tools.effective {agentId?, sessionKey}` → `{agentId, profile, groups, notices?}`: registered
     ///   tools visible after the tool policy and the session's permission mode and `toolOverrides`,
     ///   grouped `core`/`plugin`/`channel`/`mcp`; tools only the session denies carry `deniedBySession`.
@@ -154,8 +154,8 @@ struct AgentToolGatewayHandlers: Sendable {
         }
         if !runtimeTools.isEmpty {
             groups.append(AnyCodable([
-                "id": AnyCodable("runtime"),
-                "label": AnyCodable("Runtime tools"),
+                "id": AnyCodable("sdk"),
+                "label": AnyCodable("SDK tools"),
                 "source": AnyCodable("core"),
                 "tools": AnyCodable(runtimeTools.map { descriptor in
                     Self.catalogEntry(

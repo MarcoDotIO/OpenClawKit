@@ -214,6 +214,8 @@ public actor GatewayServer: GatewayMethodRegistrar {
         let sessionKey: String
         let agentID: String
         let startedAt: Int64
+        /// Start order (breaks `startedAt` ties within one millisecond).
+        let order: Int
     }
 
     /// One event subscription.
@@ -240,6 +242,7 @@ public actor GatewayServer: GatewayMethodRegistrar {
     let agentIdempotency = GatewayIdempotencyCache()
     var agentRuns: [String: Task<GatewayAgentWaitResult, Error>] = [:]
     var trackedRuns: [String: TrackedRun] = [:]
+    var runOrder = 0
     private var methods: [String: MethodEntry]
     private var resolvers: [GatewayMethodResolver] = []
     var eventSubscribers: [UUID: EventSubscriber] = [:]

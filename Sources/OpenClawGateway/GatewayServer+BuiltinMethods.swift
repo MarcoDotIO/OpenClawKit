@@ -107,7 +107,8 @@ extension GatewayServer {
 
     func trackRun(_ execution: GatewayAgentExecution, sessionKey: String, agentID: String, startedAt: Int64) {
         self.agentRuns[execution.runID] = execution.task
-        self.trackedRuns[execution.runID] = TrackedRun(sessionKey: sessionKey, agentID: agentID, startedAt: startedAt)
+        self.runOrder += 1
+        self.trackedRuns[execution.runID] = TrackedRun(sessionKey: sessionKey, agentID: agentID, startedAt: startedAt, order: self.runOrder)
     }
 
     /// Decodes the legacy `GatewayAgentRequest` shape, falling back to (or enriching from) upstream `AgentParams`.
@@ -292,15 +293,18 @@ extension GatewayServer {
     /// Applies `sessions.patch` params through ``SessionStore/applyPatch(_:defaultAgentID:grantedScopes:)``,
     /// mapping patch errors to gateway errors (retired `execSecurity`/`execAsk` → `INVALID_REQUEST`,
     /// `permissionMode: full` without `operator.admin` → `FORBIDDEN`).
+    ///
+    /// A new session with an agent-scoped key (`agent:<id>:…`) and no `agentId` belongs to the key's agent.
     public static func applySessionPatch(
         _ request: GatewayMethodRequest,
         store: SessionStore,
         defaultAgentID: String
     ) async throws -> SessionPatchOutcome {
+        let keyAgentID = request.stringParam("key").map { SessionKey.agentID(from: $0, fallback: defaultAgentID) } ?? defaultAgentID
         do {
             return try await store.applyPatch(
                 request.params,
-                defaultAgentID: defaultAgentID,
+                defaultAgentID: keyAgentID,
                 grantedScopes: request.connection.role == "operator" ? Set(request.connection.scopes) : nil
             )
         } catch let error as SessionPatchError {
