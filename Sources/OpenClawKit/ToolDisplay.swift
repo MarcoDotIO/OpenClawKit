@@ -32,6 +32,29 @@ public struct ToolDisplaySummary: Sendable, Equatable {
     }
 }
 
+/// Display hints for tools without a `tool-display.json` entry.
+///
+/// Build them from an `AgentToolDescriptor`:
+/// `ToolDisplayHints(title: d.display?.title, emoji: d.display?.emoji, label: d.label, summary: d.displaySummary)`.
+public struct ToolDisplayHints: Sendable, Equatable {
+    /// Display title.
+    public var title: String?
+    /// Display emoji.
+    public var emoji: String?
+    /// Short label.
+    public var label: String?
+    /// Detail line used when the arguments yield none.
+    public var summary: String?
+
+    /// Creates display hints.
+    public init(title: String? = nil, emoji: String? = nil, label: String? = nil, summary: String? = nil) {
+        self.title = title
+        self.emoji = emoji
+        self.label = label
+        self.summary = summary
+    }
+}
+
 /// Registry that maps raw tool invocations into user-facing display summaries.
 public enum ToolDisplayRegistry {
     private struct ToolDisplayActionSpec: Decodable {
@@ -57,21 +80,21 @@ public enum ToolDisplayRegistry {
 
     /// Resolves a tool invocation into a display-ready summary.
     public static func resolve(name: String?, args: AnyCodable?, meta: String? = nil) -> ToolDisplaySummary {
-        self.resolve(name: name, args: args, meta: meta, descriptor: nil)
+        self.resolve(name: name, args: args, meta: meta, hints: nil)
     }
 
-    /// Resolves a tool invocation, falling back to the tool's descriptor for tools without a
-    /// `tool-display.json` entry (plugin, MCP and client tools).
+    /// Resolves a tool invocation, falling back to caller-supplied display hints (typically built
+    /// from the tool's `AgentToolDescriptor`) for tools without a `tool-display.json` entry, such as
+    /// plugin, MCP and client tools.
     ///
     /// Lookup order: the exact name, then the upstream tool-name aliases in both directions
-    /// (`automations` ↔ `cron`, `exec` ↔ `bash`, `apply-patch` ↔ `apply_patch`), then the descriptor's
-    /// ``AgentToolDisplay`` and label, and finally MCP-style `server__tool` names, rendered as
-    /// `server: tool`.
+    /// (`automations` ↔ `cron`, `exec` ↔ `bash`, `apply-patch` ↔ `apply_patch`), then `hints`, and
+    /// finally MCP-style `server__tool` names, rendered as `server: tool`.
     public static func resolve(
         name: String?,
         args: AnyCodable?,
         meta: String? = nil,
-        descriptor: AgentToolDescriptor?) -> ToolDisplaySummary
+        hints: ToolDisplayHints?) -> ToolDisplaySummary
     {
         let trimmedName = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "tool"
         let resolvedKey = self.resolvedSpecKey(for: trimmedName)
@@ -80,13 +103,13 @@ public enum ToolDisplayRegistry {
         let fallback = self.config.fallback
         let mcpName = spec == nil ? self.mcpDisplayName(trimmedName) : nil
 
-        let emoji = spec?.emoji ?? descriptor?.display?.emoji ?? fallback?.emoji ?? "🧩"
+        let emoji = spec?.emoji ?? self.nonEmpty(hints?.emoji) ?? fallback?.emoji ?? "🧩"
         let title = spec?.title
-            ?? self.nonEmpty(descriptor?.display?.title)
+            ?? self.nonEmpty(hints?.title)
             ?? mcpName.map { self.titleFromName($0.tool) }
             ?? self.titleFromName(trimmedName)
         let label = spec?.label
-            ?? self.nonEmpty(descriptor?.label).flatMap { $0 == descriptor?.name ? nil : $0 }
+            ?? self.nonEmpty(hints?.label)
             ?? mcpName.map { "\($0.server): \($0.tool)" }
             ?? trimmedName
 
@@ -112,7 +135,7 @@ public enum ToolDisplayRegistry {
         }
 
         if detail == nil {
-            detail = self.nonEmpty(descriptor?.displaySummary)
+            detail = self.nonEmpty(hints?.summary)
         }
 
         if let detailValue = detail {
@@ -133,15 +156,25 @@ public enum ToolDisplayRegistry {
         (self.config.tools.map { Array($0.keys) } ?? []).sorted()
     }
 
+    /// Upstream tool-name aliases (`src/agents/tool-policy-shared.ts`), legacy name to canonical name.
+    ///
+    /// Mirrors `AgentToolRegistry.toolNameAliases`; kept here so OpenClawKit's leaf helpers only depend
+    /// on OpenClawProtocol (a test keeps the two tables identical).
+    static let toolNameAliases: [String: String] = [
+        "bash": "exec",
+        "apply-patch": "apply_patch",
+        "cron": "automations",
+    ]
+
     /// JSON key for a tool name: the exact lowercased name, else an alias in either direction.
     static func resolvedSpecKey(for name: String) -> String? {
         let key = name.lowercased()
         guard let tools = self.config.tools else { return nil }
         if tools[key] != nil { return key }
-        if let canonical = AgentToolRegistry.toolNameAliases[key], tools[canonical] != nil {
+        if let canonical = self.toolNameAliases[key], tools[canonical] != nil {
             return canonical
         }
-        for (legacy, canonical) in AgentToolRegistry.toolNameAliases where canonical == key && tools[legacy] != nil {
+        for (legacy, canonical) in self.toolNameAliases where canonical == key && tools[legacy] != nil {
             return legacy
         }
         return nil

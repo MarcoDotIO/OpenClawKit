@@ -42,16 +42,24 @@ struct ToolDisplayParityTests {
         descriptor.label = "Weather"
         descriptor.display = AgentToolDisplay(title: "Weather lookup", emoji: "🌦️")
         descriptor.displaySummary = "Forecast for a city"
-        let summary = ToolDisplayRegistry.resolve(name: "weather_lookup", args: nil, descriptor: descriptor)
+        let hints = ToolDisplayHints(
+            title: descriptor.display?.title,
+            emoji: descriptor.display?.emoji,
+            label: descriptor.label,
+            summary: descriptor.displaySummary)
+        let summary = ToolDisplayRegistry.resolve(name: "weather_lookup", args: nil, hints: hints)
         #expect(summary.title == "Weather lookup")
         #expect(summary.emoji == "🌦️")
         #expect(summary.label == "Weather")
         #expect(summary.detail == "Forecast for a city")
 
-        // Explicit JSON entries still win over descriptor display metadata.
-        var exec = AgentToolDescriptor(name: "exec", description: "Run a command")
-        exec.display = AgentToolDisplay(title: "Shell", emoji: "🐚")
-        #expect(ToolDisplayRegistry.resolve(name: "exec", args: nil, descriptor: exec).title == "Exec")
+        // Explicit JSON entries still win over hints.
+        let shell = ToolDisplayHints(title: "Shell", emoji: "🐚")
+        #expect(ToolDisplayRegistry.resolve(name: "exec", args: nil, hints: shell).title == "Exec")
+    }
+
+    @Test func `display aliases mirror the agent tool registry`() {
+        #expect(ToolDisplayRegistry.toolNameAliases == AgentToolRegistry.toolNameAliases)
     }
 
     @Test func `new upstream tools resolve their detail keys`() {
