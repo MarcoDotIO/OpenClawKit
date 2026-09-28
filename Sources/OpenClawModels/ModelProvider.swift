@@ -124,6 +124,11 @@ public struct ModelGenerationPolicy: Sendable, Equatable {
 }
 
 /// Input payload passed to model providers.
+///
+/// Contract v2 adds a transcript (``messages``), tool declarations (``tools``/``toolChoice``) and a
+/// requested output format (``responseFormat``). Every new field has a default, so providers and
+/// callers written against v1 keep compiling; providers that ignore the new fields keep reading
+/// ``prompt``, ``systemPrompt`` and ``attachments``.
 public struct ModelGenerationRequest: Sendable, Equatable {
     /// Session key associated with generation request.
     public let sessionKey: String
@@ -145,6 +150,16 @@ public struct ModelGenerationRequest: Sendable, Equatable {
     public let policy: ModelGenerationPolicy
     /// Optional multimodal attachments for providers that support rich input.
     public let attachments: [MediaAttachment]
+    /// Transcript sent to the model. When non-empty it supersedes ``prompt`` and ``attachments``;
+    /// ``systemPrompt`` stays the primary system prompt either way.
+    public let messages: [ModelMessage]
+    /// Tools the model may call. Providers that cannot call tools must reject non-empty tools
+    /// (see ``validateToolSupport(supportsTools:providerID:)``).
+    public let tools: [ModelToolDefinition]
+    /// How the model may use ``tools``.
+    public let toolChoice: ModelToolChoice
+    /// Requested output format.
+    public let responseFormat: ModelResponseFormat
 
     /// Creates a model generation request.
     /// - Parameters:
@@ -152,9 +167,16 @@ public struct ModelGenerationRequest: Sendable, Equatable {
     ///   - prompt: Prompt payload.
     ///   - systemPrompt: Optional system prompt.
     ///   - providerID: Optional provider override.
+    ///   - modelID: Optional model override.
+    ///   - preferredAuthProfileID: Optional preferred auth profile.
     ///   - metadata: Additional metadata.
+    ///   - headers: Additional request headers.
     ///   - policy: Runtime generation policy controls.
     ///   - attachments: Optional multimodal attachments.
+    ///   - messages: Optional transcript; supersedes `prompt` and `attachments` when non-empty.
+    ///   - tools: Tools the model may call.
+    ///   - toolChoice: How the model may use `tools`.
+    ///   - responseFormat: Requested output format.
     public init(
         sessionKey: String,
         prompt: String,
@@ -165,7 +187,11 @@ public struct ModelGenerationRequest: Sendable, Equatable {
         metadata: [String: String] = [:],
         headers: [String: String] = [:],
         policy: ModelGenerationPolicy = ModelGenerationPolicy(),
-        attachments: [MediaAttachment] = []
+        attachments: [MediaAttachment] = [],
+        messages: [ModelMessage] = [],
+        tools: [ModelToolDefinition] = [],
+        toolChoice: ModelToolChoice = .auto,
+        responseFormat: ModelResponseFormat = .text
     ) {
         self.sessionKey = sessionKey
         self.prompt = prompt
@@ -177,10 +203,74 @@ public struct ModelGenerationRequest: Sendable, Equatable {
         self.headers = headers
         self.policy = policy
         self.attachments = attachments
+        self.messages = messages
+        self.tools = tools
+        self.toolChoice = toolChoice
+        self.responseFormat = responseFormat
+    }
+
+    /// Transcript to send: ``messages`` when non-empty, otherwise one user message built from
+    /// ``prompt`` and ``attachments``. Does not include ``systemPrompt``.
+    public var resolvedMessages: [ModelMessage] {
+        if !self.messages.isEmpty {
+            return self.messages
+        }
+        var content: [ModelContentPart] = []
+        if !self.prompt.isEmpty {
+            content.append(.text(self.prompt))
+        }
+        content.append(contentsOf: self.attachments.map(ModelContentPart.media))
+        return [.user(content: content)]
+    }
+
+    /// JSON schema requested through ``responseFormat``, if any.
+    public var responseFormatJSONSchema: [String: AnyCodable]? {
+        self.responseFormat.jsonSchema
+    }
+
+    /// Throws when the request declares tools but the provider/model cannot call tools.
+    /// - Parameters:
+    ///   - supportsTools: Tool support declared by the provider or model compat (`nil` = unknown,
+    ///     treated as supported).
+    ///   - providerID: Provider identifier used in the error message.
+    /// - Throws: ``OpenClawCoreError/invalidConfiguration(_:)`` when `tools` is non-empty and
+    ///   `supportsTools` is `false`.
+    public func validateToolSupport(supportsTools: Bool?, providerID: String) throws {
+        guard !self.tools.isEmpty, supportsTools == false else {
+            return
+        }
+        let model = self.modelID.map { " model '\($0)'" } ?? ""
+        throw OpenClawCoreError.invalidConfiguration(
+            "Model provider '\(providerID)'\(model) does not support tool calling; remove tools from the request"
+        )
+    }
+
+    /// Returns a copy with replaced metadata, preserving every other field.
+    func replacingMetadata(_ metadata: [String: String]) -> ModelGenerationRequest {
+        ModelGenerationRequest(
+            sessionKey: self.sessionKey,
+            prompt: self.prompt,
+            systemPrompt: self.systemPrompt,
+            providerID: self.providerID,
+            modelID: self.modelID,
+            preferredAuthProfileID: self.preferredAuthProfileID,
+            metadata: metadata,
+            headers: self.headers,
+            policy: self.policy,
+            attachments: self.attachments,
+            messages: self.messages,
+            tools: self.tools,
+            toolChoice: self.toolChoice,
+            responseFormat: self.responseFormat
+        )
     }
 }
 
 /// Output payload returned from model providers.
+///
+/// Contract v2 adds proposed ``toolCalls``, ``usage``, ``stopReason`` and ``reasoningText``, all
+/// defaulted so v1 providers keep compiling. Tool calls are proposals: the host or agent loop owns
+/// execution and approval.
 public struct ModelGenerationResponse: Sendable, Equatable {
     /// Generated text output.
     public let text: String
@@ -188,33 +278,168 @@ public struct ModelGenerationResponse: Sendable, Equatable {
     public let providerID: String
     /// Optional concrete model identifier.
     public let modelID: String?
+    /// Tool calls proposed by the model, in order.
+    public let toolCalls: [ModelToolCall]
+    /// Token accounting, when the provider reports it.
+    public let usage: ModelUsage?
+    /// Why generation stopped.
+    public let stopReason: ModelStopReason
+    /// Provider reasoning text, when exposed.
+    public let reasoningText: String?
 
     /// Creates a model generation response.
     /// - Parameters:
     ///   - text: Generated text output.
     ///   - providerID: Provider identifier.
     ///   - modelID: Optional concrete model identifier.
-    public init(text: String, providerID: String, modelID: String? = nil) {
+    ///   - toolCalls: Proposed tool calls.
+    ///   - usage: Optional token accounting.
+    ///   - stopReason: Stop reason; defaults to `.toolUse` when `toolCalls` is non-empty, else `.stop`.
+    ///   - reasoningText: Optional reasoning text.
+    public init(
+        text: String,
+        providerID: String,
+        modelID: String? = nil,
+        toolCalls: [ModelToolCall] = [],
+        usage: ModelUsage? = nil,
+        stopReason: ModelStopReason? = nil,
+        reasoningText: String? = nil
+    ) {
         self.text = text
         self.providerID = providerID
         self.modelID = modelID
+        self.toolCalls = toolCalls
+        self.usage = usage
+        self.stopReason = stopReason ?? (toolCalls.isEmpty ? .stop : .toolUse)
+        self.reasoningText = reasoningText
+    }
+
+    /// Assistant content parts in transcript order: reasoning, text, then tool calls.
+    public var assistantContent: [ModelAssistantPart] {
+        var parts: [ModelAssistantPart] = []
+        if let reasoningText, !reasoningText.isEmpty {
+            parts.append(.thinking(reasoningText, signature: nil))
+        }
+        if !self.text.isEmpty {
+            parts.append(.text(self.text))
+        }
+        parts.append(contentsOf: self.toolCalls.map(ModelAssistantPart.toolCall))
+        return parts
+    }
+
+    /// Assistant message to append to the transcript for the next turn.
+    public var assistantMessage: ModelMessage {
+        .assistant(content: self.assistantContent)
     }
 }
 
 /// Streaming chunk payload emitted by providers that support token streaming.
+///
+/// ``text`` always carries visible assistant text only, so v1 consumers that concatenate `text`
+/// never see reasoning or tool-call payloads. Contract v2 chunks add a ``kind`` plus optional
+/// reasoning, tool-call, usage and stop-reason payloads.
 public struct ModelStreamChunk: Sendable, Equatable {
-    /// Token/text fragment.
+    /// Payload carried by a chunk.
+    public enum Kind: String, Sendable, Equatable, CaseIterable, Codable {
+        /// Visible text delta in ``ModelStreamChunk/text``.
+        case text
+        /// Reasoning delta in ``ModelStreamChunk/reasoningText``.
+        case reasoning
+        /// Tool-call fragment in ``ModelStreamChunk/toolCallDelta``.
+        case toolCallDelta
+        /// Usage update in ``ModelStreamChunk/usage``.
+        case usage
+        /// End of stream; may carry trailing text, complete tool calls, usage and a stop reason.
+        case final
+    }
+
+    /// Token/text fragment (visible assistant text only).
     public let text: String
     /// Indicates whether this chunk marks end-of-stream payload.
     public let isFinal: Bool
+    /// Payload kind.
+    public let kind: Kind
+    /// Reasoning delta for `.reasoning` chunks.
+    public let reasoningText: String?
+    /// Tool-call fragment for `.toolCallDelta` chunks.
+    public let toolCallDelta: ModelToolCallDelta?
+    /// Usage for `.usage` and `.final` chunks.
+    public let usage: ModelUsage?
+    /// Stop reason, usually on the `.final` chunk.
+    public let stopReason: ModelStopReason?
+    /// Complete tool calls, usually on the `.final` chunk.
+    public let toolCalls: [ModelToolCall]
 
-    /// Creates a streaming chunk.
+    /// Creates a text chunk (v1 initializer).
     /// - Parameters:
     ///   - text: Token/text fragment.
-    ///   - isFinal: End-of-stream marker.
+    ///   - isFinal: End-of-stream marker; `true` produces a `.final` chunk.
     public init(text: String, isFinal: Bool = false) {
+        self.init(kind: isFinal ? .final : .text, text: text)
+    }
+
+    /// Creates a chunk of any kind.
+    /// - Parameters:
+    ///   - kind: Payload kind; `.final` sets ``isFinal``.
+    ///   - text: Visible text delta.
+    ///   - reasoningText: Reasoning delta.
+    ///   - toolCallDelta: Tool-call fragment.
+    ///   - usage: Usage update.
+    ///   - stopReason: Stop reason.
+    ///   - toolCalls: Complete tool calls.
+    public init(
+        kind: Kind,
+        text: String = "",
+        reasoningText: String? = nil,
+        toolCallDelta: ModelToolCallDelta? = nil,
+        usage: ModelUsage? = nil,
+        stopReason: ModelStopReason? = nil,
+        toolCalls: [ModelToolCall] = []
+    ) {
         self.text = text
-        self.isFinal = isFinal
+        self.isFinal = kind == .final
+        self.kind = kind
+        self.reasoningText = reasoningText
+        self.toolCallDelta = toolCallDelta
+        self.usage = usage
+        self.stopReason = stopReason
+        self.toolCalls = toolCalls
+    }
+
+    /// Creates a `.reasoning` chunk.
+    /// - Parameter delta: Reasoning text delta.
+    /// - Returns: A reasoning chunk.
+    public static func reasoningDelta(_ delta: String) -> ModelStreamChunk {
+        ModelStreamChunk(kind: .reasoning, reasoningText: delta)
+    }
+
+    /// Creates a `.toolCallDelta` chunk.
+    /// - Parameter delta: Tool-call fragment.
+    /// - Returns: A tool-call chunk.
+    public static func toolCallUpdate(_ delta: ModelToolCallDelta) -> ModelStreamChunk {
+        ModelStreamChunk(kind: .toolCallDelta, toolCallDelta: delta)
+    }
+
+    /// Creates a `.usage` chunk.
+    /// - Parameter usage: Usage update.
+    /// - Returns: A usage chunk.
+    public static func usageUpdate(_ usage: ModelUsage) -> ModelStreamChunk {
+        ModelStreamChunk(kind: .usage, usage: usage)
+    }
+
+    /// Creates the `.final` chunk that summarizes a complete response.
+    /// - Parameters:
+    ///   - text: Trailing visible text (empty when every text delta was already streamed).
+    ///   - response: Complete response providing tool calls, usage and stop reason.
+    /// - Returns: A final chunk.
+    public static func completed(text: String = "", response: ModelGenerationResponse) -> ModelStreamChunk {
+        ModelStreamChunk(
+            kind: .final,
+            text: text,
+            usage: response.usage,
+            stopReason: response.stopReason,
+            toolCalls: response.toolCalls
+        )
     }
 }
 
@@ -267,18 +492,27 @@ public protocol ModelProvider: Sendable {
     /// Requests cancellation for an in-flight generation token when supported.
     /// - Parameter token: Stable cancellation token.
     func cancelGeneration(token: String?) async
+
+    /// Contract v2 features this provider implements. Defaults to ``ModelProviderCapabilities/legacy``.
+    var capabilities: ModelProviderCapabilities { get }
 }
 
 public extension ModelProvider {
     /// Default streaming implementation for non-streaming providers.
+    ///
+    /// Emits a `.reasoning` chunk when the response carries reasoning text, then one `.final` chunk
+    /// with the full text, tool calls, usage and stop reason.
     /// - Parameter request: Generation request payload.
-    /// - Returns: Stream with a single final chunk containing full generated text.
+    /// - Returns: Stream ending with a single final chunk containing full generated text.
     func generateStream(_ request: ModelGenerationRequest) async -> AsyncThrowingStream<ModelStreamChunk, Error> {
         AsyncThrowingStream { continuation in
             Task {
                 do {
                     let response = try await self.generate(request)
-                    continuation.yield(ModelStreamChunk(text: response.text, isFinal: true))
+                    if let reasoningText = response.reasoningText, !reasoningText.isEmpty {
+                        continuation.yield(.reasoningDelta(reasoningText))
+                    }
+                    continuation.yield(.completed(text: response.text, response: response))
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
@@ -289,6 +523,11 @@ public extension ModelProvider {
 
     /// Default no-op cancellation implementation for providers without token-based cancellation.
     func cancelGeneration(token _: String?) async {}
+
+    /// Default capabilities for providers that predate contract v2.
+    var capabilities: ModelProviderCapabilities {
+        .legacy
+    }
 }
 
 /// Default fallback provider returning deterministic placeholder output.
@@ -842,18 +1081,7 @@ public actor ModelRouter {
                 metadata["auth.expires"] = String(expires)
             }
         }
-        return ModelGenerationRequest(
-            sessionKey: request.sessionKey,
-            prompt: request.prompt,
-            systemPrompt: request.systemPrompt,
-            providerID: request.providerID,
-            modelID: request.modelID,
-            preferredAuthProfileID: request.preferredAuthProfileID,
-            metadata: metadata,
-            headers: request.headers,
-            policy: request.policy,
-            attachments: request.attachments
-        )
+        return request.replacingMetadata(metadata)
     }
 
     private static func failureReason(for error: Error) -> AuthProfileFailureReason {
