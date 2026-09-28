@@ -18,21 +18,30 @@ private struct ChatProgressCardSurface: ViewModifier {
             .overlay(
                 RoundedRectangle(cornerRadius: self.cornerRadius, style: .continuous)
                     .strokeBorder(OpenClawChatTheme.composerBorder, lineWidth: 1))
-        #else
+        #elseif os(iOS)
         if #available(iOS 26.0, *) {
             content
                 .glassEffect(.regular, in: .rect(cornerRadius: self.cornerRadius))
         } else {
-            content
-                .background(
-                    .regularMaterial,
-                    in: RoundedRectangle(cornerRadius: self.cornerRadius, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: self.cornerRadius, style: .continuous)
-                        .strokeBorder(OpenClawChatTheme.composerBorder, lineWidth: 1))
+            self.materialCard(content)
         }
+        #else
+        // visionOS: glassEffect is unavailable; windows already sit on glass.
+        self.materialCard(content)
         #endif
     }
+
+    #if !os(macOS)
+    private func materialCard(_ content: Content) -> some View {
+        content
+            .background(
+                .regularMaterial,
+                in: RoundedRectangle(cornerRadius: self.cornerRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: self.cornerRadius, style: .continuous)
+                    .strokeBorder(OpenClawChatTheme.composerBorder, lineWidth: 1))
+    }
+    #endif
 }
 
 struct ChatProgressCard: View {

@@ -427,30 +427,34 @@ struct ChatMarkdownProse {
         colorScheme: ColorScheme) -> SwiftUI.Text
     {
         guard let inlineContent else { return SwiftUI.Text(self.attributed) }
-        return inlineContent.reduce(SwiftUI.Text("")) { text, content in
+        // One AttributedString instead of `Text + Text` (deprecated on the visionOS 26 floor).
+        let combined = inlineContent.reduce(into: AttributedString()) { text, content in
             switch content {
             case let .text(attributed):
-                return text + SwiftUI.Text(attributed)
+                text.append(attributed)
             case let .math(span):
                 // No typesetter ships with OpenClawKit: validated math renders as its LaTeX
                 // source in the monospaced chat face so it stays distinct from prose.
                 _ = colorScheme
-                return text + SwiftUI.Text(span.source)
-                    .font(OpenClawChatTypography.mono(size: fontSize, relativeTo: .body))
+                var source = AttributedString(span.source)
+                source.font = OpenClawChatTypography.mono(size: fontSize, relativeTo: .body)
+                text.append(source)
             }
         }
+        return SwiftUI.Text(combined)
     }
 
     func revealedText(frame: ChatStreamingRevealFrame, textColor: Color) -> SwiftUI.Text {
-        self.tail.reduce(SwiftUI.Text(self.prefix)) { text, piece in
+        let combined = self.tail.reduce(into: self.prefix) { text, piece in
             var attributed = piece.attributed
             if let wordRange = piece.wordRange,
                let fading = frame.fading.first(where: { $0.characterRange == wordRange })
             {
                 attributed.foregroundColor = textColor.opacity(fading.opacity)
             }
-            return text + SwiftUI.Text(attributed)
+            text.append(attributed)
         }
+        return SwiftUI.Text(combined)
     }
 
     private static func makeInlineContent(markdown: String) -> [InlineContent]? {

@@ -251,7 +251,7 @@ struct ChatMarkdownListView: View {
             return Text("List item")
         case let .ordered(start):
             let itemNumber = start + UInt(index)
-            return Text("Item") + Text(verbatim: " \(itemNumber)")
+            return Text(verbatim: String(localized: "Item") + " \(itemNumber)")
         }
     }
 }
