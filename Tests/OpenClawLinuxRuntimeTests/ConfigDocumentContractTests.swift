@@ -217,6 +217,60 @@ struct ConfigDocumentContractTests {
         #expect(tree["gateway"]?.dictionaryValue?["auth"]?.dictionaryValue?["token"]?.stringValue == "${OPENCLAW_GATEWAY_TOKEN}")
     }
 
+    // MARK: Talk contract
+
+    /// Runs every case of the upstream `talk-config-contract.json` at the document layer:
+    /// payloads round-trip losslessly, the schema's provider-selection refinements flag exactly
+    /// the cases where upstream selection yields nothing, and `silenceTimeoutMs` only types
+    /// integral numbers (anything else is preserved raw for the Talk consumer's fallback).
+    @Test
+    func talkContractFixtureCasesDecodeAtTheDocumentLayer() throws {
+        let contract = try #require(try OpenClawJSON5.parse(try ConfigFixtures.data("talk-config-contract.json")).dictionaryValue)
+        let selectionCases = try #require(contract["selectionCases"]?.arrayValue)
+        let timeoutCases = try #require(contract["timeoutCases"]?.arrayValue)
+        #expect(selectionCases.count == 4)
+        #expect(timeoutCases.count == 6)
+
+        for entry in selectionCases {
+            let testCase = try #require(entry.dictionaryValue)
+            let id = testCase["id"]?.stringValue ?? "?"
+            let talkTree = try #require(testCase["talk"])
+            let document = try OpenClawConfigDocument.decode(jsonObject: ["talk": talkTree], migrateLegacyKeys: false)
+            let talk = try #require(document.talk, "\(id)")
+            #expect(document.jsonObject["talk"] == talkTree, "\(id): talk payload must round-trip")
+            let flagged = !talk.validationIssues().isEmpty
+            let selectsNothing = testCase["expectedSelection"]?.isNull ?? true
+            #expect(flagged == selectsNothing, "\(id): validation disagrees with upstream selection")
+            if let expected = testCase["expectedSelection"]?.dictionaryValue, let provider = expected["provider"]?.stringValue {
+                let entry = try #require(talk.providers?[provider], "\(id)")
+                #expect(entry.additionalProperties["voiceId"] == expected["voiceId"], "\(id)")
+                #expect(entry.apiKey?.plaintext == expected["apiKey"]?.stringValue, "\(id)")
+            }
+        }
+
+        for entry in timeoutCases {
+            let testCase = try #require(entry.dictionaryValue)
+            let id = testCase["id"]?.stringValue ?? "?"
+            let talkTree = try #require(testCase["talk"])
+            let collector = ConfigDecodeIssueCollector()
+            let document = try OpenClawConfigDocument.decode(jsonObject: ["talk": talkTree], migrateLegacyKeys: false, issues: collector)
+            let talk = try #require(document.talk, "\(id)")
+            let raw = talkTree.dictionaryValue?["silenceTimeoutMs"]
+            let typed = talk.silenceTimeoutMs
+            if testCase["expectedTimeoutMs"] != testCase["fallback"] {
+                #expect(typed == testCase["expectedTimeoutMs"]?.intValue, "\(id)")
+            } else if typed == nil {
+                // Mistyped values stay in the document so a rewrite keeps what the user authored.
+                #expect(talk.additionalProperties["silenceTimeoutMs"] == raw, "\(id)")
+                #expect(collector.issues.contains { $0.path == "talk.silenceTimeoutMs" }, "\(id)")
+            } else {
+                // Integral but non-positive: typed as authored; the Talk consumer applies the fallback.
+                #expect(typed == 0, "\(id)")
+            }
+            #expect(document.jsonObject["talk"]?.dictionaryValue?["silenceTimeoutMs"] == raw, "\(id)")
+        }
+    }
+
     // MARK: Duration and sizes
 
     @Test
