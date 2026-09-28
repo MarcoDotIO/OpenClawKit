@@ -31,11 +31,16 @@ extension SecretRefResolver {
 /// Default resolver for the `env`, `file`, `exec` and `store` sources (`src/secrets/resolve.ts`).
 ///
 /// - `env`: reads the process environment, honoring an env provider's `allowlist`.
-/// - `file`: reads the provider's file (`singleValue` returns the trimmed content for id `value`;
-///   `json` follows the ref id as a JSON pointer), honoring `maxBytes`.
-/// - `exec`: macOS and Linux only; runs the provider command with the JSON request
-///   `{protocolVersion: 1, provider, ids}` on stdin and reads `{protocolVersion: 1, values, errors}`.
-///   `pluginIntegration` providers need the gateway's plugin runtime and are unavailable here.
+/// - `file`: reads the provider's file (`singleValue` returns the content for id `value` without its
+///   trailing newline; `json` follows the ref id as a JSON pointer), honoring `maxBytes`. The file must
+///   pass ``SecretPathSecurity/assertSecureSecretFile(_:label:)``: a regular file (no symlink) with one
+///   hard link, `mode & 0o077 == 0`, owned by the current user.
+/// - `exec`: macOS and Linux only; the command must pass
+///   ``SecretPathSecurity/assertSecureExecCommand(_:label:trustedDirs:environment:)`` (absolute, not a
+///   symlink, inside `trustedDirs`, not group/world-writable, owned by the current user). It runs with
+///   the JSON request `{protocolVersion: 1, provider, ids}` on stdin and reads
+///   `{protocolVersion: 1, values, errors}`. `pluginIntegration` providers need the gateway's plugin
+///   runtime and are unavailable here.
 /// - `store`: upstream's host secret store (the gateway's shared SQLite store). In-process SDK
 ///   gateways map it to the platform ``CredentialStore`` (Keychain on Apple platforms, a file on Linux),
 ///   keyed by the ref id.
@@ -86,7 +91,7 @@ public struct DefaultSecretRefResolver: SecretRefResolver {
             guard case .file(let file)? = provider else {
                 throw OpenClawCoreError.invalidConfiguration("File secret provider \"\(alias)\" is not configured.")
             }
-            return try Self.resolveFile(ref, provider: file, environment: self.environment)
+            return try Self.resolveFile(ref, providerName: alias, provider: file, environment: self.environment)
         case .exec:
             guard case .exec(let exec)? = provider else {
                 throw OpenClawCoreError.invalidConfiguration("Exec secret provider \"\(alias)\" is not configured.")
@@ -113,9 +118,19 @@ public struct DefaultSecretRefResolver: SecretRefResolver {
         return value
     }
 
-    static func resolveFile(_ ref: SecretRef, provider: FileSecretProviderConfig, environment: [String: String]) throws -> String {
+    static func resolveFile(
+        _ ref: SecretRef,
+        providerName: String = "default",
+        provider: FileSecretProviderConfig,
+        environment: [String: String]
+    ) throws -> String {
         let path = OpenClawConfigDocumentStore.expandHome(provider.path, environment: environment)
         let url = URL(fileURLWithPath: path)
+        do {
+            try SecretPathSecurity.assertSecureSecretFile(url.path, label: "secrets.providers.\(providerName).path")
+        } catch let violation as SecretPathSecurity.Violation {
+            throw OpenClawCoreError.unavailable(violation.errorDescription ?? "Secret file failed the security check.")
+        }
         let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
         if let size = (attributes?[.size] as? NSNumber)?.intValue, size > provider.maxBytes {
             throw OpenClawCoreError.invalidConfiguration("Secret file \(url.path) exceeds maxBytes (\(provider.maxBytes)).")
@@ -129,7 +144,17 @@ public struct DefaultSecretRefResolver: SecretRefResolver {
             guard ref.id == SINGLE_VALUE_FILE_SECRET_REF_ID else {
                 throw OpenClawCoreError.invalidConfiguration("singleValue file providers only resolve the id \"value\".")
             }
-            return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            // Upstream: strip a UTF-8 BOM and exactly one trailing newline (`\n` or `\r\n`).
+            var text = String(decoding: data, as: UTF8.self)
+            if text.hasPrefix("\u{FEFF}") {
+                text.removeFirst()
+            }
+            if text.hasSuffix("\r\n") {
+                text.removeLast()
+            } else if text.hasSuffix("\n") {
+                text.removeLast()
+            }
+            return text
         case .json:
             let tree = try OpenClawJSON5.parse(data, allowJSON5: false)
             guard let value = Self.jsonPointer(ref.id, in: tree) else {
@@ -186,15 +211,18 @@ public struct DefaultSecretRefResolver: SecretRefResolver {
         if let first = errors.first {
             throw OpenClawCoreError.invalidConfiguration(first)
         }
-        if !provider.trustedDirs.isEmpty {
-            let commandDirectory = URL(fileURLWithPath: provider.command).deletingLastPathComponent().standardizedFileURL.path
-            let trusted = provider.trustedDirs.contains { directory in
-                let standardized = URL(fileURLWithPath: directory).standardizedFileURL.path
-                return commandDirectory == standardized || commandDirectory.hasPrefix(standardized + "/")
-            }
-            guard trusted else {
-                throw OpenClawCoreError.invalidConfiguration("Exec secret provider command is outside trustedDirs.")
-            }
+        // Same trust boundary upstream checks before execution; the retired `allowInsecurePath` and
+        // `allowSymlinkCommand` opt-outs are ignored (fail closed).
+        let commandPath: String
+        do {
+            commandPath = try SecretPathSecurity.assertSecureExecCommand(
+                provider.command,
+                label: "secrets.providers.\(providerName).command",
+                trustedDirs: provider.trustedDirs,
+                environment: environment
+            )
+        } catch let violation as SecretPathSecurity.Violation {
+            throw OpenClawCoreError.invalidConfiguration(violation.errorDescription ?? "Exec secret provider command failed the security check.")
         }
         let request = try JSONSerialization.data(withJSONObject: [
             "protocolVersion": 1, "provider": providerName, "ids": [ref.id],
@@ -209,7 +237,7 @@ public struct DefaultSecretRefResolver: SecretRefResolver {
             childEnvironment[key] = value
         }
         let output = try await ExecSecretProcess.run(
-            command: provider.command,
+            command: commandPath,
             arguments: provider.args,
             environment: childEnvironment,
             input: request,
@@ -326,3 +354,20 @@ enum ExecSecretProcess {
     }
 }
 #endif
+
+extension ChannelSecretResolver {
+    /// A channel secret resolver backed by a ``SecretRefResolver``: plaintext strings pass through and
+    /// `env`, `file`, `exec` and `store` refs resolve with the resolver's provider hardening.
+    /// - Parameters:
+    ///   - resolver: SecretRef resolver (defaults to ``DefaultSecretRefResolver``).
+    ///   - secrets: Secrets config with the providers and defaults.
+    /// - Returns: A channel secret resolver.
+    public static func usingSecretRefResolver(
+        _ resolver: any SecretRefResolver = DefaultSecretRefResolver(),
+        secrets: SecretsConfig
+    ) -> ChannelSecretResolver {
+        ChannelSecretResolver { input in
+            try await resolver.resolve(input, config: secrets)
+        }
+    }
+}
