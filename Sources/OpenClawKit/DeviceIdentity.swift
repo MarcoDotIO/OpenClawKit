@@ -89,7 +89,7 @@ enum DeviceIdentityPaths {
     static let appGroupIdentifierInfoKey = "OpenClawAppGroupIdentifier"
     @TaskLocal static var scopedStateDirURL: URL?
     private static let configuredStateLock = NSLock()
-    private nonisolated(unsafe) static var configuredState = DeviceIdentityStateRootState()
+    nonisolated(unsafe) private static var configuredState = DeviceIdentityStateRootState()
 
     /// App Group used for shared state, read from the host's Info.plist.
     ///
@@ -293,8 +293,8 @@ public enum DeviceIdentityStore {
 
     private static let logger = Logger(subsystem: "ai.openclaw.kit", category: "device-identity")
     private static let fallbackLock = NSLock()
-    private nonisolated(unsafe) static var ephemeralFallbacks: [String: DeviceIdentity] = [:]
-    private nonisolated(unsafe) static var lastFailureDescription: String?
+    nonisolated(unsafe) private static var ephemeralFallbacks: [String: DeviceIdentity] = [:]
+    nonisolated(unsafe) private static var lastFailureDescription: String?
 
     static func storageError(_ message: String) -> NSError {
         NSError(
