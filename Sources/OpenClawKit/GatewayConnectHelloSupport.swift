@@ -68,6 +68,10 @@ public struct GatewayHelloPolicy: Sendable, Equatable {
     public static let defaultTickIntervalMs: Double = 30000
     /// Default frame ceiling (25 MiB) when a gateway omits `maxPayload`.
     public static let defaultMaxPayloadBytes = 25 * 1024 * 1024
+    /// Upstream default decoded attachment ceiling (20 MiB) for gateways that do not advertise one.
+    public static let defaultAttachmentMaxBytes = 20 * 1024 * 1024
+    /// Upstream image ceiling (6 MiB); images are limited to the smaller of this and the attachment ceiling.
+    public static let defaultAttachmentMaxImageBytes = 6 * 1024 * 1024
 
     /// Server tick cadence in milliseconds; the client treats 2x this as a missed tick.
     public let tickIntervalMs: Double
@@ -75,27 +79,49 @@ public struct GatewayHelloPolicy: Sendable, Equatable {
     public let maxPayloadBytes: Int
     /// Largest buffered outbound backlog the gateway tolerates, in bytes, when advertised.
     public let maxBufferedBytes: Int?
+    /// Decoded per-attachment ceiling (`policy.attachments.maxBytes`), when advertised.
+    public let attachmentMaxBytes: Int?
+    /// Decoded per-image ceiling (`policy.attachments.maxImageBytes`), when advertised.
+    public let attachmentMaxImageBytes: Int?
 
     /// Creates a policy value.
     public init(
         tickIntervalMs: Double = GatewayHelloPolicy.defaultTickIntervalMs,
         maxPayloadBytes: Int = GatewayHelloPolicy.defaultMaxPayloadBytes,
-        maxBufferedBytes: Int? = nil)
+        maxBufferedBytes: Int? = nil,
+        attachmentMaxBytes: Int? = nil,
+        attachmentMaxImageBytes: Int? = nil)
     {
         self.tickIntervalMs = tickIntervalMs
         self.maxPayloadBytes = maxPayloadBytes
         self.maxBufferedBytes = maxBufferedBytes
+        self.attachmentMaxBytes = attachmentMaxBytes
+        self.attachmentMaxImageBytes = attachmentMaxImageBytes
     }
 
     /// Reads a hello-ok `policy` object, ignoring non-positive values.
     public init(policy: [String: AnyCodable]) {
+        func positive(_ value: AnyCodable?) -> Int? {
+            value?.intValue.flatMap { $0 > 0 ? $0 : nil }
+        }
         let tick = policy["tickIntervalMs"]?.doubleValue.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
-        let maxPayload = policy["maxPayload"]?.intValue.flatMap { $0 > 0 ? $0 : nil }
-        let maxBuffered = policy["maxBufferedBytes"]?.intValue.flatMap { $0 > 0 ? $0 : nil }
+        let attachments = policy["attachments"]?.dictionaryValue
         self.init(
             tickIntervalMs: tick ?? Self.defaultTickIntervalMs,
-            maxPayloadBytes: maxPayload ?? Self.defaultMaxPayloadBytes,
-            maxBufferedBytes: maxBuffered)
+            maxPayloadBytes: positive(policy["maxPayload"]) ?? Self.defaultMaxPayloadBytes,
+            maxBufferedBytes: positive(policy["maxBufferedBytes"]),
+            attachmentMaxBytes: positive(attachments?["maxBytes"]),
+            attachmentMaxImageBytes: positive(attachments?["maxImageBytes"]))
+    }
+
+    /// Attachment ceiling to validate against: the advertised value or the upstream default.
+    public var effectiveAttachmentMaxBytes: Int {
+        self.attachmentMaxBytes ?? Self.defaultAttachmentMaxBytes
+    }
+
+    /// Image ceiling to validate against: the advertised value, else min(attachment ceiling, 6 MiB).
+    public var effectiveAttachmentMaxImageBytes: Int {
+        self.attachmentMaxImageBytes ?? min(self.effectiveAttachmentMaxBytes, Self.defaultAttachmentMaxImageBytes)
     }
 }
 

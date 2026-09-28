@@ -474,7 +474,9 @@ public actor GatewayChannelActor {
         // A gateway still starting its sidecars answers UNAVAILABLE(startup-sidecars). Retry
         // within the caller's handshake budget, without backoff escalation or auth bookkeeping.
         let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: .milliseconds(Int64(max(0, self.connectTimeoutSeconds) * 1000)))
+        let budgetMs = self.connectOptions?.handshakeTimeoutMs.map { Double(max(1, $0)) }
+            ?? max(0, self.connectTimeoutSeconds) * 1000
+        let deadline = clock.now.advanced(by: .milliseconds(Int64(budgetMs)))
         while true {
             do {
                 try await self.performConnectHandshake(deadline: deadline)

@@ -505,6 +505,61 @@ struct GatewayChannelLifecycleTests {
     }
 
     @Test
+    func helloPolicyReadsAttachmentCeilingsWithUpstreamDefaults() {
+        let advertised = GatewayHelloPolicy(policy: [
+            "tickIntervalMs": AnyCodable(20000),
+            "maxPayload": AnyCodable(1_048_576),
+            "maxBufferedBytes": AnyCodable(-1),
+            "attachments": AnyCodable(["maxBytes": AnyCodable(8_388_608), "maxImageBytes": AnyCodable(4_194_304)]),
+        ])
+        #expect(advertised.tickIntervalMs == 20000)
+        #expect(advertised.maxPayloadBytes == 1_048_576)
+        #expect(advertised.maxBufferedBytes == nil)
+        #expect(advertised.effectiveAttachmentMaxBytes == 8_388_608)
+        #expect(advertised.effectiveAttachmentMaxImageBytes == 4_194_304)
+
+        let legacy = GatewayHelloPolicy(policy: [:])
+        #expect(legacy.tickIntervalMs == 30000)
+        #expect(legacy.maxPayloadBytes == 25 * 1024 * 1024)
+        #expect(legacy.effectiveAttachmentMaxBytes == 20 * 1024 * 1024)
+        #expect(legacy.effectiveAttachmentMaxImageBytes == 6 * 1024 * 1024)
+    }
+
+    @Test
+    func profileEventBindingDropsForeignAndUnstampedEvents() {
+        let binding = GatewayProfileEventBinding(connectionGeneration: 3, profileID: "Profile-1")
+        let own = EventFrame(type: "event", event: "chat", recipientprofileid: "Profile-1")
+        #expect(binding.admit(own, connectionGeneration: 3) == .deliver)
+        #expect(binding.admit(own, connectionGeneration: 4) == .drop(.staleConnectionGeneration))
+        #expect(binding.admit(
+            EventFrame(type: "event", event: "chat", recipientprofileid: "profile-1"),
+            connectionGeneration: 3) == .drop(.recipientProfileMismatch))
+        #expect(binding.admit(EventFrame(type: "event", event: "chat"), connectionGeneration: 3)
+            == .drop(.missingRecipientProfile))
+    }
+
+    @Test
+    func handshakeTimeoutOptionBoundsTheWholeHandshake() async throws {
+        let session = GatewayCoreFakeSession(fixedScript: GatewayCoreSocketScript(
+            connectReply: { _ in .none }))
+        var options = gatewayCoreOptions()
+        options.handshakeTimeoutMs = 100
+        let channel = try makeChannel(session: session, options: options)
+        let start = ContinuousClock.now
+        do {
+            try await channel.connect()
+            Issue.record("expected a handshake timeout")
+        } catch {
+            #expect((error as NSError).domain == NSURLErrorDomain)
+            #expect((error as NSError).code == URLError.timedOut.rawValue)
+        }
+        #expect(ContinuousClock.now - start < .seconds(5))
+        #expect(await channel.currentHandshakePhase() == .connectSent)
+        #expect(session.latestSocket?.state != .running)
+        await channel.shutdown()
+    }
+
+    @Test
     func requestLifetimeFinishesExactlyOnce() {
         let lifetime = WebSocketRequestLifetime()
         let finished = GatewayCoreRecorder<Int>()

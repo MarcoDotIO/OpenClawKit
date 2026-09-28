@@ -70,6 +70,9 @@ public struct GatewayConnectOptions: Sendable {
     /// opt in to legacy pre-v4 gateways (for example OpenClaw 2026.4.x); v4-only features such as
     /// chat `deltaText` events are then unavailable on those gateways.
     public var minimumProtocolVersion: Int?
+    /// Pre-auth handshake budget in milliseconds (socket open through hello-ok), mirroring
+    /// `gateway.handshakeTimeoutMs`. `nil` keeps the 30 s client default.
+    public var handshakeTimeoutMs: Int?
 
     /// Creates connect options. Every parameter added after 2026.2 is defaulted for source compatibility.
     public init(
@@ -89,7 +92,8 @@ public struct GatewayConnectOptions: Sendable {
         allowStoredDeviceAuth: Bool = true,
         deviceAuthGatewayID: String? = nil,
         deviceProofPayload: GatewayDeviceProofPayloadVersion = .v2Compatible,
-        minimumProtocolVersion: Int? = nil)
+        minimumProtocolVersion: Int? = nil,
+        handshakeTimeoutMs: Int? = nil)
     {
         self.role = role
         self.scopes = scopes
@@ -108,6 +112,7 @@ public struct GatewayConnectOptions: Sendable {
         self.deviceAuthGatewayID = deviceAuthGatewayID
         self.deviceProofPayload = deviceProofPayload
         self.minimumProtocolVersion = minimumProtocolVersion
+        self.handshakeTimeoutMs = handshakeTimeoutMs
     }
 
     /// Registry client id for the current platform.
