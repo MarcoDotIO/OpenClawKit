@@ -22,6 +22,7 @@ public struct OpenAIModelProvider: ModelProvider {
     private let configuration: OpenAIModelConfig
     private let engine: OpenAIChatCompletionsEngine
     private let clientFactory: OpenAIKitChatClientFactory
+    private let usesOpenAIKit: Bool
 
     /// Creates an OpenAI model provider.
     /// - Parameters:
@@ -44,6 +45,8 @@ public struct OpenAIModelProvider: ModelProvider {
     }
 
     /// Creates an OpenAI model provider with an explicit transport and runtime context.
+    ///
+    /// Every request then goes through `transport` (OpenAIKit is not used).
     /// - Parameters:
     ///   - id: Provider identifier.
     ///   - configuration: OpenAI provider settings.
@@ -60,6 +63,7 @@ public struct OpenAIModelProvider: ModelProvider {
             configuration: configuration,
             legacyTransport: transport,
             runtime: runtime,
+            usesOpenAIKit: false,
             clientFactory: { providerID, resolved in
                 try OpenAIKitClientFactory.makeChatClient(providerID: providerID, resolved: resolved)
             }
@@ -71,11 +75,13 @@ public struct OpenAIModelProvider: ModelProvider {
         configuration: OpenAIModelConfig,
         legacyTransport: any OpenAICompatibleHTTPTransport,
         runtime: ModelProviderRuntimeContext = .empty,
+        usesOpenAIKit: Bool = true,
         clientFactory: @escaping OpenAIKitChatClientFactory
     ) {
         self.id = id
         self.configuration = configuration
         self.clientFactory = clientFactory
+        self.usesOpenAIKit = usesOpenAIKit
         let service = ProviderServiceConfig(
             enabled: configuration.enabled,
             apiStyle: .openAICompletions,
@@ -130,7 +136,7 @@ public struct OpenAIModelProvider: ModelProvider {
         )
 
         #if canImport(OpenAIKit)
-        if Self.canUseOpenAIKit(request) {
+        if self.usesOpenAIKit, Self.canUseOpenAIKit(request) {
             return try await self.generateViaOpenAIKit(request: request, resolved: resolved)
         }
         #else
@@ -156,6 +162,7 @@ public struct OpenAIModelProvider: ModelProvider {
             && request.policy.thinkingLevel == nil
             && request.policy.reasoningEffort == nil
             && request.policy.serviceTier == nil
+            && request.policy.promptCache == nil
     }
 
     #if canImport(OpenAIKit)

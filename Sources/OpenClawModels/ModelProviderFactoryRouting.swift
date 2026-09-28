@@ -65,6 +65,7 @@ extension ModelProviderFactory {
         }
         if config.api == nil {
             config.api = OpenClawReferenceProviderCatalog.entry(for: normalizedProviderID)?.config.api
+                ?? (normalizedProviderID == "azure-openai-responses" ? .azureOpenAIResponses : nil)
         }
         if RoutingModelProvider.needsRouting(config) {
             return RoutingModelProvider(providerID: normalizedProviderID, config: config)

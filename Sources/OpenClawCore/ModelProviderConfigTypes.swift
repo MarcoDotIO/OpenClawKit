@@ -1768,9 +1768,12 @@ extension ModelProviderConfig {
     public func legacyServiceConfig(providerID: String) -> ProviderServiceConfig {
         let normalizedProviderID = providerID.trimmingCharacters(in: .whitespacesAndNewlines)
         let model = self.defaultModel
-        let authMode = self.auth?.legacyMode ?? .none
         let selectedAPI = model?.api ?? self.api ?? .openAICompletions
         let secretValue = self.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Upstream configs usually omit `auth`; a configured key then means API-key auth unless the
+        // provider disables the Authorization header.
+        let inferredAuth: ProviderServiceAuthMode = (secretValue?.isEmpty == false && self.authHeader != false) ? .apiKey : .none
+        let authMode = self.auth?.legacyMode ?? inferredAuth
         let usesAccessToken = authMode == .bearerToken || authMode == .oauthToken
         var metadata = self.metadata.merging([
             "providerID": normalizedProviderID,

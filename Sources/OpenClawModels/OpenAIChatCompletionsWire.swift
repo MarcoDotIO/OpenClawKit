@@ -172,6 +172,9 @@ enum OpenAIChatCompletionsWire {
                 payload["providerOptions"] = ["gateway": gateway]
             }
         }
+        if let cache = request.policy.promptCache, cache.enabled {
+            self.applyPromptCache(cache, to: &payload, request: request, context: context)
+        }
         if !tools.isEmpty, compat.isKnownOpenAIEndpoint || context.compat.endpoint == .default {
             // Native Chat Completions rejects tools with enabled GPT-5.6 reasoning and rejects the
             // effort field entirely for GPT-5.4 mini and GPT-5.5 tool calls.
@@ -182,6 +185,60 @@ enum OpenAIChatCompletionsWire {
             }
         }
         return payload
+    }
+
+    /// Prompt caching: Anthropic-style `cache_control` markers (last tool, system prompt, last user or
+    /// tool text) for `cacheControlFormat: "anthropic"`, and `prompt_cache_key` where supported
+    /// (upstream `openai-completions-cache-control.ts`, `openai-prompt-cache.ts`).
+    private static func applyPromptCache(
+        _ cache: ModelPromptCachePolicy,
+        to payload: inout [String: Any],
+        request: ModelGenerationRequest,
+        context: BuildContext
+    ) {
+        let compat = context.model?.compat
+        if compat?.cacheControlFormat == .anthropic {
+            var control: [String: Any] = ["type": "ephemeral"]
+            if cache.longRetention, compat?.supportsLongCacheRetention == true || context.compat.endpoint == .openRouter {
+                control["ttl"] = "1h"
+            }
+            if var tools = payload["tools"] as? [[String: Any]], !tools.isEmpty {
+                tools[tools.count - 1]["cache_control"] = control
+                payload["tools"] = tools
+            }
+            if !context.compat.requiresStringContent, var messages = payload["messages"] as? [[String: Any]] {
+                if let systemIndex = messages.firstIndex(where: { ["system", "developer"].contains($0["role"] as? String ?? "") }) {
+                    messages[systemIndex] = self.markingLastText(messages[systemIndex], control: control)
+                }
+                if let index = messages.lastIndex(where: { ["user", "tool"].contains($0["role"] as? String ?? "") }) {
+                    messages[index] = self.markingLastText(messages[index], control: control)
+                }
+                payload["messages"] = messages
+            }
+        }
+        let supportsKey = compat?.supportsPromptCacheKey ?? (context.compat.endpoint == .openAIPublic)
+        if supportsKey {
+            payload["prompt_cache_key"] = String(request.sessionKey.prefix(64))
+            if cache.longRetention, compat?.supportsLongCacheRetention != false, context.compat.endpoint == .openAIPublic {
+                payload["prompt_cache_retention"] = "24h"
+            }
+        }
+    }
+
+    private static func markingLastText(_ message: [String: Any], control: [String: Any]) -> [String: Any] {
+        var message = message
+        if let text = message["content"] as? String, !text.isEmpty {
+            message["content"] = [["type": "text", "text": text, "cache_control": control]]
+            return message
+        }
+        guard var parts = message["content"] as? [[String: Any]],
+              let index = parts.lastIndex(where: { ($0["type"] as? String) == "text" && !(($0["text"] as? String) ?? "").isEmpty })
+        else {
+            return message
+        }
+        parts[index]["cache_control"] = control
+        message["content"] = parts
+        return message
     }
 
     struct ReasoningPlan {
