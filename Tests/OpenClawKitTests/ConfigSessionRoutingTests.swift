@@ -513,7 +513,7 @@ struct ConfigSessionRoutingTests {
         #expect(ThinkLevel.normalize("think") == .minimal)
         #expect(ThinkLevel.normalize("x-high") == .xhigh)
         #expect(ThinkLevel.normalize("think-harder") == .medium)
-        #expect(ThinkLevel.normalize("max") == .high)
+        #expect(ThinkLevel.normalize("max") == .max)
         #expect(ThinkLevel.supportsXHighThinking(providerID: "openai-codex", modelID: "gpt-5.3-codex") == true)
         #expect(ThinkLevel.supportsXHighThinking(providerID: "openai", modelID: "gpt-4.1-mini") == false)
     }

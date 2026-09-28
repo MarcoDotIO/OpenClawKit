@@ -77,6 +77,47 @@ public enum LLMTaskToolError: Error, LocalizedError, Sendable, Equatable {
 public struct LLMTaskTool: AgentTool {
     public let name: String
 
+    /// JSON Schema of the `llm-task` arguments (upstream `llmTaskToolDefinition.parameters`).
+    public static let parametersSchema: [String: AnyCodable] = [
+        "type": AnyCodable("object"),
+        "properties": AnyCodable([
+            "prompt": Self.property(type: "string", description: "Task instruction for the LLM."),
+            "input": Self.property(type: nil, description: "Optional input payload for the task."),
+            "schema": Self.property(type: nil, description: "Optional JSON Schema to validate the returned JSON."),
+            "provider": Self.property(type: "string", description: "Provider override (e.g. openai, anthropic)."),
+            "model": Self.property(type: "string", description: "Model id override."),
+            "thinking": Self.property(type: "string", description: "Thinking level override."),
+            "authProfileId": Self.property(type: "string", description: "Auth profile override."),
+            "temperature": Self.property(type: "number", description: "Best-effort temperature override."),
+            "maxTokens": Self.property(type: "integer", description: "Best-effort maxTokens override.", minimum: 1),
+            "timeoutMs": Self.property(type: "integer", description: "Timeout for the LLM run.", minimum: 1),
+        ] as [String: AnyCodable]),
+        "required": AnyCodable(["prompt"]),
+    ]
+
+    /// Model-facing description of the tool (upstream `llmTaskToolDefinition`).
+    public var descriptor: AgentToolDescriptor {
+        AgentToolDescriptor(
+            name: self.name,
+            label: "LLM Task",
+            description: "Run a generic JSON-only LLM task and return schema-validated JSON. "
+                + "Designed for orchestration from Lobster workflows via openclaw.invoke.",
+            parameters: Self.parametersSchema,
+            source: .core
+        )
+    }
+
+    private static func property(type: String?, description: String, minimum: Int? = nil) -> AnyCodable {
+        var schema: [String: AnyCodable] = ["description": AnyCodable(description)]
+        if let type {
+            schema["type"] = AnyCodable(type)
+        }
+        if let minimum {
+            schema["minimum"] = AnyCodable(minimum)
+        }
+        return AnyCodable(schema)
+    }
+
     private let modelRouter: ModelRouter
     private let configuration: LLMTaskToolConfiguration
 
@@ -262,7 +303,8 @@ private extension LLMTaskTool {
             modelID: String?
         ) -> ThinkLevel {
             guard thinkingLevel == .adaptive else {
-                return thinkingLevel
+                // A single llm-task call has no runtime orchestration, so `ultra` becomes `max`.
+                return thinkingLevel.providerTransportLevel
             }
             if ThinkLevel.supportsXHighThinking(providerID: providerID, modelID: modelID) {
                 return .xhigh
@@ -282,7 +324,7 @@ private extension LLMTaskTool {
                 return .low
             case .medium:
                 return .medium
-            case .high, .xhigh:
+            case .high, .xhigh, .max, .ultra:
                 return .high
             case .off, .adaptive, nil:
                 return nil

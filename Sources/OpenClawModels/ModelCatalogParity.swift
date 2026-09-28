@@ -79,7 +79,7 @@ public enum OpenClawModelCatalogParity {
         var syntheticSpark = template
         syntheticSpark.id = self.openAIDirectSparkModelID
         syntheticSpark.name = self.openAIDirectSparkModelID
-        syntheticSpark.api = .openAICodexResponses
+        syntheticSpark.api = .openAIChatGPTResponses
         syntheticSpark.reasoning = true
         syntheticSpark.input = [.text]
         syntheticSpark.contextWindow = self.codexSparkContextWindow

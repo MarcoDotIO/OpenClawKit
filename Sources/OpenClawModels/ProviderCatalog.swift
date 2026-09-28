@@ -111,7 +111,7 @@ public enum OpenClawReferenceProviderCatalog {
         entry("vllm", "vLLM", api: .openAICompletions, auth: nil, baseURL: "http://127.0.0.1:8000/v1", modelID: "qwen2.5-coder-32b-instruct"),
         entry("sglang", "SGLang", api: .openAICompletions, auth: .apiKey, baseURL: "http://127.0.0.1:30000/v1", modelID: "Qwen/Qwen3-8B"),
         entry("qwen-portal", "Qwen Portal", api: .openAICompletions, auth: .oauth, baseURL: "https://portal.qwen.ai/v1", modelID: "coder-model"),
-        entry("openai-codex", "OpenAI Codex", api: .openAICodexResponses, auth: .oauth, baseURL: "https://chatgpt.com/backend-api", modelID: "gpt-5.5"),
+        entry("openai-codex", "OpenAI Codex", api: .openAIChatGPTResponses, auth: .oauth, baseURL: "https://chatgpt.com/backend-api", modelID: "gpt-5.5"),
         entry("opencode", "OpenCode Zen", api: .openAICompletions, auth: .apiKey, baseURL: "https://api.opencode.ai/v1", modelID: "claude-opus-4-6"),
         entry("opencode-go", "OpenCode Go", api: .openAICompletions, auth: .apiKey, baseURL: "https://api.opencode.ai/v1", modelID: "kimi-k2.5"),
         entry(
@@ -405,10 +405,14 @@ public enum ModelProviderFactory {
                 return BedrockConverseModelProvider(id: normalizedProviderID, configuration: legacy)
             case .githubCopilot:
                 return GitHubCopilotModelProvider(id: normalizedProviderID, configuration: legacy)
-            case .googleGenerativeAI:
+            case .googleGenerativeAI, .googleVertex:
                 return GoogleGenerativeAIModelProvider(id: normalizedProviderID, configuration: legacy)
-            case .openAIResponses, .openAICodexResponses:
+            case .openAIResponses, .openAIChatGPTResponses, .azureOpenAIResponses:
                 return OpenAIResponsesModelProvider(id: normalizedProviderID, configuration: legacy)
+            case .piMessages:
+                throw OpenClawCoreError.unavailable(
+                    "The pi-messages transport is not implemented in OpenClawKit (provider \(normalizedProviderID))"
+                )
             case .ollama:
                 return OllamaModelProvider(id: normalizedProviderID, configuration: legacy)
             case .openAICompletions:

@@ -48,7 +48,7 @@ struct ProviderCatalogModelFilteringTests {
             ModelDefinitionConfig(
                 id: "gpt-5.3-codex",
                 name: "GPT-5.3 Codex",
-                api: .openAICodexResponses,
+                api: .openAIChatGPTResponses,
                 reasoning: true,
                 input: [.text],
                 contextWindow: 200_000,
@@ -63,7 +63,7 @@ struct ProviderCatalogModelFilteringTests {
 
         #expect(normalized.map(\.id) == ["gpt-5.3-codex", "gpt-5.3-codex-spark"])
         #expect(normalized.last?.name == "gpt-5.3-codex-spark")
-        #expect(normalized.last?.api == .openAICodexResponses)
+        #expect(normalized.last?.api == .openAIChatGPTResponses)
         #expect(normalized.last?.reasoning == true)
         #expect(normalized.last?.input == [.text])
         #expect(normalized.last?.contextWindow == 128_000)
@@ -76,7 +76,7 @@ struct ProviderCatalogModelFilteringTests {
             ModelDefinitionConfig(
                 id: "gpt-5.3-codex-spark",
                 name: "GPT-5.3 Codex Spark",
-                api: .openAICodexResponses,
+                api: .openAIChatGPTResponses,
                 reasoning: true,
                 input: [.text],
                 contextWindow: 128_000,
