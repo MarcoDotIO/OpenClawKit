@@ -1,20 +1,7 @@
-#if canImport(UserNotifications)
 import Foundation
+#if canImport(UserNotifications)
 import UserNotifications
-
-/// Delivered-notification snapshot returned by ``NotificationCentering/deliveredNotifications()``.
-public struct NotificationSnapshot: @unchecked Sendable {
-    /// Notification request identifier.
-    public let identifier: String
-    /// Notification `userInfo` payload.
-    public let userInfo: [AnyHashable: Any]
-
-    /// Creates a snapshot.
-    public init(identifier: String, userInfo: [AnyHashable: Any]) {
-        self.identifier = identifier
-        self.userInfo = userInfo
-    }
-}
+#endif
 
 /// Notification authorization state, independent of the platform's `UNAuthorizationStatus` cases.
 public enum NotificationAuthorizationStatus: Sendable {
@@ -35,6 +22,21 @@ public enum NotificationAuthorizationStatus: Sendable {
         case .authorized, .provisional, .ephemeral: true
         case .notDetermined, .denied: false
         }
+    }
+}
+
+#if canImport(UserNotifications)
+/// Delivered-notification snapshot returned by ``NotificationCentering/deliveredNotifications()``.
+public struct NotificationSnapshot: @unchecked Sendable {
+    /// Notification request identifier.
+    public let identifier: String
+    /// Notification `userInfo` payload.
+    public let userInfo: [AnyHashable: Any]
+
+    /// Creates a snapshot.
+    public init(identifier: String, userInfo: [AnyHashable: Any]) {
+        self.identifier = identifier
+        self.userInfo = userInfo
     }
 }
 
