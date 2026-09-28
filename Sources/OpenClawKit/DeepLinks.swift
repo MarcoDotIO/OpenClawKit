@@ -81,6 +81,37 @@ public enum DeepLinkRoute: Sendable, Equatable {
     case gatewayAdd(GatewayAddDeepLink)
     /// `openclaw://dashboard`: open the dashboard / Control UI.
     case dashboard
+    /// `openclaw://talk/start[?sessionKey=...]`: start live voice (hosts route it to their talk
+    /// controller, for example `OpenClawIntentRouter.shared.startLiveVoice(sessionKey:)`).
+    case talkStart(TalkStartDeepLink)
+}
+
+/// `openclaw://talk/start`: start live voice, optionally in one session.
+///
+/// The link carries no credentials and never connects anywhere; it only asks the app to open talk
+/// mode, so hosts may still confirm with the user first.
+public struct TalkStartDeepLink: Sendable, Equatable {
+    /// Trimmed session key, or `nil` for the app's current session.
+    public let sessionKey: String?
+
+    /// Creates a talk-start link.
+    /// - Parameter sessionKey: Session key; blank values become `nil`.
+    public init(sessionKey: String? = nil) {
+        let trimmed = sessionKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        self.sessionKey = trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// Canonical URL (`openclaw://talk/start`, plus `sessionKey` when set).
+    public var url: URL? {
+        var components = URLComponents()
+        components.scheme = "openclaw"
+        components.host = "talk"
+        components.path = "/start"
+        if let sessionKey {
+            components.queryItems = [URLQueryItem(name: "sessionKey", value: sessionKey)]
+        }
+        return components.url
+    }
 }
 
 /// An address to add, never a grant of access or a replacement for the current gateway.
@@ -672,6 +703,11 @@ public enum DeepLinkParser {
 
         case "dashboard":
             return .dashboard
+
+        case "talk":
+            let path = comps.percentEncodedPath.trimmingCharacters(in: CharacterSet(charactersIn: "/")).lowercased()
+            guard path == "start", comps.user == nil, comps.password == nil, comps.port == nil else { return nil }
+            return .talkStart(TalkStartDeepLink(sessionKey: query["sessionKey"]))
 
         default:
             return nil
