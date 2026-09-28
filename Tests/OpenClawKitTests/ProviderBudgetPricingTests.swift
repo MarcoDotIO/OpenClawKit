@@ -72,7 +72,13 @@ struct ProviderBudgetPricingTests {
             enabled: true,
             baseURL: "https://llm.example/v1",
             apiKey: "k",
-            models: [ModelDefinitionConfig(id: "vision", input: [.text, .image], mediaInput: ModelMediaInputConfig(image: ModelImageInputLimits(maxSidePx: 64)))]
+            models: [
+                ModelDefinitionConfig(
+                    id: "vision",
+                    input: [.text, .image],
+                    mediaInput: ModelMediaInputConfig(image: ModelImageInputLimits(maxSidePx: 64))
+                ),
+            ]
         )
         let provider = ProviderServiceOpenAIModelProvider(
             id: "custom",
