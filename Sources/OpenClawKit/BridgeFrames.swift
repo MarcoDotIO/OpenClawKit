@@ -13,12 +13,34 @@ public struct BridgeInvokeRequest: Codable, Sendable {
     public let id: String
     public let command: String
     public let paramsJSON: String?
+    /// Node id the gateway addressed (`node.invoke.request.nodeId`).
+    public let nodeId: String?
+    /// Session key the invoke belongs to, when the gateway supplies one.
+    public let sessionKey: String?
+    /// Gateway-requested timeout in milliseconds.
+    public let timeoutMs: Int?
+    /// Idempotency key for invokes that must not repeat (for example `computer.act`).
+    public let idempotencyKey: String?
 
-    public init(type: String = "invoke", id: String, command: String, paramsJSON: String? = nil) {
+    /// Creates an invoke request; the gateway metadata fields default to `nil`.
+    public init(
+        type: String = "invoke",
+        id: String,
+        command: String,
+        paramsJSON: String? = nil,
+        nodeId: String? = nil,
+        sessionKey: String? = nil,
+        timeoutMs: Int? = nil,
+        idempotencyKey: String? = nil)
+    {
         self.type = type
         self.id = id
         self.command = command
         self.paramsJSON = paramsJSON
+        self.nodeId = nodeId
+        self.sessionKey = sessionKey
+        self.timeoutMs = timeoutMs
+        self.idempotencyKey = idempotencyKey
     }
 }
 
@@ -26,19 +48,24 @@ public struct BridgeInvokeResponse: Codable, Sendable {
     public let type: String
     public let id: String
     public let ok: Bool
+    /// Structured result payload sent as `node.invoke.result.payload`.
+    public let payload: AnyCodable?
     public let payloadJSON: String?
     public let error: OpenClawNodeError?
 
+    /// Creates an invoke response; `payload` carries structured results next to `payloadJSON`.
     public init(
         type: String = "invoke-res",
         id: String,
         ok: Bool,
+        payload: AnyCodable? = nil,
         payloadJSON: String? = nil,
         error: OpenClawNodeError? = nil)
     {
         self.type = type
         self.id = id
         self.ok = ok
+        self.payload = payload
         self.payloadJSON = payloadJSON
         self.error = error
     }
