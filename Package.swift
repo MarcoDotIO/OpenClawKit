@@ -259,6 +259,7 @@ targets += [
 
 let package = Package(
     name: "OpenClawKit",
+    defaultLocalization: "en",
     platforms: [
         .iOS(.v17),
         .macOS(.v14),
