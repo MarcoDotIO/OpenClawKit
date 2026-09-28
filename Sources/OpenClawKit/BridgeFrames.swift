@@ -1,5 +1,7 @@
 import Foundation
 
+/// Legacy TCP bridge frame (retired upstream); scheduled for removal in the next breaking release.
+@available(*, deprecated, message: "Legacy TCP bridge frame; nodes use the gateway WebSocket protocol")
 public struct BridgeBaseFrame: Codable, Sendable {
     public let type: String
 
@@ -82,6 +84,8 @@ public struct BridgeInvokeResponse: Codable, Sendable {
     }
 }
 
+/// Legacy TCP bridge frame (retired upstream); scheduled for removal in the next breaking release.
+@available(*, deprecated, message: "Legacy TCP bridge frame; nodes use the gateway WebSocket protocol")
 public struct BridgeEventFrame: Codable, Sendable {
     public let type: String
     public let event: String
@@ -94,6 +98,8 @@ public struct BridgeEventFrame: Codable, Sendable {
     }
 }
 
+/// Legacy TCP bridge frame (retired upstream); scheduled for removal in the next breaking release.
+@available(*, deprecated, message: "Legacy TCP bridge frame; nodes use the gateway WebSocket protocol")
 public struct BridgeHello: Codable, Sendable {
     public let type: String
     public let nodeId: String
@@ -140,6 +146,8 @@ public struct BridgeHello: Codable, Sendable {
     }
 }
 
+/// Legacy TCP bridge frame (retired upstream); scheduled for removal in the next breaking release.
+@available(*, deprecated, message: "Legacy TCP bridge frame; nodes use the gateway WebSocket protocol")
 public struct BridgeHelloOk: Codable, Sendable {
     public let type: String
     public let serverName: String
@@ -159,6 +167,8 @@ public struct BridgeHelloOk: Codable, Sendable {
     }
 }
 
+/// Legacy TCP bridge frame (retired upstream); scheduled for removal in the next breaking release.
+@available(*, deprecated, message: "Legacy TCP bridge frame; nodes use the gateway WebSocket protocol")
 public struct BridgePairRequest: Codable, Sendable {
     public let type: String
     public let nodeId: String
@@ -208,6 +218,8 @@ public struct BridgePairRequest: Codable, Sendable {
     }
 }
 
+/// Legacy TCP bridge frame (retired upstream); scheduled for removal in the next breaking release.
+@available(*, deprecated, message: "Legacy TCP bridge frame; nodes use the gateway WebSocket protocol")
 public struct BridgePairOk: Codable, Sendable {
     public let type: String
     public let token: String
@@ -218,6 +230,8 @@ public struct BridgePairOk: Codable, Sendable {
     }
 }
 
+/// Legacy TCP bridge frame (retired upstream); scheduled for removal in the next breaking release.
+@available(*, deprecated, message: "Legacy TCP bridge frame; nodes use the gateway WebSocket protocol")
 public struct BridgePing: Codable, Sendable {
     public let type: String
     public let id: String
@@ -228,6 +242,8 @@ public struct BridgePing: Codable, Sendable {
     }
 }
 
+/// Legacy TCP bridge frame (retired upstream); scheduled for removal in the next breaking release.
+@available(*, deprecated, message: "Legacy TCP bridge frame; nodes use the gateway WebSocket protocol")
 public struct BridgePong: Codable, Sendable {
     public let type: String
     public let id: String
@@ -238,6 +254,8 @@ public struct BridgePong: Codable, Sendable {
     }
 }
 
+/// Legacy TCP bridge frame (retired upstream); scheduled for removal in the next breaking release.
+@available(*, deprecated, message: "Legacy TCP bridge frame; nodes use the gateway WebSocket protocol")
 public struct BridgeErrorFrame: Codable, Sendable {
     public let type: String
     public let code: String
@@ -252,6 +270,8 @@ public struct BridgeErrorFrame: Codable, Sendable {
 
 // MARK: - Optional RPC (node -> bridge)
 
+/// Legacy TCP bridge frame (retired upstream); scheduled for removal in the next breaking release.
+@available(*, deprecated, message: "Legacy TCP bridge frame; nodes use the gateway WebSocket protocol")
 public struct BridgeRPCRequest: Codable, Sendable {
     public let type: String
     public let id: String
@@ -266,6 +286,8 @@ public struct BridgeRPCRequest: Codable, Sendable {
     }
 }
 
+/// Legacy TCP bridge frame (retired upstream); scheduled for removal in the next breaking release.
+@available(*, deprecated, message: "Legacy TCP bridge frame; nodes use the gateway WebSocket protocol")
 public struct BridgeRPCError: Codable, Sendable, Equatable {
     public let code: String
     public let message: String
@@ -276,6 +298,8 @@ public struct BridgeRPCError: Codable, Sendable, Equatable {
     }
 }
 
+/// Legacy TCP bridge frame (retired upstream); scheduled for removal in the next breaking release.
+@available(*, deprecated, message: "Legacy TCP bridge frame; nodes use the gateway WebSocket protocol")
 public struct BridgeRPCResponse: Codable, Sendable {
     public let type: String
     public let id: String

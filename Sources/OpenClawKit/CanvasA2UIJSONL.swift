@@ -1,5 +1,7 @@
 import Foundation
 
+/// Retired A2UI canvas surface; scheduled for removal in the next breaking release.
+@available(*, deprecated, message: "Retired upstream in OpenClaw 2026.8.1 (#126030); canvas is a widget presenter")
 public enum OpenClawCanvasA2UIJSONL: Sendable {
     public struct ParsedItem: Sendable {
         public var lineNumber: Int
