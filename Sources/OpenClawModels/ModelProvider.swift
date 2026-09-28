@@ -696,6 +696,21 @@ public actor ModelRouter {
         self.providers.keys.sorted()
     }
 
+    /// Identifier and contract-v2 capabilities of the first registered provider that would serve
+    /// `request` (explicit provider, fallbacks, then the default), or `nil` when none is registered.
+    ///
+    /// The agent loop uses this to decide whether to send transcript messages and tools.
+    /// - Parameter request: Generation request.
+    /// - Returns: Provider id and capabilities.
+    public func primaryProvider(for request: ModelGenerationRequest) -> (id: String, capabilities: ModelProviderCapabilities)? {
+        for providerID in self.resolveProviderOrder(for: request) {
+            if let provider = self.providers[providerID] {
+                return (providerID, provider.capabilities)
+            }
+        }
+        return nil
+    }
+
     /// Routes generation request to requested/default provider.
     /// - Parameter request: Generation request payload.
     /// - Returns: Provider response.

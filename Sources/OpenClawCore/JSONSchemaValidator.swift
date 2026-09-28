@@ -155,16 +155,16 @@ public enum JSONSchemaValidator {
 
     private static func validateNumber(_ number: Double, schema: [String: AnyCodable], path: String) throws {
         if let minimum = schema["minimum"]?.doubleValue, number < minimum {
-            throw self.fail(path, "must be >= \(self.render(minimum))")
+            throw self.fail(path, "must be >= \(minimum)")
         }
         if let maximum = schema["maximum"]?.doubleValue, number > maximum {
-            throw self.fail(path, "must be <= \(self.render(maximum))")
+            throw self.fail(path, "must be <= \(maximum)")
         }
         if let exclusive = schema["exclusiveMinimum"]?.doubleValue, number <= exclusive {
-            throw self.fail(path, "must be > \(self.render(exclusive))")
+            throw self.fail(path, "must be > \(exclusive)")
         }
         if let exclusive = schema["exclusiveMaximum"]?.doubleValue, number >= exclusive {
-            throw self.fail(path, "must be < \(self.render(exclusive))")
+            throw self.fail(path, "must be < \(exclusive)")
         }
     }
 
@@ -182,13 +182,6 @@ public enum JSONSchemaValidator {
         {
             throw self.fail(path, "does not match pattern \(pattern)")
         }
-    }
-
-    private static func render(_ value: Double) -> String {
-        if value.rounded() == value, abs(value) < 1e15 {
-            return String(Int64(value))
-        }
-        return String(value)
     }
 
     private static func isIntegral(_ value: AnyCodable) -> Bool {
