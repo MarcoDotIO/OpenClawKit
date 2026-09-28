@@ -192,7 +192,10 @@ public actor GatewayOpenClawIntentHost: OpenClawIntentHost {
         if let thinking = Self.normalized(self.configuration.thinking) {
             params["thinking"] = AnyCodable(thinking)
         }
-        params["timeoutMs"] = AnyCodable(Int(self.configuration.runTimeout * 1000))
+        // Clamp before converting: `Int` is 32-bit on watchOS (arm64_32) and a huge or non-finite
+        // timeout must not trap.
+        let timeoutMs = self.configuration.runTimeout * 1000
+        params["timeoutMs"] = AnyCodable(timeoutMs.isFinite ? Int(min(max(0, timeoutMs), Double(Int32.max))) : 0)
         if !attachments.isEmpty {
             params["attachments"] = AnyCodable(attachments.map { AnyCodable($0.chatSendPayload) })
         }
