@@ -263,7 +263,6 @@ struct AgentLoop: Sendable {
 
     private static let mutationToolNames: Set<String> = ["write", "edit", "apply_patch", "exec", "process"]
 
-    // swiftlint:disable:next function_body_length cyclomatic_complexity
     func run(
         _ request: AgentRunRequest,
         streaming: Bool,
@@ -345,6 +344,7 @@ struct AgentLoop: Sendable {
                 agentID: agentID,
                 policy: policy,
                 enforcePolicy: false,
+                searchCatalog: nil,
                 sessionID: sessionID,
                 request: request,
                 transcript: transcript,
@@ -382,7 +382,8 @@ struct AgentLoop: Sendable {
                 let capabilities = primary?.capabilities ?? .legacy
                 let usesContractV2 = capabilities.supportsTools || capabilities.supportsTranscript
 
-                let descriptors = await self.visibleDescriptors(policy: policy)
+                let toolView = await self.toolView(policy: policy)
+                let descriptors = toolView.visible
                 var contextMessages = try await transcript.contextMessages(sessionID: sessionID)
                 let engine = await self.deps.contextEngines.selected()
                 var systemAddition: String?
@@ -422,7 +423,8 @@ struct AgentLoop: Sendable {
                     workspace: workspace,
                     request: request,
                     session: sessionRecord,
-                    addition: systemAddition
+                    addition: systemAddition,
+                    directory: toolView.catalog?.configuration.mode == .directory ? toolView.catalog?.directoryPrompt() : nil
                 )
                 let modelRequest = Self.makeModelRequest(
                     from: request,
@@ -491,6 +493,7 @@ struct AgentLoop: Sendable {
                     agentID: agentID,
                     policy: policy,
                     enforcePolicy: true,
+                    searchCatalog: toolView.catalog,
                     sessionID: sessionID,
                     request: request,
                     transcript: transcript,
@@ -670,9 +673,73 @@ struct AgentLoop: Sendable {
 
     // MARK: - Tools
 
-    private func visibleDescriptors(policy: ToolPolicy) async -> [AgentToolDescriptor] {
-        let descriptors = await self.deps.toolRegistry.descriptors()
-        return policy.filter(descriptors)
+    struct ToolView: Sendable {
+        let visible: [AgentToolDescriptor]
+        let catalog: ToolSearchCatalog?
+    }
+
+    /// Policy-filtered tools; large catalogs move behind Tool Search control tools.
+    private func toolView(policy: ToolPolicy) async -> ToolView {
+        let descriptors = policy.filter(await self.deps.toolRegistry.descriptors())
+        let configuration = self.deps.tools.toolSearch ?? .embeddedDefault
+        let catalog = ToolSearchCatalog(descriptors: descriptors, configuration: configuration)
+        guard catalog.isActive else {
+            return ToolView(visible: descriptors, catalog: nil)
+        }
+        return ToolView(visible: catalog.modelVisibleDescriptors, catalog: catalog)
+    }
+
+    /// Runs a Tool Search control call (`tool_search`, `tool_describe`, `tool_call`).
+    private func executeSearchControl(
+        _ call: AgentToolCall,
+        catalog: ToolSearchCatalog,
+        context: AgentToolInvocationContext,
+        agentID: String,
+        policy: ToolPolicy,
+        request: AgentRunRequest,
+        events: AgentEventSequencer,
+        recorder: AgentRunRecorder
+    ) async throws -> AgentToolResult {
+        let toolCallID = call.id ?? AgentToolCall.makeID()
+        switch call.name {
+        case ToolSearchCatalog.searchToolName:
+            return AgentToolResult(name: call.name, toolCallID: toolCallID, output: catalog.runSearch(call.arguments))
+        case ToolSearchCatalog.describeToolName:
+            return AgentToolResult(name: call.name, toolCallID: toolCallID, output: catalog.runDescribe(call.arguments))
+        default:
+            guard let targetID = call.arguments["id"]?.stringValue, let descriptor = catalog.descriptor(for: targetID) else {
+                return AgentToolResult(
+                    name: call.name,
+                    toolCallID: toolCallID,
+                    output: .error("Unknown tool id: \(call.arguments["id"]?.stringValue ?? ""); use tool_search first")
+                )
+            }
+            let arguments = call.arguments["args"]?.dictionaryValue ?? [:]
+            if let violation = Self.schemaViolation(arguments, descriptor: descriptor) {
+                return AgentToolResult(
+                    name: call.name,
+                    toolCallID: toolCallID,
+                    output: .error("Invalid arguments for \(descriptor.name): \(violation). Expected \(ToolSearchCatalog.inputSignature(descriptor))")
+                )
+            }
+            let inner = try await self.executeOne(
+                AgentToolCall(id: "\(toolCallID).inner", name: descriptor.name, arguments: arguments),
+                descriptor: descriptor,
+                context: AgentToolInvocationContext(
+                    runID: context.runID,
+                    sessionKey: context.sessionKey,
+                    agentID: context.agentID,
+                    parentToolCallID: toolCallID
+                ),
+                agentID: agentID,
+                policy: policy,
+                enforcePolicy: true,
+                request: request,
+                events: events,
+                recorder: recorder
+            )
+            return AgentToolResult(name: call.name, toolCallID: toolCallID, output: inner.output, durationMs: inner.durationMs)
+        }
     }
 
     static func effectivePolicy(base: ToolPolicy, request: AgentRunRequest, session: SessionRecord?) -> ToolPolicy {
@@ -698,13 +765,13 @@ struct AgentLoop: Sendable {
         return policy
     }
 
-    // swiftlint:disable:next function_parameter_count
     private func executeBatch(
         _ calls: [AgentToolCall],
         context: AgentToolInvocationContext,
         agentID: String,
         policy: ToolPolicy,
         enforcePolicy: Bool,
+        searchCatalog: ToolSearchCatalog?,
         sessionID: String,
         request: AgentRunRequest,
         transcript: any SessionTranscriptStore,
@@ -713,21 +780,50 @@ struct AgentLoop: Sendable {
         loopHistory: inout [String]
     ) async throws -> [AgentToolResult] {
         var descriptors: [String: AgentToolDescriptor] = [:]
-        for call in calls {
+        var controlCalls: Set<Int> = []
+        for (index, call) in calls.enumerated() {
             if let tool = await self.deps.toolRegistry.tool(named: call.name) {
                 descriptors[call.name] = tool.descriptor
+            } else if searchCatalog != nil, ToolSearchCatalog.controlToolNames.contains(call.name) {
+                controlCalls.insert(index)
             }
+        }
+        let controlCallIndices = controlCalls
+        let resolvedDescriptors = descriptors
+        let dispatch: @Sendable (Int, AgentToolCall) async throws -> AgentToolResult = { index, call in
+            let controlCalls = controlCallIndices
+            let descriptors = resolvedDescriptors
+            if controlCalls.contains(index), let searchCatalog {
+                return try await self.executeSearchControl(
+                    call,
+                    catalog: searchCatalog,
+                    context: context,
+                    agentID: agentID,
+                    policy: policy,
+                    request: request,
+                    events: events,
+                    recorder: recorder
+                )
+            }
+            return try await self.executeOne(
+                call,
+                descriptor: descriptors[call.name],
+                context: context,
+                agentID: agentID,
+                policy: policy,
+                enforcePolicy: enforcePolicy,
+                request: request,
+                events: events,
+                recorder: recorder
+            )
         }
         let parallel = calls.count > 1 && calls.allSatisfy { descriptors[$0.name]?.executionMode == .parallel }
         var results: [AgentToolResult] = []
         if parallel {
             results = try await withThrowingTaskGroup(of: (Int, AgentToolResult).self) { group in
                 for (index, call) in calls.enumerated() {
-                    let descriptor = descriptors[call.name]
                     group.addTask {
-                        (index, try await self.executeOne(call, descriptor: descriptor, context: context, agentID: agentID,
-                                                          policy: policy, enforcePolicy: enforcePolicy, request: request,
-                                                          events: events, recorder: recorder))
+                        (index, try await dispatch(index, call))
                     }
                 }
                 var ordered: [(Int, AgentToolResult)] = []
@@ -737,13 +833,9 @@ struct AgentLoop: Sendable {
                 return ordered.sorted { $0.0 < $1.0 }.map(\.1)
             }
         } else {
-            for call in calls {
+            for (index, call) in calls.enumerated() {
                 try Task.checkCancellation()
-                results.append(
-                    try await self.executeOne(call, descriptor: descriptors[call.name], context: context, agentID: agentID,
-                                              policy: policy, enforcePolicy: enforcePolicy, request: request,
-                                              events: events, recorder: recorder)
-                )
+                results.append(try await dispatch(index, call))
             }
         }
         for result in results {
@@ -770,7 +862,6 @@ struct AgentLoop: Sendable {
         return results
     }
 
-    // swiftlint:disable:next function_parameter_count function_body_length
     private func executeOne(
         _ call: AgentToolCall,
         descriptor: AgentToolDescriptor?,
@@ -1015,11 +1106,16 @@ struct AgentLoop: Sendable {
         workspace: WorkspacePrompt,
         request: AgentRunRequest,
         session: SessionRecord?,
-        addition: String?
+        addition: String?,
+        directory: String?
     ) async -> String? {
         var sections: [String] = []
         if let base = self.deps.configuration.baseSystemPrompt?.trimmingCharacters(in: .whitespacesAndNewlines), !base.isEmpty {
             sections.append(base)
+        }
+        // The tool directory is cache-stable, so it precedes every dynamic section.
+        if let directory {
+            sections.append(directory)
         }
         if let bootstrap = workspace.bootstrap {
             sections.append(bootstrap)
@@ -1062,7 +1158,6 @@ struct AgentLoop: Sendable {
         return normalized
     }
 
-    // swiftlint:disable:next function_parameter_count
     static func makeModelRequest(
         from request: AgentRunRequest,
         legacyPrompt: String,

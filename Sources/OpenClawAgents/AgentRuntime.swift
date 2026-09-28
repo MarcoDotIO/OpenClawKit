@@ -967,7 +967,6 @@ public actor EmbeddedAgentRuntime {
         )
     }
 
-    // swiftlint:disable:next function_body_length
     private func launch(
         _ request: AgentRunRequest,
         timeoutMs: Int?,

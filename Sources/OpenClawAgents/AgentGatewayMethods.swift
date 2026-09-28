@@ -113,7 +113,6 @@ public struct AgentGatewayFallbacks: Sendable {
     }
 }
 
-// swiftlint:disable:next type_body_length
 struct AgentGatewayHandlers: Sendable {
     let runtime: EmbeddedAgentRuntime
     let fallbacks: AgentGatewayFallbacks

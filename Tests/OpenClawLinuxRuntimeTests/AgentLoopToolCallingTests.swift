@@ -358,9 +358,10 @@ struct AgentLoopToolCallingTests {
         })
         let runtime = try await self.makeRuntime(provider: provider, hooks: hooks)
         let approvals = runtime.approvals
+        let updates = await approvals.updates()
         let resolver = Task {
             var decisions: [ApprovalDecision] = [.allowOnce, .deny]
-            for await approval in await approvals.updates() where approval.state == .pending {
+            for await approval in updates where approval.state == .pending {
                 let decision = decisions.removeFirst()
                 _ = try? await approvals.resolve(id: approval.id, decision: decision)
                 if decisions.isEmpty { break }
