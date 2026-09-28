@@ -416,9 +416,10 @@ public actor JSONLSessionTranscriptStore: SessionTranscriptStore {
         if self.cache[id] != nil || FileManager.default.fileExists(atPath: url.path) {
             throw SessionTranscriptError.sessionExists(id)
         }
-        try FileManager.default.createDirectory(at: self.directory, withIntermediateDirectories: true)
+        try OpenClawFileSystem.ensurePrivateDirectory(self.directory)
         let header = SessionTranscriptHeader(id: id, cwd: cwd, parentSession: parentSession)
         try (Self.encodeLine(header) + "\n").write(to: url, atomically: true, encoding: .utf8)
+        OpenClawFileSystem.restrictToOwner(url)
         self.cache[id] = Session(header: header, entries: [], leaf: nil)
         return header
     }

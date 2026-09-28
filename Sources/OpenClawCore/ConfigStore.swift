@@ -71,11 +71,9 @@ public actor ConfigStore {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(AnyCodable(.object(tree)))
-        try FileManager.default.createDirectory(
-            at: self.fileURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
+        try OpenClawFileSystem.ensurePrivateDirectory(self.fileURL.deletingLastPathComponent())
         try data.write(to: self.fileURL, options: [.atomic])
+        OpenClawFileSystem.restrictToOwner(self.fileURL)
         self.cached = nil
     }
 

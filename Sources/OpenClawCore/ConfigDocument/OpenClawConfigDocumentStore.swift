@@ -387,7 +387,7 @@ public actor OpenClawConfigDocumentStore {
 
         let text = OpenClawJSON5.serialize(AnyCodable(.object(tree)), keyOrder: keyOrder, prettyPrinted: true) + "\n"
         let data = Data(text.utf8)
-        try OpenClawFileSystem.ensureDirectory(self.fileURL.deletingLastPathComponent())
+        try OpenClawFileSystem.ensurePrivateDirectory(self.fileURL.deletingLastPathComponent())
         if let previousData {
             try self.rotateBackups(previous: previousData, fileManager: fileManager)
         }

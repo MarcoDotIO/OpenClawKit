@@ -604,12 +604,10 @@ public actor SessionStore {
 
     /// Saves current records to disk atomically.
     public func save() throws {
-        try FileManager.default.createDirectory(
-            at: self.fileURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
+        try OpenClawFileSystem.ensurePrivateDirectory(self.fileURL.deletingLastPathComponent())
         let data = try JSONEncoder().encode(self.records)
         try data.write(to: self.fileURL, options: [.atomic])
+        OpenClawFileSystem.restrictToOwner(self.fileURL)
     }
 
     /// Inserts or replaces a session record.
