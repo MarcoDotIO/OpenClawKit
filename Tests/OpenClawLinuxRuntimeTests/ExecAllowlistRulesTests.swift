@@ -47,7 +47,8 @@ struct ExecAllowlistRulesTests {
         #expect(decoded == entry)
         #expect(decoded.isAllowAlways)
         // Legacy bare strings and Node's floating `Date.now()` values decode.
-        let legacy = try JSONDecoder().decode([ExecAllowlistEntry].self, from: Data(#"[" /usr/bin/rg ", {"pattern": "x", "lastUsedAt": 1700000000000.4}]"#.utf8))
+        let legacyJSON = #"[" /usr/bin/rg ", {"pattern": "x", "lastUsedAt": 1700000000000.4}]"#
+        let legacy = try JSONDecoder().decode([ExecAllowlistEntry].self, from: Data(legacyJSON.utf8))
         #expect(legacy[0].pattern == "/usr/bin/rg")
         #expect(legacy[1].lastUsedAt == Int64(1_700_000_000_000))
     }
@@ -275,7 +276,9 @@ struct ExecAllowlistRulesTests {
     func allowAlwaysGrantsBindArgvAndSkipInterpreters() async throws {
         let path = ["PATH": "/usr/bin:/bin"]
         let security = SecurityRuntime()
-        let grant = try #require(try await security.recordAllowAlways(argv: ["printf", "safe_marker"], cwd: "/", commandText: "printf safe_marker", environment: path))
+        let grant = try #require(
+            try await security.recordAllowAlways(argv: ["printf", "safe_marker"], cwd: "/", commandText: "printf safe_marker", environment: path)
+        )
         #expect(grant.isAllowAlways)
         #expect(grant.commandText == "printf safe_marker")
         #expect(grant.argPattern?.hasPrefix(ExecAllowlistMatcher.cwdBoundArgPatternPrefix) == true)
@@ -291,7 +294,14 @@ struct ExecAllowlistRulesTests {
         for interpreter in ["sed", "awk", "python3", "node", "perl", "xargs", "find"] {
             #expect(try await security.recordAllowAlways(argv: [interpreter, "inline-program"], cwd: "/", environment: path) == nil)
         }
-        let r2 = ExecCommandResolution(rawExecutable: "r2", resolvedPath: "/usr/local/bin/r2", resolvedRealPath: "/usr/local/bin/r2", executableName: "r2", cwd: nil, argv: ["r2"])
+        let r2 = ExecCommandResolution(
+            rawExecutable: "r2",
+            resolvedPath: "/usr/local/bin/r2",
+            resolvedRealPath: "/usr/local/bin/r2",
+            executableName: "r2",
+            cwd: nil,
+            argv: ["r2"]
+        )
         #expect(!ExecCommandResolution.isInterpreterLikePersistentGrantTarget(r2))
         #expect(ExecCommandResolution.isInterpreterLikePersistentGrantTarget(Self.resolution("/usr/bin/python3.13")))
     }

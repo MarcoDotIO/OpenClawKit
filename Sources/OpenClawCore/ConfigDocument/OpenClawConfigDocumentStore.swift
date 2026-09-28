@@ -144,7 +144,7 @@ public actor OpenClawConfigDocumentStore {
     /// Config file location.
     public let fileURL: URL
     /// Whether ``fileURL`` is the default location (``defaultConfigURL(environment:)``) rather than a host override.
-    public let usesDefaultLocation: Bool
+    nonisolated public let usesDefaultLocation: Bool
     private let environment: [String: String]
     private let observer: Observer?
     private var lastKeyOrder = ConfigKeyOrder()
