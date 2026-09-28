@@ -59,6 +59,8 @@ var targets: [Target] = [
         name: "OpenClawSkills",
         dependencies: [
             "OpenClawCore",
+            "OpenClawProtocol",
+            "OpenClawGateway",
             .product(name: "WasmKit", package: "WasmKit", condition: .when(platforms: [.macOS, .iOS])),
             .product(name: "WasmKitWASI", package: "WasmKit", condition: .when(platforms: [.macOS, .iOS])),
             .product(name: "SystemPackage", package: "swift-system", condition: .when(platforms: [.macOS, .iOS])),
@@ -83,7 +85,15 @@ var targets: [Target] = [
     ),
     .target(
         name: "OpenClawPlugins",
-        dependencies: ["OpenClawCore", "OpenClawProtocol", "OpenClawGateway", "OpenClawAgents"],
+        dependencies: [
+            "OpenClawCore",
+            "OpenClawProtocol",
+            "OpenClawGateway",
+            "OpenClawAgents",
+            "OpenClawSkills",
+            "OpenClawMemory",
+            "OpenClawMCP",
+        ],
         swiftSettings: [
             .enableUpcomingFeature("StrictConcurrency"),
         ]
@@ -105,7 +115,7 @@ var targets: [Target] = [
     ),
     .target(
         name: "OpenClawMemory",
-        dependencies: ["OpenClawCore", "OpenClawProtocol"],
+        dependencies: ["OpenClawCore", "OpenClawProtocol", "OpenClawGateway", "OpenClawAgents"],
         swiftSettings: [
             .enableUpcomingFeature("StrictConcurrency"),
         ]
@@ -121,7 +131,7 @@ var targets: [Target] = [
     // stdio transport is limited to macOS/Linux at the source level.
     .target(
         name: "OpenClawMCP",
-        dependencies: ["OpenClawCore", "OpenClawProtocol", "OpenClawAgents"],
+        dependencies: ["OpenClawCore", "OpenClawProtocol", "OpenClawGateway", "OpenClawAgents"],
         swiftSettings: [
             .enableUpcomingFeature("StrictConcurrency"),
         ]
