@@ -173,6 +173,7 @@ public actor MCPStreamableHTTPTransport: MCPTransport {
     private let http: any MCPHTTPStreaming
     private let maxEventBytes: Int
     private let openServerStream: Bool
+    private let authorization: (any MCPAuthorizationProvider)?
     private var sessionID: String?
     private var protocolVersion: String?
     private var readers: [UUID: Task<Void, Never>] = [:]
@@ -186,18 +187,21 @@ public actor MCPStreamableHTTPTransport: MCPTransport {
     ///   - http: Streaming HTTP client.
     ///   - maxEventBytes: Size cap for one message or SSE event.
     ///   - openServerStream: Open the optional GET stream for server-initiated messages.
+    ///   - authorization: OAuth provider (`auth: "oauth"`); a 401 is retried once after it handles the challenge.
     public init(
         url: URL,
         headers: [String: String] = [:],
         http: any MCPHTTPStreaming = URLSessionMCPHTTPStreaming(),
         maxEventBytes: Int = OpenClawMCP.defaultMaxMessageBytes,
-        openServerStream: Bool = true
+        openServerStream: Bool = true,
+        authorization: (any MCPAuthorizationProvider)? = nil
     ) {
         self.url = url
         self.headers = headers
         self.http = http
         self.maxEventBytes = maxEventBytes
         self.openServerStream = openServerStream
+        self.authorization = authorization
         (self.events, self.continuation) = AsyncStream<MCPTransportEvent>.makeStream()
     }
 
@@ -217,11 +221,19 @@ public actor MCPStreamableHTTPTransport: MCPTransport {
     /// POSTs one message and routes the response messages to ``events``.
     public func send(_ message: MCPJSONRPCMessage) async throws {
         guard !self.isClosed else { throw MCPTransportError.closed("transport closed") }
-        var request = self.makeRequest(method: "POST")
+        var request = try await self.authorizedRequest(method: "POST")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
         request.httpBody = try message.encoded()
-        let (response, body) = try await self.http.stream(request)
+        var (response, body) = try await self.http.stream(request)
+        if response.statusCode == 401, let authorization = self.authorization,
+           try await authorization.handleUnauthorized(wwwAuthenticate: MCPHTTPSupport.header(response, "WWW-Authenticate")) {
+            _ = try? await MCPHTTPSupport.collect(body, limit: 64 * 1024)
+            if let header = try await authorization.authorizationHeader() {
+                request.setValue(header, forHTTPHeaderField: "Authorization")
+            }
+            (response, body) = try await self.http.stream(request)
+        }
         if let session = MCPHTTPSupport.header(response, "Mcp-Session-Id"), !session.isEmpty {
             self.sessionID = session
         }
@@ -267,6 +279,14 @@ public actor MCPStreamableHTTPTransport: MCPTransport {
         }
         self.continuation.yield(.closed(nil))
         self.continuation.finish()
+    }
+
+    private func authorizedRequest(method: String) async throws -> URLRequest {
+        var request = self.makeRequest(method: method)
+        if let header = try await self.authorization?.authorizationHeader() {
+            request.setValue(header, forHTTPHeaderField: "Authorization")
+        }
+        return request
     }
 
     private func makeRequest(method: String) -> URLRequest {
@@ -316,8 +336,12 @@ public actor MCPStreamableHTTPTransport: MCPTransport {
         var request = self.makeRequest(method: "GET")
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         let http = self.http
+        let authorization = self.authorization
         let id = UUID()
         self.readers[id] = Task.detached { [weak self] in
+            if let header = try? await authorization?.authorizationHeader() {
+                request.setValue(header, forHTTPHeaderField: "Authorization")
+            }
             guard let (response, body) = try? await http.stream(request) else { return }
             guard (200..<300).contains(response.statusCode), MCPHTTPSupport.isEventStream(response) else {
                 _ = try? await MCPHTTPSupport.collect(body, limit: 64 * 1024)
@@ -343,6 +367,7 @@ public actor MCPLegacySSETransport: MCPTransport {
     private let headers: [String: String]
     private let http: any MCPHTTPStreaming
     private let maxEventBytes: Int
+    private let authorization: (any MCPAuthorizationProvider)?
     private var endpoint: URL?
     private var endpointWaiters: [CheckedContinuation<URL, Error>] = []
     private var reader: Task<Void, Never>?
@@ -355,16 +380,19 @@ public actor MCPLegacySSETransport: MCPTransport {
     ///   - headers: Extra headers.
     ///   - http: Streaming HTTP client.
     ///   - maxEventBytes: Size cap for one SSE event.
+    ///   - authorization: OAuth provider (`auth: "oauth"`); a 401 is retried once after it handles the challenge.
     public init(
         url: URL,
         headers: [String: String] = [:],
         http: any MCPHTTPStreaming = URLSessionMCPHTTPStreaming(),
-        maxEventBytes: Int = OpenClawMCP.defaultMaxMessageBytes
+        maxEventBytes: Int = OpenClawMCP.defaultMaxMessageBytes,
+        authorization: (any MCPAuthorizationProvider)? = nil
     ) {
         self.url = url
         self.headers = headers
         self.http = http
         self.maxEventBytes = maxEventBytes
+        self.authorization = authorization
         (self.events, self.continuation) = AsyncStream<MCPTransportEvent>.makeStream()
     }
 
@@ -383,7 +411,7 @@ public actor MCPLegacySSETransport: MCPTransport {
         request.httpMethod = "GET"
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         for (key, value) in self.headers { request.setValue(value, forHTTPHeaderField: key) }
-        let (response, body) = try await self.http.stream(request)
+        let (response, body) = try await self.performAuthorized(request)
         if response.statusCode == 401 {
             throw MCPTransportError.unauthorized(MCPHTTPSupport.header(response, "WWW-Authenticate") ?? "401")
         }
@@ -430,7 +458,7 @@ public actor MCPLegacySSETransport: MCPTransport {
         for (key, value) in self.headers { request.setValue(value, forHTTPHeaderField: key) }
         if let protocolVersion { request.setValue(protocolVersion, forHTTPHeaderField: "MCP-Protocol-Version") }
         request.httpBody = try message.encoded()
-        let (response, body) = try await self.http.stream(request)
+        let (response, body) = try await self.performAuthorized(request)
         let data = (try? await MCPHTTPSupport.collect(body, limit: 64 * 1024)) ?? Data()
         if response.statusCode == 401 {
             throw MCPTransportError.unauthorized(MCPHTTPSupport.header(response, "WWW-Authenticate") ?? "401")
@@ -448,6 +476,25 @@ public actor MCPLegacySSETransport: MCPTransport {
         self.failWaiters(MCPTransportError.closed("transport closed"))
         self.continuation.yield(.closed(nil))
         self.continuation.finish()
+    }
+
+    private func performAuthorized(_ request: URLRequest) async throws -> (response: HTTPURLResponse, body: AsyncThrowingStream<Data, Error>) {
+        var request = request
+        guard let authorization = self.authorization else { return try await self.http.stream(request) }
+        if let header = try await authorization.authorizationHeader() {
+            request.setValue(header, forHTTPHeaderField: "Authorization")
+        }
+        let first = try await self.http.stream(request)
+        guard first.response.statusCode == 401,
+              try await authorization.handleUnauthorized(wwwAuthenticate: MCPHTTPSupport.header(first.response, "WWW-Authenticate"))
+        else {
+            return first
+        }
+        _ = try? await MCPHTTPSupport.collect(first.body, limit: 64 * 1024)
+        if let header = try await authorization.authorizationHeader() {
+            request.setValue(header, forHTTPHeaderField: "Authorization")
+        }
+        return try await self.http.stream(request)
     }
 
     private func waitForEndpoint() async throws -> URL {

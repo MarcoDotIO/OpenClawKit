@@ -85,6 +85,11 @@ public struct MCPServerProbe: Sendable, Equatable {
 public actor MCPClientManager {
     /// Creates a transport for a server.
     public typealias TransportFactory = @Sendable (_ serverName: String, _ config: MCPServerConfig, _ kind: MCPTransportKind) throws -> any MCPTransport
+    /// Supplies the OAuth provider for an HTTP server with `auth: "oauth"` (for example an ``MCPOAuthClient``).
+    public typealias AuthorizationProviderFactory = @Sendable (
+        _ serverName: String,
+        _ config: MCPServerConfig
+    ) throws -> (any MCPAuthorizationProvider)?
 
     private struct Session {
         let client: MCPClient
@@ -109,12 +114,14 @@ public actor MCPClientManager {
     ///   - stdioAllowlist: Executables stdio servers may launch (empty by default; see
     ///     ``MCPConfig/allowUnlistedStdioCommands``).
     ///   - diagnostics: Optional diagnostics sink (stderr lines are reported as `mcp.stderr`).
+    ///   - authorizationProvider: OAuth providers for `auth: "oauth"` servers (default transports only).
     ///   - now: Clock (tests).
     public init(
         config: MCPConfig,
         transportFactory: TransportFactory? = nil,
         stdioAllowlist: ExecCommandAllowlist = ExecCommandAllowlist(patterns: []),
         diagnostics: RuntimeDiagnosticSink? = nil,
+        authorizationProvider: AuthorizationProviderFactory? = nil,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.config = config
@@ -129,7 +136,8 @@ public actor MCPClientManager {
                 kind: kind,
                 allowlist: stdioAllowlist,
                 allowUnlisted: allowUnlisted,
-                diagnostics: diagnostics
+                diagnostics: diagnostics,
+                authorization: server.auth == "oauth" ? try authorizationProvider?(name, server) : nil
             )
         }
     }
@@ -142,6 +150,7 @@ public actor MCPClientManager {
     ///   - allowlist: Stdio exec allowlist.
     ///   - allowUnlisted: Allow stdio commands outside the allowlist.
     ///   - diagnostics: Diagnostics sink.
+    ///   - authorization: OAuth provider for HTTP transports.
     /// - Returns: A transport.
     public static func defaultTransport(
         name: String,
@@ -149,7 +158,8 @@ public actor MCPClientManager {
         kind: MCPTransportKind,
         allowlist: ExecCommandAllowlist,
         allowUnlisted: Bool,
-        diagnostics: RuntimeDiagnosticSink?
+        diagnostics: RuntimeDiagnosticSink?,
+        authorization: (any MCPAuthorizationProvider)? = nil
     ) throws -> any MCPTransport {
         switch kind {
         case .stdio:
@@ -165,9 +175,9 @@ public actor MCPClientManager {
             let http = URLSessionMCPHTTPStreaming(allowInsecureTLS: config.sslVerify == false)
             let headers = config.headers ?? [:]
             if kind == .sse {
-                return MCPLegacySSETransport(url: url, headers: headers, http: http)
+                return MCPLegacySSETransport(url: url, headers: headers, http: http, authorization: authorization)
             }
-            return MCPStreamableHTTPTransport(url: url, headers: headers, http: http)
+            return MCPStreamableHTTPTransport(url: url, headers: headers, http: http, authorization: authorization)
         }
     }
 
