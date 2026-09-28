@@ -174,6 +174,18 @@ extension OpenClawConfig {
         return document
     }
 
+    /// A document holding only this config's upstream-shaped runtime sections (`mcp`, `skills`,
+    /// `memory`, `plugins`), so runtime bridges written against ``OpenClawConfigDocument`` (for example
+    /// `MCPConfig.resolve(from:)`) also accept SDK-native configs.
+    public var runtimeSectionsDocument: OpenClawConfigDocument {
+        var document = OpenClawConfigDocument()
+        document.mcp = self.mcp
+        document.skills = self.skills
+        document.memory = self.memory
+        document.plugins = self.plugins
+        return document
+    }
+
     // MARK: Import helpers
 
     private static let sdkOnlyProviderKeys = [

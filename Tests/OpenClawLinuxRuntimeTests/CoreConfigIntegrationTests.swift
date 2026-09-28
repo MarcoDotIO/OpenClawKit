@@ -253,6 +253,10 @@ struct CoreConfigIntegrationTests {
         let projected = changed.documentProjection(preserving: document)
         #expect(projected.skills?.isSkillEnabled("weather") == true)
         #expect(projected.plugins == document.plugins)
+        // Runtime bridges written against the document accept SDK-native configs too.
+        let sections = native.runtimeSectionsDocument
+        #expect(sections.mcp == native.mcp && sections.memory == native.memory)
+        #expect(sections.agents == nil && sections.channels == nil)
     }
 
     @Test
