@@ -226,7 +226,7 @@ public actor QuestionBroker {
     public typealias Listener = @Sendable (AgentQuestion) async -> Void
 
     private var questions: [String: AgentQuestion] = [:]
-    private var waiters: [String: [CheckedContinuation<AgentQuestion, Never>]] = [:]
+    private var waiters: [String: [UUID: CheckedContinuation<AgentQuestion?, Never>]] = [:]
     private var expiryTasks: [String: Task<Void, Never>] = [:]
     private var subscribers: [UUID: AsyncStream<AgentQuestion>.Continuation] = [:]
     private var listeners: [Listener] = []
@@ -333,30 +333,35 @@ public actor QuestionBroker {
         if record.status != .pending {
             return Self.result(for: record)
         }
-        if let timeoutMs {
-            let waitTask = Task { await self.awaitResolution(id) }
-            let resolved: AgentQuestion? = await withTaskGroup(of: AgentQuestion?.self) { group in
-                group.addTask { await waitTask.value }
-                group.addTask {
-                    try? await Task.sleep(nanoseconds: UInt64(max(1, timeoutMs)) * 1_000_000)
-                    return nil
-                }
-                let first = await group.next() ?? nil
-                group.cancelAll()
-                return first
-            }
-            return resolved.map(Self.result(for:)) ?? .pending
+        guard let resolved = await self.awaitResolution(id, timeoutMs: timeoutMs) else {
+            return .pending
         }
-        return Self.result(for: await self.awaitResolution(id))
+        return Self.result(for: resolved)
     }
 
-    private func awaitResolution(_ id: String) async -> AgentQuestion {
+    /// Suspends until the question resolves, or returns `nil` once `timeoutMs` elapses.
+    private func awaitResolution(_ id: String, timeoutMs: Int64?) async -> AgentQuestion? {
         if let record = self.questions[id], record.status != .pending {
             return record
         }
+        let token = UUID()
         return await withCheckedContinuation { continuation in
-            self.waiters[id, default: []].append(continuation)
+            self.waiters[id, default: [:]][token] = continuation
+            if let timeoutMs {
+                Task {
+                    try? await Task.sleep(nanoseconds: UInt64(max(1, timeoutMs)) * 1_000_000)
+                    self.expireWaiter(id, token: token)
+                }
+            }
         }
+    }
+
+    private func expireWaiter(_ id: String, token: UUID) {
+        guard let continuation = self.waiters[id]?.removeValue(forKey: token) else { return }
+        if self.waiters[id]?.isEmpty == true {
+            self.waiters[id] = nil
+        }
+        continuation.resume(returning: nil)
     }
 
     /// Answers a pending question.
@@ -461,7 +466,7 @@ public actor QuestionBroker {
     private func finish(_ record: AgentQuestion) {
         self.questions[record.id] = record
         self.expiryTasks.removeValue(forKey: record.id)?.cancel()
-        for waiter in self.waiters.removeValue(forKey: record.id) ?? [] {
+        for waiter in (self.waiters.removeValue(forKey: record.id) ?? [:]).values {
             waiter.resume(returning: record)
         }
         self.publish(record)

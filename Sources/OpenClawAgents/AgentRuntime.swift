@@ -383,6 +383,7 @@ public actor EmbeddedAgentRuntime {
     private var activeRuns: [String: ActiveRun] = [:]
     private var completedRuns: [String: AgentRunWaitResult] = [:]
     private var completedOrder: [String] = []
+    private var runWaiters: [String: [UUID: CheckedContinuation<AgentRunWaitResult?, Never>]] = [:]
     private var internalEventQueues: [String: [String]] = [:]
     private var promptContributors: [@Sendable (String, SessionRecord?) async -> String?] = []
     private static let completedRunLimit = 512
@@ -682,29 +683,25 @@ public actor EmbeddedAgentRuntime {
         guard let active = self.activeRuns[runID] else {
             return nil
         }
-        let task = active.task
-        if let timeoutMs, timeoutMs > 0 {
-            let finished: Bool = await withTaskGroup(of: Bool.self) { group in
-                group.addTask {
-                    _ = try? await task.value
-                    return true
-                }
-                group.addTask {
+        let token = UUID()
+        let finished: AgentRunWaitResult? = await withCheckedContinuation { continuation in
+            self.runWaiters[runID, default: [:]][token] = continuation
+            if let timeoutMs, timeoutMs > 0 {
+                Task {
                     try? await Task.sleep(nanoseconds: UInt64(timeoutMs) * 1_000_000)
-                    return false
+                    self.expireRunWaiter(runID, token: token)
                 }
-                let first = await group.next() ?? false
-                group.cancelAll()
-                return first
             }
-            if !finished {
-                return AgentRunWaitResult(status: "timeout", runID: runID, sessionKey: active.sessionKey, startedAt: active.startedAt)
-            }
-        } else {
-            _ = try? await task.value
         }
-        return self.completedRuns[runID]
-            ?? AgentRunWaitResult(status: "error", runID: runID, sessionKey: active.sessionKey, startedAt: active.startedAt, error: "run state unavailable")
+        return finished ?? AgentRunWaitResult(status: "timeout", runID: runID, sessionKey: active.sessionKey, startedAt: active.startedAt)
+    }
+
+    private func expireRunWaiter(_ runID: String, token: UUID) {
+        guard let continuation = self.runWaiters[runID]?.removeValue(forKey: token) else { return }
+        if self.runWaiters[runID]?.isEmpty == true {
+            self.runWaiters[runID] = nil
+        }
+        continuation.resume(returning: nil)
     }
 
     // MARK: - Sessions
@@ -1127,6 +1124,9 @@ public actor EmbeddedAgentRuntime {
             )
         }
         self.completedRuns[request.runID] = result
+        for waiter in (self.runWaiters.removeValue(forKey: request.runID) ?? [:]).values {
+            waiter.resume(returning: result)
+        }
         self.completedOrder.append(request.runID)
         if self.completedOrder.count > Self.completedRunLimit {
             let overflow = self.completedOrder.count - Self.completedRunLimit

@@ -75,16 +75,27 @@ struct EchoArgumentTool: AgentTool {
     }
 }
 
+actor IntervalLog {
+    private(set) var intervals: [String: (start: Date, end: Date)] = [:]
+
+    func record(_ name: String, start: Date, end: Date) {
+        self.intervals[name] = (start, end)
+    }
+}
+
 struct SleepyParallelTool: AgentTool {
     let name: String
     let delayNs: UInt64
+    var log: IntervalLog?
 
     var descriptor: AgentToolDescriptor {
         AgentToolDescriptor(name: self.name, executionMode: .parallel)
     }
 
     func invoke(_ invocation: AgentToolInvocation, update _: AgentToolUpdateHandler?) async throws -> AgentToolOutput {
+        let start = Date()
         try await Task.sleep(nanoseconds: self.delayNs)
+        await self.log?.record(self.name, start: start, end: Date())
         return .text("\(self.name)-done")
     }
 }
@@ -169,15 +180,21 @@ struct AgentLoopToolCallingTests {
             },
             ScriptedToolProvider.text("ok"),
         ])
+        let log = IntervalLog()
         let runtime = try await self.makeRuntime(
             provider: provider,
-            tools: [SleepyParallelTool(name: "slow_a", delayNs: 250_000_000), SleepyParallelTool(name: "slow_b", delayNs: 250_000_000)]
+            tools: [
+                SleepyParallelTool(name: "slow_a", delayNs: 250_000_000, log: log),
+                SleepyParallelTool(name: "slow_b", delayNs: 250_000_000, log: log),
+            ]
         )
-        let started = Date()
-        let result = try await runtime.run(AgentRunRequest(sessionKey: "p", prompt: "go"), timeoutMs: 5_000)
-        let elapsed = Date().timeIntervalSince(started)
+        let result = try await runtime.run(AgentRunRequest(sessionKey: "p", prompt: "go"), timeoutMs: 10_000)
         #expect(result.toolResults.map(\.toolCallID) == ["a", "b"])
-        #expect(elapsed < 0.45)
+        let intervals = await log.intervals
+        let first = try #require(intervals["slow_a"])
+        let second = try #require(intervals["slow_b"])
+        // Overlapping execution windows prove the batch ran concurrently.
+        #expect(first.start < second.end && second.start < first.end)
     }
 
     @Test

@@ -472,7 +472,7 @@ public actor ApprovalBroker {
 
     private var approvals: [String: AgentApproval] = [:]
     private var history: [AgentApproval] = []
-    private var waiters: [String: [CheckedContinuation<AgentApproval, Never>]] = [:]
+    private var waiters: [String: [UUID: CheckedContinuation<AgentApproval?, Never>]] = [:]
     private var expiryTasks: [String: Task<Void, Never>] = [:]
     private var grants: [String: AgentApprovalGrant] = [:]
     private var subscribers: [UUID: AsyncStream<AgentApproval>.Continuation] = [:]
@@ -605,21 +605,7 @@ public actor ApprovalBroker {
         if approval.state.isTerminal {
             return approval
         }
-        if let timeoutMs {
-            let waitTask = Task { await self.awaitTerminal(id) }
-            let resolved: AgentApproval? = await withTaskGroup(of: AgentApproval?.self) { group in
-                group.addTask { await waitTask.value }
-                group.addTask {
-                    try? await Task.sleep(nanoseconds: UInt64(max(1, timeoutMs)) * 1_000_000)
-                    return nil
-                }
-                let first = await group.next() ?? nil
-                group.cancelAll()
-                return first
-            }
-            return resolved ?? self.current(id) ?? approval
-        }
-        return await self.awaitTerminal(id)
+        return await self.awaitTerminal(id, timeoutMs: timeoutMs) ?? self.current(id) ?? approval
     }
 
     /// Requests an approval and waits until it is terminal.
@@ -670,23 +656,37 @@ public actor ApprovalBroker {
             grantKey: grantKey,
             timeoutMs: timeoutMs
         )
-        return await withTaskCancellationHandler {
-            await self.awaitTerminal(pending.id)
+        let resolved = await withTaskCancellationHandler {
+            await self.awaitTerminal(pending.id, timeoutMs: nil)
         } onCancel: {
             Task { await self.cancel(id: pending.id, reason: .runAborted) }
         }
+        return resolved ?? self.current(pending.id) ?? pending
     }
 
-    private func awaitTerminal(_ id: String) async -> AgentApproval {
-        if let approval = self.approvals[id], approval.state.isTerminal {
+    /// Suspends until the approval is terminal, or returns `nil` once `timeoutMs` elapses.
+    private func awaitTerminal(_ id: String, timeoutMs: Int64?) async -> AgentApproval? {
+        if let approval = self.current(id), approval.state.isTerminal {
             return approval
         }
-        if let approval = self.history.first(where: { $0.id == id }) {
-            return approval
-        }
+        let token = UUID()
         return await withCheckedContinuation { continuation in
-            self.waiters[id, default: []].append(continuation)
+            self.waiters[id, default: [:]][token] = continuation
+            if let timeoutMs {
+                Task {
+                    try? await Task.sleep(nanoseconds: UInt64(max(1, timeoutMs)) * 1_000_000)
+                    self.expireWaiter(id, token: token)
+                }
+            }
         }
+    }
+
+    private func expireWaiter(_ id: String, token: UUID) {
+        guard let continuation = self.waiters[id]?.removeValue(forKey: token) else { return }
+        if self.waiters[id]?.isEmpty == true {
+            self.waiters[id] = nil
+        }
+        continuation.resume(returning: nil)
     }
 
     private func current(_ id: String) -> AgentApproval? {
@@ -813,7 +813,7 @@ public actor ApprovalBroker {
         if self.history.count > self.historyLimit {
             self.history.removeLast(self.history.count - self.historyLimit)
         }
-        for waiter in self.waiters.removeValue(forKey: approval.id) ?? [] {
+        for waiter in (self.waiters.removeValue(forKey: approval.id) ?? [:]).values {
             waiter.resume(returning: approval)
         }
         self.publish(approval)
