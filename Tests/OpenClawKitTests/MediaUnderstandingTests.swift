@@ -319,6 +319,30 @@ struct MediaUnderstandingTests {
         }
     }
 
+    @Test
+    func pipelineRecognizesAppleAudioAndVideoContainers() async throws {
+        let pipeline = MediaPipeline(maxBytes: 1_024, storageDirectory: Self.makeTemporaryDirectory("mu-sniff"))
+        func header(_ brand: String) -> Data {
+            Data([0x00, 0x00, 0x00, 0x20]) + Data("ftyp".utf8) + Data(brand.utf8) + Data(repeating: 0, count: 8)
+        }
+        let cases: [(Data, String?, String, MediaKind, String)] = [
+            (header("M4A "), nil, "audio/mp4", .audio, "m4a"),
+            (header("qt  "), nil, "video/quicktime", .video, "mov"),
+            (header("isom"), nil, "video/mp4", .video, "mp4"),
+            (Data("FORM".utf8) + Data([0, 0, 0, 4]) + Data("AIFF".utf8), nil, "audio/aiff", .audio, "aiff"),
+            (Data([0xFF, 0xFB, 0x90]), "memo.m4a", "audio/mp4", .audio, "m4a"),
+            (Data([0xFF, 0xFB, 0x90]), "take.caf", "audio/x-caf", .audio, "caf"),
+        ]
+        for (data, fileName, mimeType, kind, ext) in cases {
+            let prepared = try await pipeline.prepare(
+                MediaAttachment(mimeType: "application/octet-stream", data: data, fileName: fileName)
+            )
+            #expect(prepared.attachment.mimeType == mimeType)
+            #expect(prepared.handle.kind == kind)
+            #expect(prepared.handle.fileName.hasSuffix(".\(ext)"))
+        }
+    }
+
     static func makeTemporaryDirectory(_ name: String) -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("openclaw-tests", isDirectory: true)
