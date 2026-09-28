@@ -418,21 +418,6 @@ struct GatewayServerTests {
             {
                 await self.rawRequest(
                     server,
-                    method: "sessions.create",
-                    params: SessionsCreateParams(
-                        key: "main",
-                        agentid: nil,
-                        label: nil,
-                        model: nil,
-                        parentsessionkey: nil,
-                        task: nil,
-                        message: nil
-                    )
-                )
-            },
-            {
-                await self.rawRequest(
-                    server,
                     method: "sessions.send",
                     params: SessionsSendParams(
                         key: "main",
@@ -444,7 +429,6 @@ struct GatewayServerTests {
                     )
                 )
             },
-            { await self.rawRequest(server, method: "sessions.abort", params: SessionsAbortParams(key: "main", runid: nil)) },
             { await self.rawRequest(server, method: "talk.client.create", params: TalkClientCreateParams(sessionkey: "main")) },
             {
                 await self.rawRequest(
@@ -506,6 +490,27 @@ struct GatewayServerTests {
             #expect(response.ok == false)
             #expect(response.error?.errorCode == .unavailable)
         }
+
+        // 2026.3.0: sessions.create and sessions.abort have built-in handlers (upstream shapes).
+        let created = await self.rawRequest(
+            server,
+            method: "sessions.create",
+            params: SessionsCreateParams(
+                key: "main",
+                agentid: nil,
+                label: nil,
+                model: nil,
+                parentsessionkey: nil,
+                task: nil,
+                message: nil
+            )
+        )
+        #expect(created.ok == true)
+        #expect(created.payload?.dictionaryValue?["key"] == AnyCodable("main"))
+        let aborted = await self.rawRequest(server, method: "sessions.abort", params: SessionsAbortParams(key: "main", runid: nil))
+        #expect(aborted.ok == true)
+        #expect(aborted.payload?.dictionaryValue?["status"] == AnyCodable("no-active-run"))
+        #expect(aborted.payload?.dictionaryValue?["abortedRunId"] == AnyCodable.nullValue)
 
         let invalidKnown = await server.handle(
             RequestFrame(

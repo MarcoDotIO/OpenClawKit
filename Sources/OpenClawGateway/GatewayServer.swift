@@ -6,6 +6,10 @@ import OpenClawProtocol
 public typealias GatewayBrowserRequestHandler = @Sendable (GatewayBrowserRequestParams) async throws -> GatewayBrowserResponse
 
 /// Agent-run handler injected into the in-process gateway server.
+///
+/// Receives the normalized request: legacy SDK payloads and upstream `AgentParams` (`agent`) both
+/// arrive as ``GatewayAgentRequest`` with the upstream fields (`agentID`, `sessionID`, `thinking`,
+/// `extraSystemPrompt`, `idempotencyKey`, …) filled when present.
 public typealias GatewayAgentRunHandler = @Sendable (GatewayAgentRequest) async throws -> GatewayAgentExecution
 
 /// Models-list handler injected into the in-process gateway server.
@@ -33,7 +37,7 @@ public struct GatewayAgentExecution: Sendable {
 
 /// Closure-backed handlers used by `GatewayServer` for higher-level runtime features.
 public struct GatewayServerHandlers: Sendable {
-    /// Handler used to start an agent run.
+    /// Handler used to start an agent run (`agent`, `agent.run`, and the built-in `sessions.send`).
     public let runAgent: GatewayAgentRunHandler
     /// Handler used to list models.
     public let listModels: GatewayModelsListHandler
@@ -83,6 +87,13 @@ public struct GatewayServerHandlers: Sendable {
 /// require the node role and all others the operator role (`INVALID_REQUEST "unauthorized role: …"`),
 /// and the descriptor scope is checked against the connection's grants
 /// (``GatewayConnectionContext/allows(scope:)``), answering `FORBIDDEN` with `MISSING_SCOPE` details.
+/// While startup is pending (``beginStartup(gating:)``), startup-gated methods then answer the
+/// retryable startup `UNAVAILABLE` error (`details.reason == "startup-sidecars"`).
+///
+/// Events: handlers emit through ``GatewayMethodRequest/events``; hosts use ``broadcast(event:payload:)``
+/// or ``emit(event:encoding:)``. Every frame carries a server-global monotonic `seq`. Subscribe with
+/// ``events(filter:bufferingNewest:)``; ``LoopbackGatewaySocket`` subscribes per connection so
+/// `session.message`/`session.tool` only reach connections that called `sessions.messages.subscribe`.
 public actor GatewayServer: GatewayMethodRegistrar {
     /// Methods served in-process that are OpenClawKit extensions rather than upstream core methods.
     ///
@@ -117,6 +128,18 @@ public actor GatewayServer: GatewayMethodRegistrar {
         case sessionsPatch
         case sessionsReset
         case sessionsDelete
+        case sessionsCreate
+        case sessionsSend
+        case sessionsAbort
+        case sessionsSubscribe
+        case sessionsMessagesSubscribe
+        case sessionsMessagesUnsubscribe
+        case sessionsGroupsList
+        case sessionsGroupsDefaults
+        case sessionsGroupsPut
+        case sessionsGroupsRename
+        case sessionsGroupsUpdate
+        case sessionsGroupsDelete
         case modelsList
         case skillsList
         case skillsInvoke
@@ -127,6 +150,13 @@ public actor GatewayServer: GatewayMethodRegistrar {
         case secretsStoreSet
         case secretsStoreDelete
         case browserRequest
+        case systemPresence
+        case nodeList
+        case nodePairList
+        case nodePairApprove
+        case nodePairReject
+        case nodePairRemove
+        case nodeRename
     }
 
     static let builtinMethods: [String: BuiltinMethod] = [
@@ -138,6 +168,18 @@ public actor GatewayServer: GatewayMethodRegistrar {
         "sessions.patch": .sessionsPatch,
         "sessions.reset": .sessionsReset,
         "sessions.delete": .sessionsDelete,
+        "sessions.create": .sessionsCreate,
+        "sessions.send": .sessionsSend,
+        "sessions.abort": .sessionsAbort,
+        "sessions.subscribe": .sessionsSubscribe,
+        "sessions.messages.subscribe": .sessionsMessagesSubscribe,
+        "sessions.messages.unsubscribe": .sessionsMessagesUnsubscribe,
+        "sessions.groups.list": .sessionsGroupsList,
+        "sessions.groups.defaults": .sessionsGroupsDefaults,
+        "sessions.groups.put": .sessionsGroupsPut,
+        "sessions.groups.rename": .sessionsGroupsRename,
+        "sessions.groups.update": .sessionsGroupsUpdate,
+        "sessions.groups.delete": .sessionsGroupsDelete,
         "models.list": .modelsList,
         "skills.list": .skillsList,
         "skills.invoke": .skillsInvoke,
@@ -148,6 +190,13 @@ public actor GatewayServer: GatewayMethodRegistrar {
         "secrets.store.set": .secretsStoreSet,
         "secrets.store.delete": .secretsStoreDelete,
         "browser.request": .browserRequest,
+        "system-presence": .systemPresence,
+        "node.list": .nodeList,
+        "node.pair.list": .nodePairList,
+        "node.pair.approve": .nodePairApprove,
+        "node.pair.reject": .nodePairReject,
+        "node.pair.remove": .nodePairRemove,
+        "node.rename": .nodeRename,
     ]
 
     private enum MethodImplementation: Sendable {
@@ -160,15 +209,49 @@ public actor GatewayServer: GatewayMethodRegistrar {
         let implementation: MethodImplementation
     }
 
+    /// Metadata of an agent run started through the built-in `agent`/`sessions.send` handlers.
+    struct TrackedRun: Sendable {
+        let sessionKey: String
+        let agentID: String
+        let startedAt: Int64
+    }
+
+    /// One event subscription.
+    struct EventSubscriber {
+        let continuation: AsyncStream<EventFrame>.Continuation
+        let filter: GatewayEventFilter
+    }
+
+    /// Presence of one open connection.
+    struct ConnectionPresence: Sendable {
+        let context: GatewayConnectionContext
+        let onlineSince: Int64
+        var lastActivityAt: Int64
+    }
+
     let sessionStore: SessionStore
     let secretVault: GatewaySecretVault
     let defaultAgentID: String
     let handlers: GatewayServerHandlers
+    /// Custom session group catalog backing `sessions.groups.*`.
+    public nonisolated let sessionGroups: GatewaySessionGroupCatalog
+    /// Node pairing records backing `node.pair.*`, `node.list` and `node.rename`.
+    public nonisolated let nodePairing: GatewayNodePairingStore
+    let agentIdempotency = GatewayIdempotencyCache()
     var agentRuns: [String: Task<GatewayAgentWaitResult, Error>] = [:]
+    var trackedRuns: [String: TrackedRun] = [:]
     private var methods: [String: MethodEntry]
     private var resolvers: [GatewayMethodResolver] = []
-    private var eventSubscribers: [UUID: AsyncStream<EventFrame>.Continuation] = [:]
-    private var eventSequence = 0
+    var eventSubscribers: [UUID: EventSubscriber] = [:]
+    var eventSequence = 0
+    /// Connections subscribed to `sessions.changed` via `sessions.subscribe`.
+    var sessionEventConnections: Set<String> = []
+    /// Session keys each connection subscribed to via `sessions.messages.subscribe`.
+    var messageSubscriptions: [String: Set<String>] = [:]
+    var connections: [String: ConnectionPresence] = [:]
+    /// Methods answering the startup `UNAVAILABLE` error; `nil` once startup completed.
+    var startupGatedMethods: Set<String>?
+    var startupGatesEveryDescriptor = false
 
     /// Creates an in-process gateway server with session, secret, and runtime handlers.
     /// - Parameters:
@@ -176,21 +259,33 @@ public actor GatewayServer: GatewayMethodRegistrar {
     ///   - secretVault: Vault backing `secrets.*` and `secrets.store.*`.
     ///   - defaultAgentID: Agent id assigned to sessions created by `sessions.patch`.
     ///   - handlers: Runtime handlers for agent runs, models, skills and browser requests.
+    ///   - sessionGroups: Catalog backing `sessions.groups.*` (in-memory by default).
+    ///   - nodePairing: Store backing `node.pair.*` (in-memory by default).
+    ///   - startupPending: Start with startup-gated methods unavailable until ``completeStartup()``.
     public init(
         sessionStore: SessionStore,
         secretVault: GatewaySecretVault,
         defaultAgentID: String = "main",
-        handlers: GatewayServerHandlers = GatewayServerHandlers()
+        handlers: GatewayServerHandlers = GatewayServerHandlers(),
+        sessionGroups: GatewaySessionGroupCatalog = GatewaySessionGroupCatalog(),
+        nodePairing: GatewayNodePairingStore = GatewayNodePairingStore(),
+        startupPending: Bool = false
     ) {
         self.sessionStore = sessionStore
         self.secretVault = secretVault
         self.defaultAgentID = defaultAgentID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "main" : defaultAgentID
         self.handlers = handlers
+        self.sessionGroups = sessionGroups
+        self.nodePairing = nodePairing
         var methods: [String: MethodEntry] = [:]
         for (name, builtin) in Self.builtinMethods {
             methods[name] = MethodEntry(descriptor: Self.defaultDescriptor(for: name), implementation: .builtin(builtin))
         }
         self.methods = methods
+        if startupPending {
+            self.startupGatedMethods = []
+            self.startupGatesEveryDescriptor = true
+        }
     }
 
     // MARK: - Registration
@@ -266,41 +361,7 @@ public actor GatewayServer: GatewayMethodRegistrar {
         self.methods[method]?.descriptor ?? Self.defaultDescriptor(for: method)
     }
 
-    // MARK: - Events
-
-    /// Subscribes to events emitted by method handlers (and ``broadcast(event:payload:)``).
-    /// - Parameter limit: Number of undelivered events buffered per subscriber.
-    /// - Returns: Stream of event frames; cancel iteration to unsubscribe.
-    public func events(bufferingNewest limit: Int = 256) -> AsyncStream<EventFrame> {
-        let id = UUID()
-        let (stream, continuation) = AsyncStream<EventFrame>.makeStream(bufferingPolicy: .bufferingNewest(max(1, limit)))
-        self.eventSubscribers[id] = continuation
-        continuation.onTermination = { [weak self] _ in
-            Task { await self?.removeEventSubscriber(id) }
-        }
-        return stream
-    }
-
-    /// Emits an event to every subscriber with the next sequence number.
-    /// - Parameters:
-    ///   - event: Event name (see ``GatewayEventName``).
-    ///   - payload: Optional event payload.
-    /// - Returns: The emitted frame.
-    @discardableResult
-    public func broadcast(event: String, payload: AnyCodable? = nil) -> EventFrame {
-        self.eventSequence += 1
-        let frame = EventFrame(type: "event", event: event, payload: payload, seq: self.eventSequence)
-        for continuation in self.eventSubscribers.values {
-            continuation.yield(frame)
-        }
-        return frame
-    }
-
-    private func removeEventSubscriber(_ id: UUID) {
-        self.eventSubscribers.removeValue(forKey: id)
-    }
-
-    nonisolated private func makeEventEmitter() -> GatewayEventEmitter {
+    nonisolated func makeEventEmitter() -> GatewayEventEmitter {
         GatewayEventEmitter { [weak self] event, payload in
             await self?.broadcast(event: event, payload: payload)
         }
@@ -331,9 +392,15 @@ public actor GatewayServer: GatewayMethodRegistrar {
             connection: connection,
             events: self.makeEventEmitter()
         )
+        self.touchConnection(connection.connectionID)
         do {
             if let descriptor, let denial = Self.authorizationError(method: request.method, descriptor: descriptor, connection: connection) {
                 throw denial
+            }
+            // Startup gating follows authorization (upstream server-methods.ts): stores may not be
+            // loaded yet, so a handler could otherwise answer with a misleading non-retryable error.
+            if let gated = self.startupGateError(method: request.method, descriptor: descriptor) {
+                throw gated
             }
             let payload: AnyCodable?
             if let entry {

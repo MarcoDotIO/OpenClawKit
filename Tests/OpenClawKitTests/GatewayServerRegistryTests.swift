@@ -301,7 +301,8 @@ struct GatewayServerRegistryTests {
         let delivered = await recorder.waitForEvents(count: 1)
         await client.disconnect()
         #expect(delivered.first?.event == "sessions.changed")
-        #expect(delivered.first?.seq == 2)
+        // The loopback connect emitted a `presence` event in between; seq stays server-global and monotonic.
+        #expect((delivered.first?.seq ?? 0) > (frame?.seq ?? Int.max))
     }
 
     // MARK: - Built-in handlers
