@@ -25,3 +25,15 @@ extension GatewayNodeSession: GatewayNodeEventSending {
         await self.sendEvent(event: event, payloadJSON: payloadJSON, ifCurrentRoute: nil)
     }
 }
+
+extension TalkGatewayRequesting where Self: GatewayRequestSending {
+    /// Talk requests reuse the shared ``GatewayRequestSending`` seam, so a gateway client only
+    /// implements `talkServerEvents(bufferingNewest:)` to become a ``TalkGatewayRequesting``.
+    /// - Parameters:
+    ///   - method: Gateway method name.
+    ///   - params: JSON object parameters.
+    ///   - timeoutMs: Timeout in milliseconds.
+    public func talkRequest(method: String, params: [String: AnyCodable]?, timeoutMs: Double) async throws -> Data {
+        try await self.request(method: method, params: params, timeoutMs: timeoutMs)
+    }
+}

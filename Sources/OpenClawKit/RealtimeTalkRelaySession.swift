@@ -415,6 +415,9 @@ public final class RealtimeTalkRelaySession {
     private let onInputLevel: (Double) -> Void
     private let onOutputLevel: (Double?) -> Void
     private let onTranscript: (RealtimeTalkTranscript) -> Void
+    /// Talk-domain state reporter (listening / thinking / speaking / idle).
+    private let talkStateReporter: OpenClawTalkStateReporter
+    private var reportedTalkState: OpenClawTalkStateLabel?
     /// Playback-time-aligned envelope of the assistant PCM the relay schedules;
     /// drives the speaking waveform with real audio instead of a synthetic pulse.
     private var outputEnvelope: PCMPlaybackEnvelope?
@@ -489,6 +492,8 @@ public final class RealtimeTalkRelaySession {
     ///   - onInputLevel: Normalized microphone level.
     ///   - onOutputLevel: Normalized output level, `nil` when idle.
     ///   - onTranscript: Partial and final transcript lines.
+    ///   - stateReporter: Destination for ``OpenClawStateDomain/talk`` reports; `nil` uses
+    ///     ``OpenClawSystemState/shared`` (forwards only while ``OpenClawSystemState/isEnabled``).
     public init(
         transport: RealtimeTalkRelayTransport,
         options: Options,
@@ -500,7 +505,8 @@ public final class RealtimeTalkRelaySession {
         onSpeakingChanged: @escaping (Bool) -> Void,
         onInputLevel: @escaping (Double) -> Void = { _ in },
         onOutputLevel: @escaping (Double?) -> Void = { _ in },
-        onTranscript: @escaping (RealtimeTalkTranscript) -> Void = { _ in })
+        onTranscript: @escaping (RealtimeTalkTranscript) -> Void = { _ in },
+        stateReporter: (any OpenClawSystemStateReporting)? = nil)
     {
         self.transport = transport
         self.audioCapture = audioCapture
@@ -513,6 +519,7 @@ public final class RealtimeTalkRelaySession {
         self.onInputLevel = onInputLevel
         self.onOutputLevel = onOutputLevel
         self.onTranscript = onTranscript
+        self.talkStateReporter = OpenClawTalkStateReporter(reporter: stateReporter)
     }
 
     /// Creates the relay, starts the microphone, and waits (up to 12 s) for the provider to be ready.
@@ -621,6 +628,29 @@ public final class RealtimeTalkRelaySession {
         try await self.serverClose?.task.value
     }
 
+    private func updateStatus(_ status: String, talkState: OpenClawTalkStateLabel) {
+        self.onStatus(status)
+        // Playback owns `speaking`; a status line never downgrades it.
+        if self.reportedTalkState != .speaking {
+            self.reportTalkState(talkState)
+        }
+    }
+
+    private func updateSpeaking(_ speaking: Bool) {
+        self.onSpeakingChanged(speaking)
+        if speaking {
+            self.reportTalkState(.speaking)
+        } else if self.reportedTalkState == .speaking {
+            self.reportTalkState(self.isClosed ? nil : .listening)
+        }
+    }
+
+    private func reportTalkState(_ label: OpenClawTalkStateLabel?) {
+        guard self.reportedTalkState != label else { return }
+        self.reportedTalkState = label
+        self.talkStateReporter.report(label, provider: label == .speaking ? self.options.provider : nil)
+    }
+
     private func close(sendClose: Bool) {
         guard !self.isClosed else { return }
         self.isClosed = true
@@ -645,7 +675,8 @@ public final class RealtimeTalkRelaySession {
             self.beginServerClose(relaySessionId: relaySessionId)
         }
         self.relaySessionId = nil
-        self.onSpeakingChanged(false)
+        self.updateSpeaking(false)
+        self.reportTalkState(nil)
     }
 
     /// Deliberately not a `CancellationError`: the runtime treats those as caller-initiated and
@@ -830,7 +861,7 @@ extension RealtimeTalkRelaySession {
         case "ready":
             self.hasReceivedReady = true
             self.finishStartupWait(.ready)
-            self.onStatus("Listening (Realtime)")
+            self.updateStatus("Listening (Realtime)", talkState: .listening)
         case "audio":
             self.handleOutputAudio(payload)
         case "audioDone":
@@ -1032,9 +1063,9 @@ extension RealtimeTalkRelaySession {
         self.onTranscript(RealtimeTalkTranscript(role: role, text: text, isFinal: isFinal))
         guard isFinal else { return }
         if role == "user" {
-            self.onStatus("Thinking…")
+            self.updateStatus("Thinking…", talkState: .thinking)
         } else if role == "assistant" {
-            self.onStatus("Listening (Realtime)")
+            self.updateStatus("Listening (Realtime)", talkState: .listening)
         }
     }
 
@@ -1043,7 +1074,7 @@ extension RealtimeTalkRelaySession {
               let callId = payload["callId"]?.stringValue,
               let name = payload["name"]?.stringValue
         else { return }
-        self.onStatus("Thinking…")
+        self.updateStatus("Thinking…", talkState: .thinking)
         do {
             if name == Self.agentControlToolName {
                 try await self.handleAgentControlToolCall(
@@ -1088,7 +1119,7 @@ extension RealtimeTalkRelaySession {
                 result: result,
                 lifecycleGeneration: lifecycleGeneration)
             try await self.ensureCurrentLifecycle(lifecycleGeneration)
-            self.onStatus("Listening (Realtime)")
+            self.updateStatus("Listening (Realtime)", talkState: .listening)
         } catch {
             guard await self.isCurrentLifecycle(lifecycleGeneration) else { return }
             let errorResult: [String: AnyCodable] = [
@@ -1099,7 +1130,7 @@ extension RealtimeTalkRelaySession {
                 result: errorResult,
                 lifecycleGeneration: lifecycleGeneration)
             guard await self.isCurrentLifecycle(lifecycleGeneration) else { return }
-            self.onStatus("Listening (Realtime)")
+            self.updateStatus("Listening (Realtime)", talkState: .listening)
         }
     }
 
@@ -1146,7 +1177,7 @@ extension RealtimeTalkRelaySession {
             result: result,
             lifecycleGeneration: lifecycleGeneration)
         try await self.ensureCurrentLifecycle(lifecycleGeneration)
-        self.onStatus("Listening (Realtime)")
+        self.updateStatus("Listening (Realtime)", talkState: .listening)
     }
 
     private func submitToolResult(
@@ -1290,7 +1321,7 @@ extension RealtimeTalkRelaySession {
         self.outputIdentity = nil
         self.outputStartedAtMs = nil
         self.outputEnvelope?.cancel()
-        self.onSpeakingChanged(false)
+        self.updateSpeaking(false)
         self.acknowledgePlaybackMarks(self.takePendingPlaybackMarks())
     }
 
@@ -1344,7 +1375,7 @@ extension RealtimeTalkRelaySession {
         self.outputIdentity = nil
         self.outputStartedAtMs = nil
         self.outputEnvelope?.cancel()
-        self.onSpeakingChanged(false)
+        self.updateSpeaking(false)
     }
 
     nonisolated private static func safeLogMessage(_ value: String) -> String {
@@ -1526,7 +1557,7 @@ extension RealtimeTalkRelaySession {
         self.outputIdentity = incomingIdentity
         self.recordOutputAudioChunk(byteCount: data.count)
         self.markOutputAudioStarted(nowMs: ProcessInfo.processInfo.systemUptime * 1000)
-        self.onSpeakingChanged(true)
+        self.updateSpeaking(true)
         self.ensureOutputPlaybackStarted()
         self.bufferOutputAudio(data)
     }
