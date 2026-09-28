@@ -792,7 +792,8 @@ public actor EmbeddedAgentRuntime {
                     reasoningLevel: request.reasoningLevel
                 ),
                 fastMode: request.fastMode,
-                thinkingLevel: request.thinkingLevel,
+                // `ultra` is runtime orchestration only; provider transports receive `max`.
+                thinkingLevel: request.thinkingLevel?.providerTransportLevel,
                 reasoningLevel: request.reasoningLevel,
                 verboseLevel: request.verboseLevel,
                 responseUsage: request.responseUsage,
@@ -813,7 +814,8 @@ public actor EmbeddedAgentRuntime {
             return .low
         case .medium:
             return .medium
-        case .high, .xhigh:
+        case .high, .xhigh, .max, .ultra:
+            // ModelReasoningEffort tops out at `.high`; richer effort mapping is provider-owned.
             return .high
         case .off, .adaptive, nil:
             return nil
@@ -822,7 +824,7 @@ public actor EmbeddedAgentRuntime {
 
     private static func modelControlMetadata(from request: AgentRunRequest) -> [String: String] {
         var metadata: [String: String] = [:]
-        if let thinkingLevel = request.thinkingLevel {
+        if let thinkingLevel = request.thinkingLevel?.providerTransportLevel {
             metadata["thinkingLevel"] = thinkingLevel.rawValue
         }
         if let reasoningLevel = request.reasoningLevel {

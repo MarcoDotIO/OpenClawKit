@@ -262,7 +262,8 @@ private extension LLMTaskTool {
             modelID: String?
         ) -> ThinkLevel {
             guard thinkingLevel == .adaptive else {
-                return thinkingLevel
+                // A single llm-task call has no runtime orchestration, so `ultra` becomes `max`.
+                return thinkingLevel.providerTransportLevel
             }
             if ThinkLevel.supportsXHighThinking(providerID: providerID, modelID: modelID) {
                 return .xhigh
@@ -282,7 +283,7 @@ private extension LLMTaskTool {
                 return .low
             case .medium:
                 return .medium
-            case .high, .xhigh:
+            case .high, .xhigh, .max, .ultra:
                 return .high
             case .off, .adaptive, nil:
                 return nil
