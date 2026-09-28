@@ -38,4 +38,65 @@ if grep -ERq "BGContinuedProcessingTask|BGContinuedProcessingTaskRequest" "Examp
   fi
 fi
 
+status=0
+
+# Lists Swift files under the given roots that match an extended regex.
+swift_files_matching() {
+  local pattern="$1"
+  shift
+  grep -ERl --include='*.swift' -e "${pattern}" "$@" 2>/dev/null || true
+}
+
+# `@available(anyAppleOS ...)` parses on Swift 6.4 but not on the Swift 6.2 CI toolchain.
+any_apple_os_files="$(swift_files_matching 'anyAppleOS' Sources Tests Examples)"
+if [[ -n "${any_apple_os_files}" ]]; then
+  echo "Use per-OS availability (iOS 27.0, macOS 27.0, tvOS 27.0, watchOS 27.0, visionOS 27.0, *) instead of anyAppleOS:"
+  echo "${any_apple_os_files}" | sed 's/^/  /'
+  status=1
+fi
+
+# 27-only frameworks and symbols must sit behind `#if compiler(>=6.4)` (they do not exist in the
+# 26 SDKs) in addition to canImport/platform guards and @available/#available gates.
+apple27_pattern='^[[:space:]]*import[[:space:]]+(CoreAI|StateReporting|NowPlaying|MediaIntelligence|MusicUnderstanding|SuggestedActions|TrustInsights|LinkSecurity)\b'
+apple27_pattern+='|PrivateCloudComputeLanguageModel|LanguageModelExecutor|SpotlightSearchTool|OCRTool|BarcodeReaderTool'
+apple27_pattern+='|VideoAnalyzer|MusicUnderstandingSession|AIModelAsset|SuggestedActionsView'
+while IFS= read -r file; do
+  [[ -z "${file}" ]] && continue
+  if ! grep -Fq '#if compiler(>=6.4)' "${file}"; then
+    echo "27-only API used without a '#if compiler(>=6.4)' guard: ${file}"
+    status=1
+  fi
+done <<<"$(swift_files_matching "${apple27_pattern}" Sources Examples)"
+
+# FoundationModels ships on tvOS/watchOS with the 27 SDKs, but its declarations are unavailable on
+# tvOS (and SystemLanguageModel on watchOS), so canImport alone is not a sufficient guard.
+while IFS= read -r file; do
+  [[ -z "${file}" ]] && continue
+  if ! grep -Eq '!os\(tvOS\)' "${file}"; then
+    echo "FoundationModels imported without a '!os(tvOS)' guard: ${file}"
+    status=1
+  fi
+done <<<"$(swift_files_matching '^[[:space:]]*import[[:space:]]+FoundationModels\b' Sources Examples)"
+while IFS= read -r file; do
+  [[ -z "${file}" ]] && continue
+  if ! grep -Eq '!os\(watchOS\)' "${file}"; then
+    echo "SystemLanguageModel used without a '!os(watchOS)' guard: ${file}"
+    status=1
+  fi
+done <<<"$(swift_files_matching 'SystemLanguageModel' Sources)"
+
+# ChatUI views ship on iOS/macOS/visionOS only; these SwiftUI APIs are unavailable on tvOS/watchOS
+# (and scrollDismissesKeyboard on visionOS), so every file using them needs a platform guard.
+while IFS= read -r file; do
+  [[ -z "${file}" ]] && continue
+  if ! grep -Eq '^[[:space:]]*#if[[:space:]].*os\(' "${file}"; then
+    echo "ChatUI file uses platform-limited SwiftUI APIs without an os() guard: ${file}"
+    status=1
+  fi
+done <<<"$(swift_files_matching '\.textSelection\(|TextEditor\(|\.scrollDismissesKeyboard\(|PhotosPicker' Sources/OpenClawChatUI)"
+
+if [[ ${status} -ne 0 ]]; then
+  exit 1
+fi
+
 echo "Apple matrix static validation passed (platform=${platform})."

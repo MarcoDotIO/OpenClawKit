@@ -5,6 +5,10 @@ public enum ChatMarkdownVariant: String, CaseIterable, Sendable {
     case compact
 }
 
+// ChatUI views ship on iOS, macOS and visionOS. tvOS and watchOS get only the non-UI chat core
+// (view model, transport, models, parsers), because these views rely on APIs such as TextEditor,
+// textSelection and PhotosPicker that are unavailable there.
+#if os(iOS) || os(macOS) || os(visionOS)
 @MainActor
 struct ChatMarkdownRenderer: View {
     enum Context {
@@ -78,3 +82,4 @@ private struct InlineImageList: View {
         }
     }
 }
+#endif

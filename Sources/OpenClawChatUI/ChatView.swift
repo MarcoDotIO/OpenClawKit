@@ -1,3 +1,7 @@
+// ChatUI views ship on iOS, macOS and visionOS. tvOS and watchOS get only the non-UI chat core
+// (view model, transport, models, parsers), because these views rely on APIs such as TextEditor,
+// textSelection and PhotosPicker that are unavailable there.
+#if os(iOS) || os(macOS) || os(visionOS)
 import SwiftUI
 #if canImport(UIKit)
 import UIKit
@@ -111,7 +115,7 @@ public struct OpenClawChatView: View {
                 .padding(.top, Layout.messageListPaddingTop)
                 .padding(.horizontal, Layout.messageListPaddingHorizontal)
             }
-            #if !os(macOS)
+            #if os(iOS)
             .scrollDismissesKeyboard(.interactively)
             #endif
             // Keep the scroll pinned to the bottom for new messages.
@@ -590,3 +594,4 @@ private struct ChatNoticeBanner: View {
                         .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)))
     }
 }
+#endif

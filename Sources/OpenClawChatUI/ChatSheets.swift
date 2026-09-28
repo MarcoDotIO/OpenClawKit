@@ -1,3 +1,7 @@
+// ChatUI views ship on iOS, macOS and visionOS. tvOS and watchOS get only the non-UI chat core
+// (view model, transport, models, parsers), because these views rely on APIs such as TextEditor,
+// textSelection and PhotosPicker that are unavailable there.
+#if os(iOS) || os(macOS) || os(visionOS)
 import Observation
 import SwiftUI
 
@@ -67,3 +71,4 @@ struct ChatSessionsSheet: View {
         }
     }
 }
+#endif

@@ -1,7 +1,10 @@
 import AVFoundation
 import Foundation
 
+#if !os(watchOS)
 /// Shared camera session assembly helpers used by photo and movie capture commands.
+///
+/// Unavailable on watchOS, where AVFoundation capture APIs do not exist.
 public enum CameraCapturePipelineSupport {
     #if !os(visionOS)
     /// Prepares a photo capture session and validates camera setup errors.
@@ -161,3 +164,4 @@ public enum CameraCapturePipelineSupport {
         }
     }
 }
+#endif

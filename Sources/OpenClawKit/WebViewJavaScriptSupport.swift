@@ -1,7 +1,10 @@
 import Foundation
+#if canImport(WebKit)
 import WebKit
 
 /// Shared WKWebView JavaScript helpers used by browser and canvas integrations.
+///
+/// Available only where WebKit exists (not on tvOS or watchOS).
 public enum WebViewJavaScriptSupport {
     /// Applies the shared debug-status banner state to a web view.
     @MainActor
@@ -59,3 +62,4 @@ public enum WebViewJavaScriptSupport {
         return "null"
     }
 }
+#endif

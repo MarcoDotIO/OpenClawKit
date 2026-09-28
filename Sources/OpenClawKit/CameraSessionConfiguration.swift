@@ -26,7 +26,10 @@ public enum CameraSessionConfigurationError: LocalizedError {
     }
 }
 
+#if !os(watchOS)
 /// Low-level AVFoundation helpers that wire camera, microphone, and output objects into a capture session.
+///
+/// Unavailable on watchOS, where AVFoundation capture APIs do not exist.
 public enum CameraSessionConfiguration {
     /// Adds the requested camera input to a session.
     public static func addCameraInput(session: AVCaptureSession, camera: AVCaptureDevice) throws {
@@ -76,3 +79,4 @@ public enum CameraSessionConfiguration {
     }
     #endif
 }
+#endif

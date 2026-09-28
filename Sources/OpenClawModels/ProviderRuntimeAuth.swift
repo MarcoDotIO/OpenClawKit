@@ -60,8 +60,11 @@ public actor RuntimeProviderAuthResolver: ProviderRuntimeAuthResolving {
     private static let qwenOAuthClientID = "f0304373b74a44d2b584a3fb70ca9e56"
     private static let githubCopilotTokenEndpoint = URL(string: "https://api.github.com/copilot_internal/v2/token")!
     private static let githubCopilotDefaultBaseURL = "https://api.individual.githubcopilot.com"
-    private static let preemptiveRefreshWindowMs = 60_000
-    private static let copilotCacheSafetyWindowMs = 5 * 60 * 1000
+    // Millisecond arithmetic runs in Int64 so it cannot overflow on 32-bit `Int` platforms (watchOS arm64_32).
+    private static let preemptiveRefreshWindowMs: Int64 = 60_000
+    private static let copilotCacheSafetyWindowMs: Int64 = 5 * 60 * 1000
+    /// Copilot `expires_at` values above this are already milliseconds; smaller values are seconds.
+    private static let copilotMillisecondsThreshold: Int64 = 10_000_000_000
 
     private struct CachedCopilotToken: Sendable {
         var token: String
@@ -79,7 +82,7 @@ public actor RuntimeProviderAuthResolver: ProviderRuntimeAuthResolving {
     ///   - now: Clock returning milliseconds since epoch.
     public init(
         transport: any RuntimeAuthHTTPTransport = HTTPClient(),
-        now: @escaping @Sendable () -> Int = { Int(Date().timeIntervalSince1970 * 1000) }
+        now: @escaping @Sendable () -> Int = { Int(clamping: Int64(Date().timeIntervalSince1970 * 1000)) }
     ) {
         self.transport = transport
         self.now = now
@@ -108,9 +111,9 @@ public actor RuntimeProviderAuthResolver: ProviderRuntimeAuthResolving {
             return ProviderRuntimeAuthResolution(credential: credential)
         }
 
-        let now = self.now()
+        let now = Int64(self.now())
         if let cached = self.copilotCacheByGitHubToken[githubToken],
-           cached.expiresAt - now > Self.copilotCacheSafetyWindowMs
+           Int64(cached.expiresAt) - now > Self.copilotCacheSafetyWindowMs
         {
             return ProviderRuntimeAuthResolution(
                 credential: .token(
@@ -167,10 +170,10 @@ public actor RuntimeProviderAuthResolver: ProviderRuntimeAuthResolving {
 
         let accessToken = Self.normalized(value.accessToken)
         let refreshToken = Self.normalized(value.refreshToken)
-        let now = self.now()
+        let now = Int64(self.now())
         let needsRefresh: Bool
         if let expires = value.expires {
-            needsRefresh = expires <= now + Self.preemptiveRefreshWindowMs
+            needsRefresh = Int64(expires) <= now + Self.preemptiveRefreshWindowMs
         } else {
             needsRefresh = accessToken == nil
         }
@@ -210,7 +213,7 @@ public actor RuntimeProviderAuthResolver: ProviderRuntimeAuthResolving {
             provider: value.provider,
             accessToken: nextAccessToken,
             refreshToken: Self.normalized(payload.refreshToken) ?? refreshToken,
-            expires: now + expiresIn * 1000,
+            expires: Self.clampedMilliseconds(now + Int64(expiresIn) * 1000),
             clientID: Self.normalized(value.clientID) ?? Self.qwenOAuthClientID,
             email: value.email,
             metadata: value.metadata
@@ -247,21 +250,34 @@ public actor RuntimeProviderAuthResolver: ProviderRuntimeAuthResolving {
         guard let raw else {
             throw OpenClawCoreError.unavailable("github-copilot token exchange response missing expires_at")
         }
+        let integer: Int64
         switch raw {
         case .int(let value):
-            return value > 10_000_000_000 ? value : value * 1000
+            integer = value
         case .double(let value):
-            guard value.isFinite else {
+            guard value.isFinite, let rounded = Int64(exactly: value.rounded()) else {
                 throw OpenClawCoreError.unavailable("github-copilot token exchange response has invalid expires_at")
             }
-            let integer = Int(value.rounded())
-            return integer > 10_000_000_000 ? integer : integer * 1000
+            integer = rounded
         case .string(let value):
-            guard let integer = Int(value.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            guard let parsed = Int64(value.trimmingCharacters(in: .whitespacesAndNewlines)) else {
                 throw OpenClawCoreError.unavailable("github-copilot token exchange response has invalid expires_at")
             }
-            return integer > 10_000_000_000 ? integer : integer * 1000
+            integer = parsed
         }
+        if integer > Self.copilotMillisecondsThreshold {
+            return Self.clampedMilliseconds(integer)
+        }
+        let (milliseconds, overflow) = integer.multipliedReportingOverflow(by: 1000)
+        guard !overflow else {
+            throw OpenClawCoreError.unavailable("github-copilot token exchange response has invalid expires_at")
+        }
+        return Self.clampedMilliseconds(milliseconds)
+    }
+
+    /// Narrows an Int64 millisecond value to `Int`, saturating on 32-bit platforms instead of trapping.
+    private static func clampedMilliseconds(_ value: Int64) -> Int {
+        Int(clamping: value)
     }
 
     private static func deriveCopilotBaseURL(from token: String) -> String? {
@@ -310,13 +326,13 @@ private struct GitHubCopilotTokenResponse: Decodable {
 }
 
 private enum JSONScalar: Decodable {
-    case int(Int)
+    case int(Int64)
     case double(Double)
     case string(String)
 
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
-        if let value = try? container.decode(Int.self) {
+        if let value = try? container.decode(Int64.self) {
             self = .int(value)
         } else if let value = try? container.decode(Double.self) {
             self = .double(value)

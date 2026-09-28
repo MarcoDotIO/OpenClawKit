@@ -1,15 +1,6 @@
 #!/usr/bin/env bash
+# Builds every package product (scheme OpenClawKit-Package, including OpenClawChatUI) for
+# generic visionOS. Kept for CI compatibility; see Scripts/build-apple-platforms.sh.
 set -euo pipefail
 
-SCHEME="OpenClawKit"
-DESTINATION="generic/platform=visionOS"
-DERIVED_DATA_PATH=".build/xcode-visionos"
-
-xcodebuild \
-  -scheme "$SCHEME" \
-  -configuration Debug \
-  -destination "$DESTINATION" \
-  -derivedDataPath "$DERIVED_DATA_PATH" \
-  CODE_SIGNING_ALLOWED=NO \
-  CODE_SIGNING_REQUIRED=NO \
-  build
+exec "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/build-apple-platforms.sh" visionos

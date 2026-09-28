@@ -142,13 +142,21 @@ public actor WASMSkillExecutor {
         let stdinPipe = try FileDescriptor.pipe()
         let stdoutPipe = try FileDescriptor.pipe()
         let stderrPipe = try FileDescriptor.pipe()
+        // Close each descriptor exactly once. A second close(2) of an already-closed descriptor can
+        // close an unrelated file that another thread opened with the reused descriptor number.
+        var openDescriptors: [FileDescriptor] = [
+            stdinPipe.readEnd, stdinPipe.writeEnd,
+            stdoutPipe.readEnd, stdoutPipe.writeEnd,
+            stderrPipe.readEnd, stderrPipe.writeEnd,
+        ]
         defer {
-            try? stdinPipe.readEnd.close()
-            try? stdinPipe.writeEnd.close()
-            try? stdoutPipe.readEnd.close()
-            try? stdoutPipe.writeEnd.close()
-            try? stderrPipe.readEnd.close()
-            try? stderrPipe.writeEnd.close()
+            for descriptor in openDescriptors {
+                try? descriptor.close()
+            }
+        }
+        func closeDescriptor(_ descriptor: FileDescriptor) throws {
+            openDescriptors.removeAll { $0 == descriptor }
+            try descriptor.close()
         }
 
         var wasiArgs = ["openclaw-skill"]
@@ -158,7 +166,7 @@ public actor WASMSkillExecutor {
         }
 
         // Use an isolated EOF-only stdin so the WASI bridge never mutates the process-wide stdin descriptor.
-        try stdinPipe.writeEnd.close()
+        try closeDescriptor(stdinPipe.writeEnd)
         let wasi = try WASIBridgeToHost(
             args: wasiArgs,
             environment: [:],
@@ -176,8 +184,8 @@ public actor WASMSkillExecutor {
         let instance = try module.instantiate(store: store, imports: imports)
         let exitCode = try wasi.start(instance)
 
-        try stdoutPipe.writeEnd.close()
-        try stderrPipe.writeEnd.close()
+        try closeDescriptor(stdoutPipe.writeEnd)
+        try closeDescriptor(stderrPipe.writeEnd)
 
         let stdoutBytes = try Self.readAll(from: stdoutPipe.readEnd)
         let stderrBytes = try Self.readAll(from: stderrPipe.readEnd)
