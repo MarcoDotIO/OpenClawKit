@@ -1,7 +1,10 @@
 import Foundation
 import OpenClawCore
 
-#if canImport(FoundationModels)
+// The 27 SDKs ship a FoundationModels module on tvOS and watchOS too, but on tvOS every
+// declaration is unavailable and on watchOS `SystemLanguageModel` is unavailable. Everything
+// in this file that touches `SystemLanguageModel` is therefore limited to iOS, macOS and visionOS.
+#if canImport(FoundationModels) && !os(tvOS) && !os(watchOS)
 import FoundationModels
 #endif
 
@@ -72,7 +75,7 @@ public struct FoundationModelsProvider: ModelProvider {
     /// Probes runtime availability for the system language model.
     /// - Returns: Structured availability state for the current environment.
     public static func runtimeAvailability() -> FoundationModelsRuntimeAvailability {
-        #if canImport(FoundationModels)
+        #if canImport(FoundationModels) && !os(tvOS) && !os(watchOS)
         if #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) {
             #if targetEnvironment(simulator)
             return .unavailable(.restrictedEnvironment)
@@ -106,7 +109,7 @@ public struct FoundationModelsProvider: ModelProvider {
     public func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
         switch Self.runtimeAvailability() {
         case .available:
-            #if canImport(FoundationModels)
+            #if canImport(FoundationModels) && !os(tvOS) && !os(watchOS)
             if #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) {
                 let instructions = request.systemPrompt?
                     .trimmingCharacters(in: .whitespacesAndNewlines)
