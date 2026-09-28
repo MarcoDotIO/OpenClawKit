@@ -360,6 +360,12 @@ public struct ModelGenerationResponse: Sendable, Equatable {
     /// Opaque signature of the reasoning block (Anthropic thinking signatures), required to replay
     /// thinking before tool use on the next turn.
     public let reasoningSignature: String?
+    /// Tool calls the provider already executed in-process while generating (for example Apple
+    /// Foundation Models in `executeInProcess` mode), in order. Unlike ``toolCalls`` these are not
+    /// proposals: hosts record them in the transcript and must not execute them again.
+    ///
+    /// - Note: Added in 2026.3.0; empty for providers that never run tools themselves.
+    public let executedToolCalls: [ModelExecutedToolCall]
 
     /// Creates a model generation response.
     /// - Parameters:
@@ -371,6 +377,7 @@ public struct ModelGenerationResponse: Sendable, Equatable {
     ///   - stopReason: Stop reason; defaults to `.toolUse` when `toolCalls` is non-empty, else `.stop`.
     ///   - reasoningText: Optional reasoning text.
     ///   - reasoningSignature: Optional opaque reasoning signature.
+    ///   - executedToolCalls: Tool calls the provider executed in-process.
     public init(
         text: String,
         providerID: String,
@@ -379,7 +386,8 @@ public struct ModelGenerationResponse: Sendable, Equatable {
         usage: ModelUsage? = nil,
         stopReason: ModelStopReason? = nil,
         reasoningText: String? = nil,
-        reasoningSignature: String? = nil
+        reasoningSignature: String? = nil,
+        executedToolCalls: [ModelExecutedToolCall] = []
     ) {
         self.text = text
         self.providerID = providerID
@@ -389,6 +397,31 @@ public struct ModelGenerationResponse: Sendable, Equatable {
         self.stopReason = stopReason ?? (toolCalls.isEmpty ? .stop : .toolUse)
         self.reasoningText = reasoningText
         self.reasoningSignature = reasoningSignature
+        self.executedToolCalls = executedToolCalls
+    }
+
+    /// Returns a copy carrying `executedToolCalls`, preserving every other field.
+    /// - Parameter executedToolCalls: Tool calls the provider executed in-process.
+    /// - Returns: The updated response.
+    public func withExecutedToolCalls(_ executedToolCalls: [ModelExecutedToolCall]) -> ModelGenerationResponse {
+        ModelGenerationResponse(
+            text: self.text,
+            providerID: self.providerID,
+            modelID: self.modelID,
+            toolCalls: self.toolCalls,
+            usage: self.usage,
+            stopReason: self.stopReason,
+            reasoningText: self.reasoningText,
+            reasoningSignature: self.reasoningSignature,
+            executedToolCalls: executedToolCalls
+        )
+    }
+
+    /// Transcript messages recording ``executedToolCalls`` (one assistant tool-call message followed
+    /// by the results), so a loop can store the pairs without re-executing them. Empty when the
+    /// provider executed nothing.
+    public var executedToolMessages: [ModelMessage] {
+        ModelExecutedToolCall.transcriptMessages(for: self.executedToolCalls)
     }
 
     /// Assistant content parts in transcript order: reasoning, text, then tool calls.
@@ -448,6 +481,9 @@ public struct ModelStreamChunk: Sendable, Equatable {
     public let toolCalls: [ModelToolCall]
     /// Opaque reasoning signature, usually on the `.final` chunk.
     public let reasoningSignature: String?
+    /// Tool calls the provider executed in-process, usually on the `.final` chunk (see
+    /// ``ModelGenerationResponse/executedToolCalls``).
+    public let executedToolCalls: [ModelExecutedToolCall]
 
     /// Creates a text chunk (v1 initializer).
     /// - Parameters:
@@ -467,6 +503,7 @@ public struct ModelStreamChunk: Sendable, Equatable {
     ///   - stopReason: Stop reason.
     ///   - toolCalls: Complete tool calls.
     ///   - reasoningSignature: Opaque reasoning signature.
+    ///   - executedToolCalls: Tool calls the provider executed in-process.
     public init(
         kind: Kind,
         text: String = "",
@@ -475,7 +512,8 @@ public struct ModelStreamChunk: Sendable, Equatable {
         usage: ModelUsage? = nil,
         stopReason: ModelStopReason? = nil,
         toolCalls: [ModelToolCall] = [],
-        reasoningSignature: String? = nil
+        reasoningSignature: String? = nil,
+        executedToolCalls: [ModelExecutedToolCall] = []
     ) {
         self.text = text
         self.isFinal = kind == .final
@@ -486,6 +524,7 @@ public struct ModelStreamChunk: Sendable, Equatable {
         self.stopReason = stopReason
         self.toolCalls = toolCalls
         self.reasoningSignature = reasoningSignature
+        self.executedToolCalls = executedToolCalls
     }
 
     /// Creates a `.reasoning` chunk.
@@ -521,7 +560,8 @@ public struct ModelStreamChunk: Sendable, Equatable {
             usage: response.usage,
             stopReason: response.stopReason,
             toolCalls: response.toolCalls,
-            reasoningSignature: response.reasoningSignature
+            reasoningSignature: response.reasoningSignature,
+            executedToolCalls: response.executedToolCalls
         )
     }
 }
@@ -693,10 +733,38 @@ public actor ModelRouter {
     /// Sets default provider by identifier.
     /// - Parameter id: Provider identifier.
     public func setDefaultProviderID(_ id: String) throws {
-        guard self.providers[id] != nil else {
+        let resolved = self.registeredProviderID(for: id)
+        guard self.providers[resolved] != nil else {
             throw OpenClawCoreError.invalidConfiguration("Unknown model provider: \(id)")
         }
-        self.defaultProviderID = id
+        self.defaultProviderID = resolved
+    }
+
+    /// Maps a requested provider id or alias onto a registered provider id.
+    ///
+    /// Exact registrations win. Otherwise the id is normalized through the reference catalog
+    /// (`foundation` → `apple-fm`, `gemini` → `google`, `openai-codex` → `openai`, …) and matched
+    /// against registered providers whose own id normalizes the same way. Unknown ids are returned
+    /// trimmed so fallback ordering and error messages keep the caller's spelling.
+    /// - Parameter rawID: Requested provider id or alias.
+    /// - Returns: A registered provider id, or the trimmed input when none matches.
+    public func registeredProviderID(for rawID: String) -> String {
+        let trimmed = rawID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, self.providers[trimmed] == nil else {
+            return trimmed
+        }
+        let lowered = trimmed.lowercased()
+        if self.providers[lowered] != nil {
+            return lowered
+        }
+        let canonical = OpenClawReferenceProviderCatalog.normalize(providerID: lowered)
+        if self.providers[canonical] != nil {
+            return canonical
+        }
+        let matches = self.providers.keys
+            .filter { OpenClawReferenceProviderCatalog.normalize(providerID: $0) == canonical }
+            .sorted()
+        return matches.first ?? trimmed
     }
 
     /// Sets per-provider throttle policy.
@@ -1038,7 +1106,7 @@ public actor ModelRouter {
 
         func appendProviderID(_ rawID: String?) {
             guard let rawID else { return }
-            let normalized = rawID.trimmingCharacters(in: .whitespacesAndNewlines)
+            let normalized = self.registeredProviderID(for: rawID)
             guard !normalized.isEmpty else { return }
             if seen.insert(normalized).inserted {
                 orderedIDs.append(normalized)
@@ -1067,7 +1135,7 @@ public actor ModelRouter {
             return orderedIDs
         }
 
-        let explicitProvider = request.providerID?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let explicitProvider = request.providerID.map { self.registeredProviderID(for: $0) }
         if let explicitProvider, !explicitProvider.isEmpty {
             let tail = orderedIDs.filter { $0 != explicitProvider }
             let rankedTail = adaptivePolicy.rankedProviderIDs(from: tail)
@@ -1155,7 +1223,11 @@ public actor ModelRouter {
         }
         switch runtimeResolution.credential {
         case .apiKey(let value):
-            if let key = value.key?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty {
+            // Non-secret local markers (for example `apple-fm-local`) identify on-device auth profiles;
+            // they are never forwarded as credentials.
+            if let key = value.key?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty,
+               !ModelProviderSecrets.isNonSecretAuthMarker(key)
+            {
                 metadata["auth.apiKey"] = key
             }
         case .token(let value):

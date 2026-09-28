@@ -510,6 +510,8 @@ public struct ModelCatalogModel: Codable, Sendable, Equatable, Identifiable {
     public var replacedBy: String?
     /// Free-form tags.
     public var tags: [String]?
+    /// Provider request parameters (SDK rows such as Apple Private Cloud Compute's `network: required`).
+    public var params: [String: AnyCodable]?
 
     /// Creates a catalog model row.
     public init(
@@ -533,7 +535,8 @@ public struct ModelCatalogModel: Codable, Sendable, Equatable, Identifiable {
         statusReason: String? = nil,
         replaces: [String]? = nil,
         replacedBy: String? = nil,
-        tags: [String]? = nil
+        tags: [String]? = nil,
+        params: [String: AnyCodable]? = nil
     ) {
         self.id = id
         self.name = name
@@ -557,6 +560,7 @@ public struct ModelCatalogModel: Codable, Sendable, Equatable, Identifiable {
         self.replaces = replaces
         self.replacedBy = replacedBy
         self.tags = tags
+        self.params = params.flatMap { $0.isEmpty ? nil : $0 }
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -581,6 +585,7 @@ public struct ModelCatalogModel: Codable, Sendable, Equatable, Identifiable {
         case replaces
         case replacedBy
         case tags
+        case params
     }
 
     /// Decodes a row leniently; only `id` is required.
@@ -614,7 +619,8 @@ public struct ModelCatalogModel: Codable, Sendable, Equatable, Identifiable {
             statusReason: container.lenientNonEmptyString(.statusReason),
             replaces: container.lenient([String].self, .replaces),
             replacedBy: container.lenientNonEmptyString(.replacedBy),
-            tags: container.lenient([String].self, .tags)
+            tags: container.lenient([String].self, .tags),
+            params: container.lenient([String: AnyCodable].self, .params)
         )
     }
 
@@ -642,6 +648,7 @@ public struct ModelCatalogModel: Codable, Sendable, Equatable, Identifiable {
         try container.encodeIfPresent(self.replaces, forKey: .replaces)
         try container.encodeIfPresent(self.replacedBy, forKey: .replacedBy)
         try container.encodeIfPresent(self.tags, forKey: .tags)
+        try container.encodeIfPresent(self.params, forKey: .params)
     }
 
     /// Effective availability state (`available` when unset).
@@ -671,10 +678,13 @@ public struct ModelCatalogModel: Codable, Sendable, Equatable, Identifiable {
         return self.contextTokens ?? self.contextWindow
     }
 
-    /// Converts the row to the runtime `ModelDefinitionConfig` shape OpenClawCore defines today.
+    /// Converts the row to the runtime `ModelDefinitionConfig`.
     ///
-    /// Fields that `ModelDefinitionConfig` does not carry yet (context-window options, `contextTokens`,
-    /// `thinkingLevelMap`, `mediaInput`, tiered pricing, newer compat flags) stay available on this row.
+    /// Carries every field the runtime reads: `baseUrl`, `contextTokens`, `thinkingLevelMap` (explicit
+    /// `null` entries preserved), `params`, `mediaInput`, cost
+    /// including `tieredPricing`, and the full compat row (`supportedReasoningEfforts`,
+    /// `reasoningEffortMap`, `supportsTemperature`, `supportsJsonSchemaResponseFormat`, ...).
+    /// Context-window options themselves stay available on this row.
     public func definitionConfig() -> ModelDefinitionConfig {
         ModelDefinitionConfig(
             id: self.id,
@@ -682,16 +692,24 @@ public struct ModelCatalogModel: Codable, Sendable, Equatable, Identifiable {
             api: self.api,
             reasoning: self.reasoning ?? false,
             input: self.effectiveInput,
-            cost: ModelCostConfig(
-                input: self.cost?.input ?? 0,
-                output: self.cost?.output ?? 0,
-                cacheRead: self.cost?.cacheRead ?? 0,
-                cacheWrite: self.cost?.cacheWrite ?? 0
-            ),
+            cost: self.cost.flatMap { ModelCatalogJSONBridge.convert($0, to: ModelCostConfig.self) }
+                ?? ModelCostConfig(
+                    input: self.cost?.input ?? 0,
+                    output: self.cost?.output ?? 0,
+                    cacheRead: self.cost?.cacheRead ?? 0,
+                    cacheWrite: self.cost?.cacheWrite ?? 0
+                ),
             contextWindow: self.contextWindow ?? 0,
             maxTokens: self.maxTokens ?? 0,
             headers: self.headers ?? [:],
-            compat: self.compat?.runtimeConfig
+            compat: self.compat.map { compat in
+                ModelCatalogJSONBridge.convert(compat, to: ModelCompatConfig.self) ?? compat.runtimeConfig
+            },
+            baseURL: self.baseURL,
+            contextTokens: self.contextTokens,
+            thinkingLevelMap: self.thinkingLevelMap.flatMap { ModelCatalogJSONBridge.convert($0, to: ModelThinkingLevelMap.self) },
+            params: self.params,
+            mediaInput: self.mediaInput.flatMap { ModelCatalogJSONBridge.convert($0, to: ModelMediaInputConfig.self) }
         )
     }
 
@@ -1171,5 +1189,13 @@ extension KeyedDecodingContainer {
             return nil
         }
         return Int(value.rounded(.down))
+    }
+}
+
+/// Converts catalog value types into the runtime config types that decode the same upstream JSON.
+enum ModelCatalogJSONBridge {
+    static func convert<Source: Encodable, Target: Decodable>(_ value: Source, to type: Target.Type) -> Target? {
+        guard let data = try? JSONEncoder().encode(value) else { return nil }
+        return try? JSONDecoder().decode(type, from: data)
     }
 }

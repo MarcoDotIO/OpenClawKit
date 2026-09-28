@@ -180,7 +180,8 @@ struct ModelCatalogTypesTests {
 
     @Test
     func appleFMProviderConfigFixtureDecodes() throws {
-        // Upstream extensions/apple-fm/defaults.ts buildAppleFmProviderConfig output.
+        // Upstream extensions/apple-fm/defaults.ts buildAppleFmProviderConfig output. Upstream fills
+        // contextWindow from runtime facts; the SDK catalog row uses the 8,192-token on-device window.
         let provider = try Self.decode(
             ModelCatalogProvider.self,
             """
@@ -190,7 +191,7 @@ struct ModelCatalogTypesTests {
               "models": [{
                 "id": "system", "name": "Apple Foundation Models", "reasoning": false, "input": ["text"],
                 "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-                "contextWindow": 4096, "maxTokens": 1024,
+                "contextWindow": 8192, "maxTokens": 1024,
                 "compat": {"supportsTools": true, "supportsJsonSchemaResponseFormat": true,
                            "supportsDeveloperRole": false, "supportsUsageInStreaming": true}
               }]
@@ -203,8 +204,13 @@ struct ModelCatalogTypesTests {
         #expect(entry.catalog.model(id: "system") == provider.models.first)
         #expect(entry.config.authHeader == false)
         #expect(entry.config.auth == nil)
-        #expect(entry.aliases == ["foundation"])
-        #expect(entry.catalog.model(id: "private-cloud-compute")?.tags?.contains("network-required") == true)
+        #expect(entry.aliases == ["foundation", "apple-foundation"])
+        #expect(OpenClawReferenceProviderCatalog.normalize(providerID: "apple-foundation") == "apple-fm")
+        #expect(OpenClawReferenceProviderCatalog.normalize(providerID: "foundation") == "apple-fm")
+        let pcc = try #require(entry.catalog.model(id: "private-cloud-compute"))
+        #expect(pcc.tags?.contains("network-required") == true)
+        #expect(pcc.params?["network"]?.stringValue == "required")
+        #expect(pcc.definitionConfig().params?["network"]?.stringValue == "required")
     }
 
     @Test
