@@ -767,6 +767,10 @@ public enum SlackConnectionMode: String, Codable, Sendable, Equatable, Hashable,
     case http
     /// Relay through an OpenClaw relay gateway.
     case relay
+    /// Legacy SDK-only `conversations.history` polling of `defaultChannelID` (pre-2026.3.0 behavior).
+    ///
+    /// The adapter also falls back to polling when `mode` is ``socket`` but no app token is set.
+    case poll
 }
 
 /// Slack relay settings (upstream `channels.slack.relay`).
