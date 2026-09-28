@@ -130,6 +130,21 @@ public actor CoreAIModelRuntime: CoreAITensorExecuting {
         throw Self.unavailableError
     }
 
+    /// Deletes the cached specializations of the loaded model (the model stays loaded in memory).
+    /// - Throws: ``CoreAIRuntimeError/notLoaded`` when no model is loaded, or cache errors.
+    public func purgeCachedSpecializations() throws {
+        #if compiler(>=6.4) && canImport(CoreAI)
+        if #available(iOS 27.0, macOS 27.0, tvOS 27.0, watchOS 27.0, visionOS 27.0, *) {
+            guard let loaded = self.storage as? CoreAILoadedModel else {
+                throw CoreAIRuntimeError.notLoaded
+            }
+            try CoreAIBridge.purgeCache(for: URL(fileURLWithPath: loaded.descriptor.path), appGroup: loaded.appGroup)
+            return
+        }
+        #endif
+        throw Self.unavailableError
+    }
+
     /// Whether a model is loaded.
     public func isLoaded() -> Bool {
         self.storage != nil
@@ -230,6 +245,7 @@ struct CoreAILoadedModel: Sendable {
     let id = UUID()
     let model: AIModel
     let descriptor: CoreAIModelDescriptor
+    let appGroup: String?
     var functions: [String: InferenceFunction] = [:]
     var states: [String: [NDArray]] = [:]
 
@@ -353,7 +369,7 @@ enum CoreAIBridge {
         }
         descriptor.computeUnit = computeUnit
         descriptor.functions = Self.enrich(descriptor.functions, with: model)
-        return CoreAILoadedModel(model: model, descriptor: descriptor)
+        return CoreAILoadedModel(model: model, descriptor: descriptor, appGroup: appGroup)
     }
 
     static func purgeCache(for url: URL?, appGroup: String?) throws {
