@@ -22,6 +22,8 @@ public enum LocationCurrentRequest {
         let now = Date()
         if let maxAgeMs,
            let cached = manager.location,
+           // A fix stamped in the future (clock skew) can never prove its age.
+           cached.timestamp <= now,
            now.timeIntervalSince(cached.timestamp) * 1000 <= Double(maxAgeMs)
         {
             return cached
