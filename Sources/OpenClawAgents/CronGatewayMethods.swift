@@ -20,7 +20,8 @@ import OpenClawProtocol
 ///   - registrar: Gateway server or registrar.
 ///   - scheduler: Scheduler.
 public func registerCronGatewayMethods(on registrar: some GatewayMethodRegistrar, scheduler: CronScheduler) async {
-    await registrar.register(method: "cron.status") { _ in
+    await registrar.register(method: "cron.status") { request in
+        try CronGatewaySupport.validateStatusParams(request)
         let status = await scheduler.status()
         var object = try AnyCodable(encoding: status).dictionaryValue ?? [:]
         object["enabled"] = AnyCodable(true)
@@ -128,6 +129,21 @@ public func registerCronGatewayMethods(on registrar: some GatewayMethodRegistrar
 }
 
 enum CronGatewaySupport {
+    /// Validates `cron.status` params from the raw payload.
+    ///
+    /// Upstream `CronStatusParamsSchema` is `closedObject({})`: absent/`null` or an empty object. The
+    /// generated `CronStatusParams` model decodes any object (it cannot express a closed schema), so the
+    /// raw params are checked here instead of editing the vendored model.
+    static func validateStatusParams(_ request: GatewayMethodRequest) throws {
+        guard let raw = request.rawParams, !raw.isNull else { return }
+        guard let object = raw.dictionaryValue else {
+            throw GatewayMethodError.invalidRequest("invalid cron.status params: must be an object")
+        }
+        if let unexpected = object.keys.sorted().first {
+            throw GatewayMethodError.invalidRequest("invalid cron.status params: unexpected property '\(unexpected)'")
+        }
+    }
+
     static func jobID(_ request: GatewayMethodRequest) throws -> String {
         guard let id = request.stringParam("id", "jobId") else {
             throw GatewayMethodError.invalidRequest("\(request.method) requires id or jobId")
