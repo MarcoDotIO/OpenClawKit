@@ -140,7 +140,7 @@ extension GatewayServer {
     /// Applies `sessions.patch` params through ``SessionStore/applyPatch(_:defaultAgentID:grantedScopes:)``,
     /// mapping patch errors to gateway errors (retired `execSecurity`/`execAsk` → `INVALID_REQUEST`,
     /// `permissionMode: full` without `operator.admin` → `FORBIDDEN`).
-    static func applySessionPatch(
+    public static func applySessionPatch(
         _ request: GatewayMethodRequest,
         store: SessionStore,
         defaultAgentID: String
@@ -273,7 +273,10 @@ extension GatewayServer {
 
     // MARK: - Helpers
 
-    static func sessionInfo(from record: SessionRecord) -> GatewaySessionInfo {
+    /// Legacy `GatewaySessionInfo` projection of a session record (timestamps clamp to `Int`).
+    /// - Parameter record: Session record.
+    /// - Returns: The session summary.
+    public static func sessionInfo(from record: SessionRecord) -> GatewaySessionInfo {
         GatewaySessionInfo(
             key: record.key,
             agentID: record.agentID,
