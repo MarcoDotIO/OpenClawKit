@@ -44,6 +44,7 @@ private struct TeamsInboundActivity: Decodable {
 
     struct TeamsInboundConversation: Decodable {
         let id: String?
+        let conversationType: String?
     }
 
     struct TeamsMentionEntity: Decodable {
@@ -165,11 +166,21 @@ public actor MicrosoftTeamsChannelAdapter: InboundChannelAdapter {
         let conversationID = activity.conversation?.id?.trimmingCharacters(in: .whitespacesAndNewlines)
             ?? self.config.defaultConversationID
             ?? "unknown-conversation"
+        let chatType: ChannelChatType
+        switch activity.conversation?.conversationType?.lowercased() {
+        case "groupchat": chatType = .group
+        case "channel": chatType = .channel
+        default: chatType = .direct
+        }
         let inbound = InboundMessage(
             channel: .msteams,
-            accountID: senderID,
             peerID: conversationID,
-            text: text
+            text: text,
+            senderID: senderID,
+            senderName: activity.from?.name,
+            chatType: chatType,
+            wasMentioned: chatType == .direct ? nil : self.isMentioningBot(activity: activity, text: activity.text ?? ""),
+            legacyRoutingAccountID: senderID
         )
         if let inboundHandler {
             await inboundHandler(inbound)

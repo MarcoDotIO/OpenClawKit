@@ -143,7 +143,7 @@ struct DiscordChannelAdapterTests {
         let received = await collector.snapshot()
         #expect(received.count >= 1)
         #expect(received.first?.channel == .discord)
-        #expect(received.first?.accountID == "user-1")
+        #expect(received.first?.senderID == "user-1")
         #expect(received.first?.peerID == "channel-1")
         #expect(received.first?.text == "hello from user")
     }
@@ -326,7 +326,7 @@ struct DiscordChannelAdapterTests {
 
         let received = await collector.snapshot()
         #expect(received.count == 1)
-        #expect(received.first?.accountID == "user-2")
+        #expect(received.first?.senderID == "user-2")
     }
 
     @Test
@@ -352,6 +352,9 @@ struct DiscordChannelAdapterTests {
 
         try await adapter.start()
         try await Task.sleep(nanoseconds: 650_000_000)
+        // 2026.3.0: the poll loop no longer reacts unconditionally; AutoReplyEngine sends the
+        // ack reaction through ReactingChannelAdapter according to ackReactionScope.
+        try await adapter.addReaction(peerID: "channel-1", messageID: "31", emoji: "👀")
         await adapter.stop()
 
         let records = await transport.records()

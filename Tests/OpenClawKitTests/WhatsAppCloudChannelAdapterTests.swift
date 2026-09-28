@@ -174,7 +174,7 @@ struct WhatsAppCloudChannelAdapterTests {
         let messages = await collector.snapshot()
         #expect(messages.count == 1)
         #expect(messages.first?.channel == .whatsapp)
-        #expect(messages.first?.accountID == "123456")
+        #expect(messages.first?.metadata["phoneNumberID"] == "123456")
         #expect(messages.first?.peerID == "15550001111")
         #expect(messages.first?.text == "weather in milan?")
     }

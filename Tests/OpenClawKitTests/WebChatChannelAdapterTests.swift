@@ -49,7 +49,7 @@ struct WebChatChannelAdapterTests {
         let inbound = await collector.snapshot()
         #expect(inbound.count == 1)
         #expect(inbound.first?.channel == .webchat)
-        #expect(inbound.first?.accountID == "web-user-1")
+        #expect(inbound.first?.senderID == "web-user-1")
         #expect(inbound.first?.peerID == "session-1")
         #expect(inbound.first?.attachments.count == 1)
         #expect(inbound.first?.attachments.first?.fileName == "note.txt")

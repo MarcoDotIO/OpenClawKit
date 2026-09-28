@@ -347,9 +347,13 @@ public actor WhatsAppCloudChannelAdapter: InboundChannelAdapter {
 
                     let inbound = InboundMessage(
                         channel: .whatsapp,
-                        accountID: accountID,
                         peerID: peerID,
-                        text: text
+                        text: text,
+                        senderID: message.from ?? peerID,
+                        chatType: .direct,
+                        messageID: message.id,
+                        metadata: accountID.map { ["phoneNumberID": $0] } ?? [:],
+                        legacyRoutingAccountID: accountID
                     )
                     await self.emitDiagnostic(
                         name: "channel.whatsapp.webhook.delivered",

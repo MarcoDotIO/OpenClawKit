@@ -208,6 +208,11 @@ public actor TelegramChannelAdapter: InboundChannelAdapter {
         }
     }
 
+    /// Telegram supports `sendChatAction` typing indicators.
+    nonisolated public var supportsTypingIndicator: Bool {
+        true
+    }
+
     public func sendTypingIndicator(accountID _: String?, peerID: String) async throws {
         guard self.started else {
             throw OpenClawCoreError.unavailable("Telegram adapter is not started")
@@ -282,11 +287,19 @@ public actor TelegramChannelAdapter: InboundChannelAdapter {
                 continue
             }
             _ = try? await self.sendTypingIndicator(token: token, chatID: message.chat.id)
+            let senderID = message.from.map { String($0.id) }
+            let isPrivate = message.chat.type == "private"
             let inbound = InboundMessage(
                 channel: .telegram,
-                accountID: message.from.map { String($0.id) },
                 peerID: String(message.chat.id),
-                text: self.normalizedInboundText(message)
+                text: self.normalizedInboundText(message),
+                senderID: senderID,
+                chatType: Self.chatType(for: message.chat.type),
+                messageID: String(message.messageID),
+                wasMentioned: isPrivate ? nil : self.isMentioningBot(message),
+                isFromBot: message.from?.isBot == true,
+                recipientID: self.botID.map(String.init),
+                legacyRoutingAccountID: senderID
             )
             if let inboundHandler {
                 await inboundHandler(inbound)
@@ -308,6 +321,15 @@ public actor TelegramChannelAdapter: InboundChannelAdapter {
             self.recentUpdateIDSet.remove(evicted)
         }
         return false
+    }
+
+    /// Maps Telegram `chat.type` onto the envelope chat type.
+    private static func chatType(for rawType: String) -> ChannelChatType {
+        switch rawType.lowercased() {
+        case "private": .direct
+        case "channel": .channel
+        default: .group
+        }
     }
 
     private func isMentioningBot(_ message: TelegramMessage) -> Bool {

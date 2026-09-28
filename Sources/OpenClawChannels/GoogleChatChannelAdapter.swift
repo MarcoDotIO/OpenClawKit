@@ -41,6 +41,8 @@ private struct GoogleChatMessagePayload: Decodable {
 
     struct SpaceReference: Decodable {
         let name: String?
+        let type: String?
+        let spaceType: String?
     }
 }
 
@@ -52,6 +54,8 @@ private struct GoogleChatWebhookEvent: Decodable {
 
     struct SpaceReference: Decodable {
         let name: String?
+        let type: String?
+        let spaceType: String?
     }
 }
 
@@ -159,11 +163,21 @@ public actor GoogleChatChannelAdapter: InboundChannelAdapter {
         let peerID = message.thread?.name?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
             ? (message.thread?.name ?? spaceID)
             : spaceID
+        let spaceType = (message.space?.spaceType ?? message.space?.type ?? event.space?.spaceType ?? event.space?.type)?.uppercased()
+        let chatType: ChannelChatType
+        switch spaceType {
+        case "DM", "DIRECT_MESSAGE", nil: chatType = .direct
+        default: chatType = message.thread?.name == nil ? .group : .thread
+        }
         let inbound = InboundMessage(
             channel: .googlechat,
-            accountID: message.sender?.name,
             peerID: peerID,
-            text: text
+            text: text,
+            senderID: message.sender?.name,
+            chatType: chatType,
+            messageID: message.name,
+            threadID: message.thread?.name,
+            legacyRoutingAccountID: message.sender?.name
         )
         if let inboundHandler {
             await inboundHandler(inbound)

@@ -31,7 +31,7 @@ private struct DiscordMessage: Decodable {
 }
 
 /// Live Discord channel adapter backed by Discord REST polling APIs.
-public actor DiscordChannelAdapter: ChannelAdapter {
+public actor DiscordChannelAdapter: ReactingChannelAdapter {
     public typealias PresenceFactory = @Sendable (_ token: String) -> any DiscordPresenceClient
 
     /// Adapter channel identifier.
@@ -136,6 +136,11 @@ public actor DiscordChannelAdapter: ChannelAdapter {
         }
     }
 
+    /// Discord supports channel typing indicators.
+    nonisolated public var supportsTypingIndicator: Bool {
+        true
+    }
+
     public func sendTypingIndicator(accountID _: String?, peerID: String) async throws {
         guard self.started else {
             throw OpenClawCoreError.unavailable("Discord adapter is not started")
@@ -211,15 +216,20 @@ public actor DiscordChannelAdapter: ChannelAdapter {
             guard !text.isEmpty else {
                 continue
             }
-            if self.config.mentionOnly {
-                try? await self.sendEyesReaction(channelID: channelID, messageID: message.id, token: token)
-            }
+            // The acknowledgement reaction is sent by AutoReplyEngine (ackReactionScope) through
+            // ReactingChannelAdapter instead of unconditionally here.
             _ = try? await self.sendTypingIndicator(channelID: channelID, token: token)
             let inbound = InboundMessage(
                 channel: .discord,
-                accountID: message.author.id,
                 peerID: channelID,
-                text: text
+                text: text,
+                senderID: message.author.id,
+                chatType: .channel,
+                messageID: message.id,
+                wasMentioned: self.botUserID == nil ? nil : self.isMentioningBot(message),
+                isFromBot: message.author.bot == true,
+                recipientID: self.botUserID,
+                legacyRoutingAccountID: message.author.id
             )
             if let inboundHandler {
                 await inboundHandler(inbound)
@@ -246,11 +256,37 @@ public actor DiscordChannelAdapter: ChannelAdapter {
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private func sendEyesReaction(channelID: String, messageID: String, token: String) async throws {
-        let encodedEmoji = "👀"
-        let endpoint = self.baseURL.appending(path: "channels/\(channelID)/messages/\(messageID)/reactions/\(encodedEmoji)/@me")
+    /// Adds a reaction as the bot (`PUT /channels/{c}/messages/{m}/reactions/{emoji}/@me`).
+    /// - Parameters:
+    ///   - peerID: Channel id.
+    ///   - messageID: Message id.
+    ///   - emoji: Unicode emoji.
+    public func addReaction(peerID: String, messageID: String, emoji: String) async throws {
+        let token = try self.resolveReactionToken()
+        try await self.sendReactionRequest(channelID: peerID, messageID: messageID, emoji: emoji, method: "PUT", token: token)
+    }
+
+    /// Removes the bot's reaction (`DELETE .../reactions/{emoji}/@me`).
+    /// - Parameters:
+    ///   - peerID: Channel id.
+    ///   - messageID: Message id.
+    ///   - emoji: Unicode emoji.
+    public func removeReaction(peerID: String, messageID: String, emoji: String) async throws {
+        let token = try self.resolveReactionToken()
+        try await self.sendReactionRequest(channelID: peerID, messageID: messageID, emoji: emoji, method: "DELETE", token: token)
+    }
+
+    private func resolveReactionToken() throws -> String {
+        guard let token = self.config.botToken?.trimmingCharacters(in: .whitespacesAndNewlines), !token.isEmpty else {
+            throw OpenClawCoreError.invalidConfiguration("Discord bot token is required")
+        }
+        return token
+    }
+
+    private func sendReactionRequest(channelID: String, messageID: String, emoji: String, method: String, token: String) async throws {
+        let endpoint = self.baseURL.appending(path: "channels/\(channelID)/messages/\(messageID)/reactions/\(emoji)/@me")
         var request = URLRequest(url: endpoint)
-        request.httpMethod = "PUT"
+        request.httpMethod = method
         request.setValue("Bot \(token)", forHTTPHeaderField: "Authorization")
         let response = try await self.transport.data(for: request)
         if response.statusCode == 401 {

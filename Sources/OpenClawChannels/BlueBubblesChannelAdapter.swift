@@ -74,7 +74,16 @@ private struct BlueBubblesWebhookEnvelope: Decodable {
     }
 }
 
-/// HTTP-backed BlueBubbles adapter for recommended iMessage integration.
+/// HTTP-backed BlueBubbles adapter.
+///
+/// - Important: Deprecated in 2026.3.0. Upstream OpenClaw removed BlueBubbles in 2026.5.12; this
+///   adapter keeps working for one more release. Migrate to ``IMessageChannelAdapter`` (host
+///   transport on top of `imsg rpc`) with `ChannelsConfig.migrateBlueBubblesToIMessage()`.
+@available(
+    *,
+    deprecated,
+    message: "BlueBubbles support was removed upstream in OpenClaw 2026.9.x; migrate to the iMessage channel (imsg). See /channels/imessage-from-bluebubbles"
+)
 public actor BlueBubblesChannelAdapter: InboundChannelAdapter {
     /// Adapter channel identifier.
     public let id: ChannelID = .bluebubbles
@@ -172,12 +181,15 @@ public actor BlueBubblesChannelAdapter: InboundChannelAdapter {
             return
         }
 
+        let handle = envelope.from?.trimmingCharacters(in: .whitespacesAndNewlines)
         let inbound = InboundMessage(
             channel: .bluebubbles,
-            accountID: envelope.from?.trimmingCharacters(in: .whitespacesAndNewlines),
             peerID: peerID,
             text: text,
-            attachments: attachments
+            attachments: attachments,
+            senderID: handle,
+            chatType: peerID.contains(";+;") ? .group : .direct,
+            legacyRoutingAccountID: handle
         )
         if let inboundHandler {
             await inboundHandler(inbound)

@@ -190,7 +190,7 @@ struct GoogleChatChannelAdapterTests {
         let inbound = await collector.snapshot()
         #expect(inbound.count == 1)
         #expect(inbound.first?.channel == .googlechat)
-        #expect(inbound.first?.accountID == "users/123")
+        #expect(inbound.first?.senderID == "users/123")
         #expect(inbound.first?.peerID == "spaces/AAA/threads/THREAD-1")
         #expect(inbound.first?.text == "human message")
     }
