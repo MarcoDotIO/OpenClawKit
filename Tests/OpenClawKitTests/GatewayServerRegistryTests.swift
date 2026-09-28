@@ -74,7 +74,8 @@ struct GatewayServerRegistryTests {
             #expect(response.ok == false)
             let expected: ErrorCode
             if descriptor.scope == "node" {
-                expected = .forbidden
+                // Node-role methods reject the in-process operator connection before dispatch.
+                expected = .invalidRequest
             } else if (try? GatewayMethodCatalog.validateParams(method: descriptor.name, payload: AnyCodable([String: AnyCodable]()))) != nil {
                 expected = .unavailable
             } else {
@@ -224,6 +225,17 @@ struct GatewayServerRegistryTests {
         }
         #expect(details.missingscope == "operator.admin")
         #expect(details.requiredscopes == ["operator.admin"])
+
+        let node = GatewayConnectionContext(role: "node", scopes: [])
+        let nodeCallingOperator = await server.handle(Self.frame("sessions.list", params: [:]), connection: node)
+        #expect(nodeCallingOperator.error?.errorCode == .invalidRequest)
+        #expect(nodeCallingOperator.error?.message == "unauthorized role: node")
+        let nodeMethod = await server.handle(Self.frame("node.invoke.result", params: [:]), connection: node)
+        #expect(nodeMethod.error?.message.hasPrefix("unauthorized role") != true)
+        let operatorCallingNode = await server.handle(Self.frame("node.invoke.result", params: [:]))
+        #expect(operatorCallingNode.error?.message == "unauthorized role: operator")
+        let unscopedHealth = await server.handle(Self.frame("health", params: [:]), connection: GatewayConnectionContext(role: "node"))
+        #expect(unscopedHealth.error?.errorCode == .unavailable)
 
         let writer = GatewayConnectionContext(scopes: ["operator.write"])
         #expect(writer.allows(scope: "operator.read"))

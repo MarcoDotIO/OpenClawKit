@@ -79,9 +79,10 @@ public struct GatewayServerHandlers: Sendable {
 ///    `UNAVAILABLE` because nothing in-process implements it.
 /// 4. Methods upstream removed since the previous pin, and unknown methods, answer `INVALID_REQUEST`.
 ///
-/// Before invoking a handler the server checks the method's descriptor scope against the
-/// connection's grants (``GatewayConnectionContext/allows(scope:)``) and answers `FORBIDDEN` with
-/// `MISSING_SCOPE` details when it is not satisfied.
+/// Before invoking a handler the server authorizes the connection like upstream: node-scoped methods
+/// require the node role and all others the operator role (`INVALID_REQUEST "unauthorized role: …"`),
+/// and the descriptor scope is checked against the connection's grants
+/// (``GatewayConnectionContext/allows(scope:)``), answering `FORBIDDEN` with `MISSING_SCOPE` details.
 public actor GatewayServer: GatewayMethodRegistrar {
     /// Methods served in-process that are OpenClawKit extensions rather than upstream core methods.
     ///
@@ -317,8 +318,8 @@ public actor GatewayServer: GatewayMethodRegistrar {
             events: self.makeEventEmitter()
         )
         do {
-            if let descriptor, !connection.allows(scope: descriptor.scope) {
-                throw GatewayMethodError.missingScope(descriptor.scope)
+            if let descriptor, let denial = Self.authorizationError(method: request.method, descriptor: descriptor, connection: connection) {
+                throw denial
             }
             let payload: AnyCodable?
             if let entry {
@@ -350,6 +351,29 @@ public actor GatewayServer: GatewayMethodRegistrar {
         case .builtin(let builtin):
             return try await self.invokeBuiltin(builtin, request: request)
         }
+    }
+
+    /// Mirrors upstream `authorizeGatewayMethod`: `health` is always reachable, node-scoped methods
+    /// require the node role and every other method the operator role (`INVALID_REQUEST
+    /// "unauthorized role: …"`), and operator scopes are checked against the connection grants
+    /// (`FORBIDDEN` with `MISSING_SCOPE` details). `dynamic` methods resolve their scope in the handler.
+    static func authorizationError(
+        method: String,
+        descriptor: GatewayMethodDescriptor,
+        connection: GatewayConnectionContext
+    ) -> GatewayMethodError? {
+        if method == "health" {
+            return nil
+        }
+        let role = connection.role.trimmingCharacters(in: .whitespacesAndNewlines)
+        let requiresNodeRole = descriptor.scope == "node"
+        guard role == (requiresNodeRole ? "node" : "operator") else {
+            return .invalidRequest("unauthorized role: \(role)")
+        }
+        if requiresNodeRole || connection.allows(scope: descriptor.scope) {
+            return nil
+        }
+        return .missingScope(descriptor.scope)
     }
 
     /// Error for a method without any in-process handler.
