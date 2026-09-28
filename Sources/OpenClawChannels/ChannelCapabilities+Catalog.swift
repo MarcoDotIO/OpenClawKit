@@ -181,7 +181,7 @@ enum ChannelCatalogTraitsTable {
             formatProfile: Self.iMessageFormat,
             chunking: ChannelTextChunkingDefaults(defaultLimit: 4_000, unit: .utf16),
             nativeTransportAvailable: true,
-            nativeTransportKind: "host-transport"
+            nativeTransportKind: "imsg-rpc"
         ),
         "bluebubbles": ChannelCatalogTraits(
             capabilities: Self.iMessageCapabilities,
@@ -222,18 +222,21 @@ enum ChannelCatalogTraitsTable {
                 roomIntroductions: true
             ),
             chunking: ChannelTextChunkingDefaults(defaultLimit: 5_000, platformLimit: 5_000),
-            nativeUnavailableReason: Self.pluginOnlyReason
+            nativeTransportAvailable: true,
+            nativeTransportKind: "messaging-api"
         ),
         "sms": ChannelCatalogTraits(
             capabilities: ChannelCapabilities(chatTypes: [.direct], media: true),
             formatProfile: ChannelFormatProfile(mechanism: .plain, chunkLimit: 1_500, hardCap: 1_600),
             chunking: ChannelTextChunkingDefaults(defaultLimit: 1_500, platformLimit: 1_600),
-            nativeUnavailableReason: "Native Twilio adapter lands with the SMS adapter work item"
+            nativeTransportAvailable: true,
+            nativeTransportKind: "twilio"
         ),
         "a2a": ChannelCatalogTraits(
             capabilities: ChannelCapabilities(chatTypes: [.direct]),
             chunking: ChannelTextChunkingDefaults(defaultLimit: 65_536, unit: .bytes, platformLimit: 65_536),
-            nativeUnavailableReason: "Native A2A 1.0 adapter lands with the A2A adapter work item"
+            nativeTransportAvailable: true,
+            nativeTransportKind: "a2a-jsonrpc"
         ),
         "buzz": ChannelCatalogTraits(
             capabilities: ChannelCapabilities(chatTypes: [.group], threads: true),
