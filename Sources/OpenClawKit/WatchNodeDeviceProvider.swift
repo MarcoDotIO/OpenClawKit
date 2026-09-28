@@ -96,4 +96,36 @@ extension OpenClawWatchNodeCommandRouter {
             notifier: notifier)
     }
 }
+
+extension OpenClawWatchNodeClient {
+    /// A client wired with the watchOS defaults: Keychain configuration, a shared `URLSession` transport
+    /// whose metrics feed `device.status`, and the ``OpenClawWatchNodeCommandRouter/watchDefault(transport:notifier:isConnected:)``
+    /// router.
+    public static func watchDefault(
+        store: any OpenClawWatchNodeConfigurationStoring = OpenClawWatchNodeKeychainConfigurationStore(),
+        profile: GatewayDeviceIdentityProfile = .primary,
+        notifier: any OpenClawWatchNodeNotifying = OpenClawWatchNodeUserNotifier()) -> OpenClawWatchNodeClient
+    {
+        let transport = OpenClawWatchNodeURLSessionTransport()
+        let reference = WatchNodeClientReference()
+        let router = OpenClawWatchNodeCommandRouter.watchDefault(
+            transport: transport,
+            notifier: notifier,
+            isConnected: { await reference.client?.isConnected ?? false })
+        let client = OpenClawWatchNodeClient(handler: router, store: store, transport: transport, profile: profile)
+        reference.client = client
+        return client
+    }
+}
+
+/// Weak back-reference so the router can read the client's connection state without a retain cycle.
+private final class WatchNodeClientReference: @unchecked Sendable {
+    private let lock = NSLock()
+    private weak var storedClient: OpenClawWatchNodeClient?
+
+    var client: OpenClawWatchNodeClient? {
+        get { self.lock.withLock { self.storedClient } }
+        set { self.lock.withLock { self.storedClient = newValue } }
+    }
+}
 #endif
