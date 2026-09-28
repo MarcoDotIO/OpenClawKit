@@ -370,7 +370,16 @@ struct AgentToolGatewayHandlers: Sendable {
             case .block(let reason):
                 return Self.failure(toolName, code: "forbidden", message: "Tool call blocked: \(reason)")
             case .requireApproval(let approvalRequest):
-                if let denial = await self.resolveApproval(approvalRequest, request: request, descriptor: descriptor, toolName: toolName, sessionKey: sessionKey, agentID: agentID, toolCallID: toolCallID) {
+                let denial = await self.resolveApproval(
+                    approvalRequest,
+                    request: request,
+                    descriptor: descriptor,
+                    toolName: toolName,
+                    sessionKey: sessionKey,
+                    agentID: agentID,
+                    toolCallID: toolCallID
+                )
+                if let denial {
                     return denial
                 }
             }

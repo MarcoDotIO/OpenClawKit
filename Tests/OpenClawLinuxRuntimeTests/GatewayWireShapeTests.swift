@@ -36,7 +36,8 @@ struct GatewayWireShapeTests {
         #expect(waitParams.timeoutMs == 250)
         let legacyWait = try JSONDecoder().decode(GatewayAgentWaitParams.self, from: Data(#"{"runID":"r2"}"#.utf8))
         #expect(legacyWait.runID == "r2")
-        let upstream = try GatewayPayloadCodec.decode(AgentWaitParams.self, from: try GatewayPayloadCodec.encode(GatewayAgentWaitParams(runID: "r3", timeoutMs: 5)))
+        let encodedWait = try GatewayPayloadCodec.encode(GatewayAgentWaitParams(runID: "r3", timeoutMs: 5))
+        let upstream = try GatewayPayloadCodec.decode(AgentWaitParams.self, from: encodedWait)
         #expect(upstream.runid == "r3")
 
         let result = GatewayAgentWaitResult(runID: "r", status: "ok", startedAt: 3_000_000_000_000, endedAt: 3_000_000_000_500)

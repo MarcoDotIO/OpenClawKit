@@ -157,6 +157,7 @@ struct SourcedEchoTool: AgentTool {
     }
 
     func invoke(_ invocation: AgentToolInvocation, update _: AgentToolUpdateHandler?) async throws -> AgentToolOutput {
-        .text("\(self.name):\(invocation.arguments["text"]?.stringValue ?? "")", details: AnyCodable(["echo": AnyCodable(invocation.arguments["text"]?.stringValue ?? "")]))
+        let text = invocation.arguments["text"]?.stringValue ?? ""
+        return .text("\(self.name):\(text)", details: AnyCodable(["echo": AnyCodable(text)]))
     }
 }

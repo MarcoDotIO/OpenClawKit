@@ -236,9 +236,9 @@ public actor GatewayServer: GatewayMethodRegistrar {
     let defaultAgentID: String
     let handlers: GatewayServerHandlers
     /// Custom session group catalog backing `sessions.groups.*`.
-    public nonisolated let sessionGroups: GatewaySessionGroupCatalog
+    nonisolated public let sessionGroups: GatewaySessionGroupCatalog
     /// Node pairing records backing `node.pair.*`, `node.list` and `node.rename`.
-    public nonisolated let nodePairing: GatewayNodePairingStore
+    nonisolated public let nodePairing: GatewayNodePairingStore
     let agentIdempotency = GatewayIdempotencyCache()
     var agentRuns: [String: Task<GatewayAgentWaitResult, Error>] = [:]
     var trackedRuns: [String: TrackedRun] = [:]

@@ -142,7 +142,9 @@ struct SessionBranchGatewayMethodsTests {
         #expect(phrase["results"]?.arrayValue?.count == 1)
         let loose = try Harness.payload(await Harness.call(stack.server, "sessions.search", ["query": AnyCodable("question")]))
         #expect(loose["results"]?.arrayValue?.count == 2)
-        let otherAgent = try Harness.payload(await Harness.call(stack.server, "sessions.search", ["query": AnyCodable("question"), "agentId": AnyCodable("ops")]))
+        let otherAgent = try Harness.payload(
+            await Harness.call(stack.server, "sessions.search", ["query": AnyCodable("question"), "agentId": AnyCodable("ops")])
+        )
         #expect(otherAgent["results"]?.arrayValue?.isEmpty == true)
         let limited = try Harness.payload(await Harness.call(stack.server, "sessions.search", ["query": AnyCodable("question"), "limit": AnyCodable(1)]))
         #expect(limited["truncated"] == AnyCodable(true))

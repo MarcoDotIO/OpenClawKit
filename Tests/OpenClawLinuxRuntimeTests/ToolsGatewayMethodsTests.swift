@@ -89,18 +89,24 @@ struct ToolsGatewayMethodsTests {
         #expect(result.source == AnyCodable("plugin"))
         #expect(result.output?.dictionaryValue?["echo"] == AnyCodable("x"))
 
-        let echoed = try Harness.payload(await Harness.call(stack.server, "tools.invoke", ["name": AnyCodable("echo"), "args": AnyCodable(["text": AnyCodable("y")])]))
+        let echoed = try Harness.payload(await Harness.call(stack.server, "tools.invoke", [
+            "name": AnyCodable("echo"), "args": AnyCodable(["text": AnyCodable("y")]),
+        ]))
         #expect(echoed["output"]?.arrayValue?.first?.dictionaryValue?["text"] == AnyCodable("echo:y"))
 
         let missing = try Harness.payload(await Harness.call(stack.server, "tools.invoke", ["name": AnyCodable("nope")]))
         #expect(missing["ok"] == AnyCodable(false))
         #expect(missing["error"]?.dictionaryValue?["code"] == AnyCodable("not_found"))
 
-        let invalid = try Harness.payload(await Harness.call(stack.server, "tools.invoke", ["name": AnyCodable("echo"), "args": AnyCodable(["text": AnyCodable(3)])]))
+        let invalid = try Harness.payload(await Harness.call(stack.server, "tools.invoke", [
+            "name": AnyCodable("echo"), "args": AnyCodable(["text": AnyCodable(3)]),
+        ]))
         #expect(invalid["error"]?.dictionaryValue?["code"] == AnyCodable("validation_error"))
 
         await stack.runtime.setToolsConfiguration(AgentToolsConfiguration(policy: ToolPolicy(deny: ["echo"])))
-        let forbidden = try Harness.payload(await Harness.call(stack.server, "tools.invoke", ["name": AnyCodable("echo"), "args": AnyCodable(["text": AnyCodable("z")])]))
+        let forbidden = try Harness.payload(await Harness.call(stack.server, "tools.invoke", [
+            "name": AnyCodable("echo"), "args": AnyCodable(["text": AnyCodable("z")]),
+        ]))
         #expect(forbidden["error"]?.dictionaryValue?["code"] == AnyCodable("forbidden"))
 
         let badArgs = await Harness.call(stack.server, "tools.invoke", ["name": AnyCodable("echo"), "args": AnyCodable("nope")])
@@ -170,7 +176,9 @@ struct ToolsGatewayMethodsTests {
         #expect(denied["error"]?.dictionaryValue?["code"] == AnyCodable("forbidden"))
 
         for _ in 0..<2 {
-            let counted = try Harness.payload(await Harness.call(stack.server, "tools.invoke", ["name": AnyCodable("count"), "idempotencyKey": AnyCodable("once")]))
+            let counted = try Harness.payload(await Harness.call(stack.server, "tools.invoke", [
+                "name": AnyCodable("count"), "idempotencyKey": AnyCodable("once"),
+            ]))
             #expect(counted["ok"] == AnyCodable(true))
         }
         #expect(await counter.value == 1)

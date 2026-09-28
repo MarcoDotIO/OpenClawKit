@@ -88,7 +88,9 @@ struct GatewaySessionOrganizationTests {
             "name": AnyCodable("Home"), "cwd": AnyCodable("/tmp/home"), "worktree": AnyCodable(true),
         ]))
         #expect(updated["defaults"]?.arrayValue?.first?.dictionaryValue?["cwd"] == AnyCodable("/tmp/home"))
-        let relative = await Harness.call(server, "sessions.groups.update", ["name": AnyCodable("Home"), "cwd": AnyCodable("rel"), "worktree": AnyCodable(false)])
+        let relative = await Harness.call(server, "sessions.groups.update", [
+            "name": AnyCodable("Home"), "cwd": AnyCodable("rel"), "worktree": AnyCodable(false),
+        ])
         #expect(relative.error?.errorCode == .invalidRequest)
         let defaults = try Harness.payload(await Harness.call(server, "sessions.groups.defaults"))
         #expect(defaults["defaults"]?.arrayValue?.count == 1)
