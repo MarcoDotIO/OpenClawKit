@@ -3,8 +3,19 @@ import OpenClawKit
 
 /// Namespace for the OpenClaw App Intents integration.
 ///
-/// `OpenClawAppIntents` provides reusable App Intents entities and intents (ask, run, talk, and
-/// abort) for apps that embed OpenClawKit. The module is Apple-only.
+/// `OpenClawAppIntents` provides reusable App Intents entities (``OpenClawSessionAppEntity``,
+/// ``OpenClawAgentAppEntity``) and intents (``AskOpenClawIntent``, ``StartOpenClawTalkIntent``,
+/// ``AbortOpenClawRunIntent`` and, on OS 27, the long-running ``RunOpenClawTaskIntent``) for apps
+/// that embed OpenClawKit. The module is Apple-only.
+///
+/// Host app setup:
+/// 1. Call ``configure(host:)`` at launch with ``GatewayOpenClawIntentHost``,
+///    ``EmbeddedOpenClawIntentHost`` or your own ``OpenClawIntentHost``.
+/// 2. Link the `OpenClawAppIntents` product in the app target; Xcode merges the SDK's App Intents
+///    metadata into the app. Also declare an app `AppIntentsPackage` whose `includedPackages`
+///    contains ``OpenClawAppIntentsPackage`` (recommended; required by older toolchains).
+/// 3. Keep the app's single `AppShortcutsProvider` in the app target and reference the SDK intents
+///    there (the SDK cannot declare App Shortcuts for the host).
 public enum OpenClawAppIntents {
     /// Release of OpenClawKit that introduced this module surface.
     public static let moduleVersion = "2026.3.0"
