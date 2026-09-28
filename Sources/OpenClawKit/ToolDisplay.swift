@@ -78,6 +78,17 @@ public enum ToolDisplayRegistry {
 
     private static let config: ToolDisplayConfig = loadConfig()
 
+    /// SDK-only tools that upstream's `tool-display.json` does not list. Kept in code so the bundled
+    /// JSON stays byte-identical to upstream; JSON entries always win.
+    private static let sdkToolSpecs: [String: ToolDisplaySpec] = [
+        "spotlight_search": ToolDisplaySpec(
+            emoji: "🔍",
+            title: "Spotlight",
+            label: nil,
+            detailKeys: ["query"],
+            actions: nil),
+    ]
+
     /// Resolves a tool invocation into a display-ready summary.
     public static func resolve(name: String?, args: AnyCodable?, meta: String? = nil) -> ToolDisplaySummary {
         self.resolve(name: name, args: args, meta: meta, hints: nil)
@@ -99,7 +110,7 @@ public enum ToolDisplayRegistry {
         let trimmedName = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "tool"
         let resolvedKey = self.resolvedSpecKey(for: trimmedName)
         let key = resolvedKey ?? trimmedName.lowercased()
-        let spec = resolvedKey.flatMap { self.config.tools?[$0] }
+        let spec = resolvedKey.flatMap { self.config.tools?[$0] } ?? self.sdkToolSpecs[key]
         let fallback = self.config.fallback
         let mcpName = spec == nil ? self.mcpDisplayName(trimmedName) : nil
 
@@ -154,6 +165,12 @@ public enum ToolDisplayRegistry {
     /// Tool names with an explicit `tool-display.json` entry.
     public static var knownToolNames: [String] {
         (self.config.tools.map { Array($0.keys) } ?? []).sorted()
+    }
+
+    /// SDK-only tool names with a built-in display entry (for example `spotlight_search`), in
+    /// addition to ``knownToolNames``.
+    public static var sdkToolNames: [String] {
+        self.sdkToolSpecs.keys.filter { self.config.tools?[$0] == nil }.sorted()
     }
 
     /// Upstream tool-name aliases (`src/agents/tool-policy-shared.ts`), legacy name to canonical name.
