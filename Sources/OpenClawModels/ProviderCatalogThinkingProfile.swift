@@ -304,4 +304,3 @@ struct ThinkingProfileResolver {
         return PluginProfile(levels: ModelThinkingProfile.baseLevels)
     }
 }
-

@@ -137,7 +137,8 @@ struct DiscordChannelAdapterTests {
         }
 
         try await adapter.start()
-        try await Task.sleep(nanoseconds: 350_000_000)
+        // Wait for the second poll instead of sleeping a fixed interval, which flaked under load.
+        try await waitUntil("discord inbound delivered") { await !collector.snapshot().isEmpty }
         await adapter.stop()
 
         let received = await collector.snapshot()

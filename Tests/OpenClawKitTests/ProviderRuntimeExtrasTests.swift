@@ -53,7 +53,7 @@ struct ProviderRuntimeExtrasTests {
         }
         #expect(updated.accessToken == next)
         #expect(updated.refreshToken == "r2")
-        #expect(updated.expires == 1_000_000 + 3_600_000)
+        #expect(updated.expires == Int64(1_000_000 + 3_600_000))
         #expect(await transport.urls.first == OpenAIChatGPTOAuthConfiguration.tokenURL)
         let body = try #require(await transport.bodies.first)
         #expect(body.contains("grant_type=refresh_token"))
