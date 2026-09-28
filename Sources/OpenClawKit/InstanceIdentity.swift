@@ -1,6 +1,9 @@
 import Foundation
 
-#if canImport(UIKit)
+// watchOS ships a UIKit module, but `UIDevice` is unavailable there; use WatchKit instead.
+#if os(watchOS)
+import WatchKit
+#elseif canImport(UIKit)
 import UIKit
 #endif
 
@@ -13,7 +16,7 @@ public enum InstanceIdentity {
         UserDefaults(suiteName: suiteName) ?? .standard
     }
 
-#if canImport(UIKit)
+#if canImport(UIKit) || os(watchOS)
     private static func readMainActor<T: Sendable>(_ body: @MainActor () -> T) -> T {
         if Thread.isMainThread {
             return MainActor.assumeIsolated { body() }
@@ -41,7 +44,12 @@ public enum InstanceIdentity {
 
     /// User-facing device or host name used in client identification.
     public static let displayName: String = {
-#if canImport(UIKit)
+#if os(watchOS)
+        let name = Self.readMainActor {
+            WKInterfaceDevice.current().name.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return name.isEmpty ? "Apple Watch" : name
+#elseif canImport(UIKit)
         let name = Self.readMainActor {
             UIDevice.current.name.trimmingCharacters(in: .whitespacesAndNewlines)
         }
@@ -58,7 +66,7 @@ public enum InstanceIdentity {
 
     /// Hardware model identifier when the platform exposes one.
     public static let modelIdentifier: String? = {
-#if canImport(UIKit)
+#if canImport(UIKit) || os(watchOS)
         var systemInfo = utsname()
         uname(&systemInfo)
         let machine = withUnsafeBytes(of: &systemInfo.machine) { ptr in
@@ -82,7 +90,9 @@ public enum InstanceIdentity {
 
     /// Broad device family label such as `iPhone`, `iPad`, or `Mac`.
     public static let deviceFamily: String = {
-#if canImport(UIKit)
+#if os(watchOS)
+        return "Apple Watch"
+#elseif canImport(UIKit)
         return Self.readMainActor {
             switch UIDevice.current.userInterfaceIdiom {
             case .pad: return "iPad"
@@ -98,7 +108,9 @@ public enum InstanceIdentity {
     /// Operating system name and version string used during gateway connect.
     public static let platformString: String = {
         let v = ProcessInfo.processInfo.operatingSystemVersion
-#if canImport(UIKit)
+#if os(watchOS)
+        return "watchOS \(v.majorVersion).\(v.minorVersion).\(v.patchVersion)"
+#elseif canImport(UIKit)
         let name = Self.readMainActor {
             switch UIDevice.current.userInterfaceIdiom {
             case .pad: return "iPadOS"
