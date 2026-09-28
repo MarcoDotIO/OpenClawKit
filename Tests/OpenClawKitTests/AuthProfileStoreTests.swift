@@ -69,7 +69,7 @@ struct AuthProfileStoreTests {
             usageStats: [
                 "provider:oauth": AuthProfileUsageStats(lastUsed: 300),
                 "provider:token": AuthProfileUsageStats(lastUsed: 100),
-                "provider:key": AuthProfileUsageStats(lastUsed: 0, cooldownUntil: Int(Date().timeIntervalSince1970 * 1000) + 60_000),
+                "provider:key": AuthProfileUsageStats(lastUsed: 0, cooldownUntil: Int64(Date().timeIntervalSince1970 * 1000) + 60_000),
             ]
         )
 
@@ -110,7 +110,7 @@ private struct PersistedProfileFileView: Decodable {
         let provider: String
         let mode: AuthProfileMode
         let email: String?
-        let expires: Int?
+        let expires: Int64?
         let clientID: String?
         let metadata: [String: String]
     }

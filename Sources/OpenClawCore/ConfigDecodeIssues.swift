@@ -212,6 +212,14 @@ enum ConfigDecodeIssueReporting {
         collector.record(self.issue(for: error, decoding: type, fallbackPath: decoder.codingPath))
     }
 
+    /// Records a non-throwing issue at the decoder's coding path.
+    static func record(_ message: String, kind: ConfigDecodeIssue.Kind, decoder: Decoder, extraPath: [String] = []) {
+        guard let collector = decoder.userInfo[.openClawConfigIssues] as? ConfigDecodeIssueCollector else { return }
+        let base = self.render(decoder.codingPath)
+        let path = ([base] + extraPath).filter { !$0.isEmpty }.joined(separator: ".")
+        collector.record(ConfigDecodeIssue(path: path, message: message, kind: kind))
+    }
+
     static func issue<T>(for error: Error, decoding type: T.Type, fallbackPath: [CodingKey]) -> ConfigDecodeIssue {
         let isVocabulary = type is any CaseIterable.Type
         switch error {

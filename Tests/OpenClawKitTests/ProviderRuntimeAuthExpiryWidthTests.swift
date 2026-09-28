@@ -28,7 +28,7 @@ struct ProviderRuntimeAuthExpiryWidthTests {
         )
     }
 
-    private static func expires(_ resolution: ProviderRuntimeAuthResolution) -> Int? {
+    private static func expires(_ resolution: ProviderRuntimeAuthResolution) -> Int64? {
         guard case .token(let credential) = resolution.credential else { return nil }
         return credential.expires
     }

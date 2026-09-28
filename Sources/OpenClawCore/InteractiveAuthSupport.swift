@@ -163,7 +163,24 @@ public final class AppleWebAuthenticationSessionPresenter: NSObject, ASWebAuthen
 
     public func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
         _ = session
-        return self.presentationAnchorProvider?() ?? ASPresentationAnchor()
+        if let anchor = self.presentationAnchorProvider?() {
+            return anchor
+        }
+        return Self.detachedAnchor()
+    }
+
+    /// Fallback anchor for callers that invoke ``presentationAnchor(for:)`` without a provider
+    /// (the session itself only asks when a provider is configured).
+    private static func detachedAnchor() -> ASPresentationAnchor {
+        #if os(visionOS)
+        // `UIWindow()` is deprecated at the visionOS 26 floor in favor of `init(windowScene:)`, and
+        // resolving a scene needs `UIApplication.shared`, which app extensions cannot use. Create the
+        // detached window through NSObject's initializer instead; hosts should pass an anchor provider.
+        let windowType: NSObject.Type = ASPresentationAnchor.self
+        return unsafeDowncast(windowType.init(), to: ASPresentationAnchor.self)
+        #else
+        return ASPresentationAnchor()
+        #endif
     }
 }
 #endif

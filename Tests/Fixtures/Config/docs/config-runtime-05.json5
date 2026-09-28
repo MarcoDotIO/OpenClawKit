@@ -1,0 +1,5 @@
+{
+  discovery: {
+    wideArea: { domain: "openclaw.internal" },
+  },
+}
