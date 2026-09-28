@@ -131,6 +131,33 @@ public struct InboundMessage: Sendable, Equatable {
         self.legacyRoutingAccountID = legacyRoutingAccountID
     }
 
+    /// Compares envelopes by content; ``receivedAt`` is ignored so envelopes built at different
+    /// times (for example in tests or dedupe checks) compare equal when their content matches.
+    /// - Parameters:
+    ///   - lhs: Left envelope.
+    ///   - rhs: Right envelope.
+    /// - Returns: `true` when every field except `receivedAt` matches.
+    public static func == (lhs: InboundMessage, rhs: InboundMessage) -> Bool {
+        lhs.channel == rhs.channel
+            && lhs.accountID == rhs.accountID
+            && lhs.peerID == rhs.peerID
+            && lhs.text == rhs.text
+            && lhs.attachments == rhs.attachments
+            && lhs.senderID == rhs.senderID
+            && lhs.senderName == rhs.senderName
+            && lhs.chatType == rhs.chatType
+            && lhs.messageID == rhs.messageID
+            && lhs.threadID == rhs.threadID
+            && lhs.replyToID == rhs.replyToID
+            && lhs.wasMentioned == rhs.wasMentioned
+            && lhs.implicitMentionKinds == rhs.implicitMentionKinds
+            && lhs.isFromBot == rhs.isFromBot
+            && lhs.recipientID == rhs.recipientID
+            && lhs.eventKind == rhs.eventKind
+            && lhs.metadata == rhs.metadata
+            && lhs.legacyRoutingAccountID == rhs.legacyRoutingAccountID
+    }
+
     /// Whether the message is a one-to-one direct message.
     public var isDirect: Bool {
         self.chatType == .direct
