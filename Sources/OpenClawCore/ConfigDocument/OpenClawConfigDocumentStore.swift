@@ -542,7 +542,8 @@ extension OpenClawConfigDocument {
         ["agents", "execHost"], ["agents", "execSecurity"], ["agents", "execAsk"], ["agents", "execNode"],
         ["models", "defaultProviderID"], ["models", "systemPrompt"], ["models", "openAI"], ["models", "openAICompatible"],
         ["models", "anthropic"], ["models", "gemini"], ["models", "foundation"], ["models", "local"],
-        ["models", "bedrockDiscovery"], ["channels", "pluginChannels"], ["channels", "whatsappCloud"],
+        ["models", "bedrockDiscovery"], ["channels", "pluginChannels"], ["channels", "whatsappCloud"], ["channels", "compatibility"],
+        ["session", "legacyChannelAccountKeys"],
         ["gateway", "host"], ["gateway", "authMode"], ["auth", "cooldowns"], ["secrets", "resolution"],
     ]
 

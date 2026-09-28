@@ -68,7 +68,9 @@ struct ConfigDocumentBridgeTests {
         #expect(config.gateway.publicOrigin == "https://gw.example.com")
         // Auth
         #expect(config.auth.profiles["aws:default"] == AuthProfileConfig(provider: "amazon-bedrock", mode: .awsSDK, displayName: "AWS"))
-        #expect(config.auth.profiles["future:x"] == nil)
+        // Unknown modes are kept raw (and never selected) instead of being dropped.
+        #expect(config.auth.profiles["future:x"]?.unrecognizedMode == "quantum")
+        #expect(config.auth.profiles["future:x"]?.isModeRecognized == false)
         #expect(config.auth.order["amazon-bedrock"] == ["aws:default"])
         // Models
         #expect(config.models.mode == .replace)
@@ -93,14 +95,23 @@ struct ConfigDocumentBridgeTests {
         #expect(config.agents.routeAgentMap == ["telegram:work:42": "research", "slack": "main"])
         // Routing
         #expect(config.routing == RoutingConfig(defaultSessionKey: "home", includeChannelID: true, includeAccountID: false, includePeerID: true))
-        // Plugin channels
-        #expect(config.channels.pluginChannels["matrix"]?.enabled == true)
-        #expect(config.channels.pluginChannels["matrix"]?.config["homeserver"] == "https://matrix.example.com")
-        #expect(config.channels.pluginChannels["matrix"]?.config["limit"] == "5")
-        #expect(config.channels.pluginChannels["telegram"] == nil)
         // Unexpressible bindings and the unknown auth mode are reported.
         #expect(collector.issues.contains { $0.path == "bindings[2].match" })
         #expect(collector.issues.contains { $0.path == "auth.profiles.future:x" })
+    }
+
+    @Test
+    func importsChannelsThroughTheChannelsSlice() throws {
+        let document = try OpenClawConfigDocument.decode(Data(Self.upstreamJSON.utf8))
+        let channels = OpenClawConfig(document: document).channels
+        // Typed sections decode from their blocks; plugin blocks stay raw extension channels.
+        #expect(channels.telegram.enabled == true)
+        #expect(channels.defaults.groupPolicy == .allowlist)
+        #expect(channels.rawSection(named: "matrix")?["homeserver"]?.stringValue == "https://matrix.example.com")
+        #expect(channels.rawSection(named: "matrix")?["limit"]?.intValue == 5)
+        #expect(channels.isChannelEnabled("matrix"))
+        #expect(channels.pluginChannels.isEmpty)
+        #expect(channels.extensionChannels["telegram"] == nil)
     }
 
     @Test

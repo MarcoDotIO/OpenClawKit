@@ -12,8 +12,8 @@ extension OpenClawConfigDocument {
         public var usageTemplate: AnyCodable?
         /// `on`, `off`, `tokens`, `full`, or a per-channel map.
         public var responseUsage: AnyCodable?
-        /// Group-chat behavior.
-        public var groupChat: AnyCodable?
+        /// Group-chat behavior (`mentionPatterns`, `historyLimit`, `unmentionedInbound`, `visibleReplies`).
+        public var groupChat: GroupChat?
         /// Inbound queue.
         public var queue: AnyCodable?
         /// Inbound debounce.
@@ -56,6 +56,54 @@ extension OpenClawConfigDocument {
         public var responseUsageLevel: UsageDisplayLevel? {
             guard let raw = self.responseUsage?.stringValue else { return nil }
             return UsageDisplayLevel.normalize(raw)
+        }
+
+        /// Reply visibility for group chats: `groupChat.visibleReplies`, else the root `visibleReplies`
+        /// (upstream `messages.groupChat?.visibleReplies ?? messages.visibleReplies`).
+        public var groupVisibleRepliesMode: String? {
+            self.groupChat?.visibleRepliesMode ?? self.visibleRepliesMode
+        }
+
+        /// `messages.groupChat` (upstream `GroupChatSchema`, strict upstream; unknown keys pass through here).
+        public struct GroupChat: ConfigDocumentObject {
+            /// Extra mention regex patterns.
+            public var mentionPatterns: [String]?
+            /// Group history limit (≥ 0).
+            public var historyLimit: Int?
+            /// `user_request` (default) or `room_event` for unmentioned messages in rooms without a mention requirement.
+            public var unmentionedInbound: String?
+            /// `automatic` or `message_tool` (booleans are accepted: `true` → automatic, `false` → message_tool).
+            public var visibleReplies: AnyCodable?
+            /// Passthrough keys.
+            public var additionalProperties: [String: AnyCodable] = [:]
+
+            /// Creates an empty group-chat section.
+            public init() {}
+
+            /// Typed fields.
+            public static var configFields: [ConfigField<Self>] {
+                [
+                    .init("mentionPatterns", \.mentionPatterns), .init("historyLimit", \.historyLimit),
+                    .init("unmentionedInbound", \.unmentionedInbound), .init("visibleReplies", \.visibleReplies),
+                ]
+            }
+
+            /// `visibleReplies` normalized to `automatic` / `message_tool`.
+            public var visibleRepliesMode: String? {
+                switch self.visibleReplies?.value {
+                case .bool(let flag)?:
+                    return flag ? "automatic" : "message_tool"
+                case .string(let value)?:
+                    return value
+                default:
+                    return nil
+                }
+            }
+
+            /// `unmentionedInbound` with the upstream default (`user_request`).
+            public var effectiveUnmentionedInbound: String {
+                ConfigValueSupport.nonEmpty(self.unmentionedInbound) ?? "user_request"
+            }
         }
     }
 

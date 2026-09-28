@@ -21,6 +21,12 @@ extension OpenClawConfigDocument {
         public static var configFields: [ConfigField<Self>] {
             [.init("mode", \.mode), .init("providers", \.providers), .init("catalogRefresh", \.catalogRefresh)]
         }
+
+        /// `catalogRefresh` as the SDK ``ModelCatalogRefreshConfig`` (`nil` when absent or malformed).
+        public var catalogRefreshConfig: ModelCatalogRefreshConfig? {
+            guard let catalogRefresh else { return nil }
+            return try? ConfigTreeCoding.decode(ModelCatalogRefreshConfig.self, from: catalogRefresh, issues: nil)
+        }
     }
 
     /// One `models.providers.<id>` entry.

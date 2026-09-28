@@ -19,7 +19,7 @@ extension OpenClawConfigDocument {
         issues += self.talk?.validationIssues() ?? []
         issues += self.hooks?.validationIssues() ?? []
         issues += self.mcp?.validationIssues() ?? []
-        issues += self.channels?.validationIssues() ?? []
+        issues += self.channels.map(Self.channelValidationIssues) ?? []
         return issues.sorted { ($0.path, $0.message) < ($1.path, $1.message) }
     }
 
@@ -346,44 +346,6 @@ extension OpenClawConfigDocument.MCP {
                     path: "\(path).\(legacy)",
                     message: "\(path).\(legacy) is a legacy alias; run openclaw doctor --fix",
                     kind: .legacyKey
-                ))
-            }
-        }
-        return issues
-    }
-}
-
-extension OpenClawConfigDocument.Channels {
-    /// Generic channel checks (DM policy allowlists, multi-account defaults, channel-local ACP bindings).
-    /// - Returns: Issues.
-    public func validationIssues() -> [ConfigDecodeIssue] {
-        var issues: [ConfigDecodeIssue] = []
-        for (channelID, block) in self.entries {
-            let path = "channels.\(channelID)"
-            let allowFrom = (block.allowFrom ?? []).map(\.stringValue)
-            if block.dmPolicy == "open", !allowFrom.contains("*") {
-                issues.append(OpenClawConfigDocument.invalid("\(path).allowFrom", "dmPolicy \"open\" requires allowFrom to contain \"*\""))
-            }
-            if block.dmPolicy == "allowlist", allowFrom.isEmpty {
-                issues.append(OpenClawConfigDocument.invalid("\(path).allowFrom", "dmPolicy \"allowlist\" requires a non-empty allowFrom"))
-            }
-            let accounts = block.accounts ?? [:]
-            if accounts.count >= 2, block.defaultAccount == nil, accounts["default"] == nil {
-                issues.append(OpenClawConfigDocument.invalid(
-                    "\(path).defaultAccount",
-                    "\(path) has \(accounts.count) accounts without defaultAccount or accounts.default; fallback routing can pick an unexpected account"
-                ))
-            }
-            if let defaultAccount = block.defaultAccount, !accounts.isEmpty, accounts[defaultAccount] == nil {
-                issues.append(OpenClawConfigDocument.invalid(
-                    "\(path).defaultAccount",
-                    "\(path).defaultAccount names unknown account \"\(defaultAccount)\" (configured: \(accounts.keys.sorted().joined(separator: ", ")))"
-                ))
-            }
-            if block.additionalProperties["bindings"]?.dictionaryValue?["acp"] != nil {
-                issues.append(OpenClawConfigDocument.invalid(
-                    "\(path).bindings.acp",
-                    "channel-local bindings.acp is not supported; use top-level bindings[] entries"
                 ))
             }
         }

@@ -4,156 +4,72 @@ import OpenClawProtocol
 extension OpenClawConfigDocument {
     /// `channels`: channel defaults, per-channel model overrides, and plugin-owned channel blocks.
     ///
-    /// Upstream `channels` is a passthrough object: every key other than `defaults` and
-    /// `modelByChannel` is a channel id holding that channel's plugin-owned config. ``entries`` types
-    /// the generic fields shared by channels; channel-specific keys pass through inside each block.
-    /// Per-channel field sync belongs to the channels slice.
-    public struct Channels: Codable, Sendable, Equatable {
-        /// Built-in channel ids with typed upstream schemas.
-        public static let builtInChannelIDs: Set<String> = [
-            "discord", "googlechat", "imessage", "irc", "msteams", "signal", "slack", "telegram", "whatsapp",
-        ]
+    /// This is the channels slice's lossless ``ChannelsConfigDocument`` (upstream `ChannelsSchema`,
+    /// `.passthrough()`): `defaults` and `modelByChannel` are typed and every other key is a channel
+    /// id holding that channel's block, kept raw. Import it into the SDK runtime model with
+    /// ``ChannelsConfigDocument/channelsConfig``; project SDK settings back with
+    /// ``ChannelsConfigDocument/init(exporting:preserving:)``.
+    public typealias Channels = ChannelsConfigDocument
 
-        /// `channels.defaults`.
-        public var defaults: Defaults?
-        /// `channels.modelByChannel`: `channel → peerOrAccountKey → provider/model`.
-        public var modelByChannel: [String: [String: String]]?
-        /// Channel blocks keyed by channel id.
-        public var entries: [String: ChannelBlock]
-        /// Keys that are not objects (kept verbatim).
-        public var additionalProperties: [String: AnyCodable]
+    /// Built-in channel ids with typed upstream schemas (every other `channels.<id>` block belongs
+    /// to a channel plugin).
+    public static let builtInChannelIDs: Set<String> = [
+        "discord", "googlechat", "imessage", "irc", "msteams", "signal", "slack", "telegram", "whatsapp",
+    ]
 
-        /// Creates an empty channels section.
-        public init(
-            defaults: Defaults? = nil,
-            modelByChannel: [String: [String: String]]? = nil,
-            entries: [String: ChannelBlock] = [:],
-            additionalProperties: [String: AnyCodable] = [:]
-        ) {
-            self.defaults = defaults
-            self.modelByChannel = modelByChannel
-            self.entries = entries
-            self.additionalProperties = additionalProperties
-        }
-
-        /// Decodes defaults, the model map and every channel block leniently.
-        /// - Parameter decoder: Source decoder.
-        public init(from decoder: Decoder) throws {
-            var reader = try ConfigObjectReader(decoder: decoder)
-            self.defaults = reader.decode(Defaults.self, forKey: "defaults")
-            self.modelByChannel = reader.decode([String: [String: String]].self, forKey: "modelByChannel")
-            var entries: [String: ChannelBlock] = [:]
-            var additional: [String: AnyCodable] = [:]
-            for (key, value) in reader.remainingProperties() {
-                if key == "defaults" || key == "modelByChannel" {
-                    additional[key] = value
-                } else if value.dictionaryValue != nil,
-                          let block = reader.decode(ChannelBlock.self, forKey: key)
-                {
-                    entries[key] = block
-                } else {
-                    additional[key] = value
-                }
+    /// Generic checks over every channel block and its `accounts.<id>` entries (upstream
+    /// `ChannelsSchema` refinements): DM policy allowlists, multi-account defaults and the removed
+    /// channel-local ACP bindings.
+    /// - Parameter channels: Channels section.
+    /// - Returns: Issues with dotted paths.
+    static func channelValidationIssues(_ channels: Channels) -> [ConfigDecodeIssue] {
+        var issues: [ConfigDecodeIssue] = []
+        for (channelID, block) in channels.channels {
+            let path = "channels.\(channelID)"
+            let raw = block.raw
+            let dmPolicy = raw["dmPolicy"]?.stringValue
+            let allowFrom = Self.stringList(raw["allowFrom"])
+            if dmPolicy == "open", !allowFrom.contains("*") {
+                issues.append(Self.invalid("\(path).allowFrom", "dmPolicy \"open\" requires allowFrom to contain \"*\""))
             }
-            self.entries = entries
-            self.additionalProperties = additional
-        }
-
-        /// Encodes defaults, the model map, channel blocks and passthrough keys.
-        /// - Parameter encoder: Target encoder.
-        public func encode(to encoder: Encoder) throws {
-            var writer = ConfigObjectWriter(encoder: encoder)
-            try writer.encode(self.defaults, forKey: "defaults")
-            try writer.encode(self.modelByChannel, forKey: "modelByChannel")
-            for key in self.entries.keys.sorted() {
-                try writer.encode(self.entries[key], forKey: key)
+            if dmPolicy == "allowlist", allowFrom.isEmpty {
+                issues.append(Self.invalid("\(path).allowFrom", "dmPolicy \"allowlist\" requires a non-empty allowFrom"))
             }
-            try writer.finish(additional: self.additionalProperties)
-        }
-
-        /// Channel ids that are not built-in upstream channels (plugin channels).
-        public var pluginChannelIDs: [String] {
-            self.entries.keys.filter { !Self.builtInChannelIDs.contains($0) }.sorted()
-        }
-
-        /// `channels.defaults`.
-        public struct Defaults: ConfigDocumentObject {
-            /// `open`, `disabled` or `allowlist`.
-            public var groupPolicy: String?
-            /// `all`, `allowlist` or `allowlist_quote`.
-            public var contextVisibility: String?
-            /// Heartbeat visibility (`showOk`, `showAlerts`, `useIndicator`).
-            public var heartbeatVisibility: AnyCodable?
-            /// Bot-loop protection.
-            public var botLoopProtection: AnyCodable?
-            /// Implicit mentions.
-            public var implicitMentions: AnyCodable?
-            /// Passthrough keys (for example the migrated `heartbeat` block).
-            public var additionalProperties: [String: AnyCodable] = [:]
-            /// Creates empty defaults.
-            public init() {}
-            /// Typed fields.
-            public static var configFields: [ConfigField<Self>] {
-                [.init("groupPolicy", \.groupPolicy), .init("contextVisibility", \.contextVisibility),
-                 .init("heartbeatVisibility", \.heartbeatVisibility), .init("botLoopProtection", \.botLoopProtection),
-                 .init("implicitMentions", \.implicitMentions)]
+            let accounts = raw["accounts"]?.dictionaryValue ?? [:]
+            let defaultAccount = raw["defaultAccount"]?.stringValue
+            if accounts.count >= 2, defaultAccount == nil, accounts["default"] == nil {
+                issues.append(Self.invalid(
+                    "\(path).defaultAccount",
+                    "\(path) has \(accounts.count) accounts without defaultAccount or accounts.default; "
+                        + "fallback routing can pick an unexpected account"
+                ))
+            }
+            if let defaultAccount, !accounts.isEmpty, accounts[defaultAccount] == nil {
+                issues.append(Self.invalid(
+                    "\(path).defaultAccount",
+                    "\(path).defaultAccount names unknown account \"\(defaultAccount)\" "
+                        + "(configured: \(accounts.keys.sorted().joined(separator: ", ")))"
+                ))
+            }
+            if raw["bindings"]?.dictionaryValue?["acp"] != nil {
+                issues.append(Self.invalid(
+                    "\(path).bindings.acp",
+                    "channel-local bindings.acp is not supported; use top-level bindings[] entries"
+                ))
             }
         }
+        return issues
     }
 
-    /// Generic fields shared by channel blocks (and their `accounts.<id>` entries).
-    public struct ChannelBlock: ConfigDocumentObject {
-        /// Enables the channel.
-        public var enabled: Bool?
-        /// Display name.
-        public var name: String?
-        /// `pairing`, `allowlist`, `open` or `disabled` (root default `pairing`).
-        public var dmPolicy: String?
-        /// `open`, `disabled` or `allowlist` (root default `allowlist`).
-        public var groupPolicy: String?
-        /// Allowed direct-message senders.
-        public var allowFrom: [ConfigStringOrNumber]?
-        /// Allowed group senders.
-        public var groupAllowFrom: [ConfigStringOrNumber]?
-        /// Default delivery target.
-        public var defaultTo: String?
-        /// Default account id.
-        public var defaultAccount: String?
-        /// Reply prefix.
-        public var responsePrefix: String?
-        /// History limit.
-        public var historyLimit: Int?
-        /// Text chunk limit.
-        public var textChunkLimit: Int?
-        /// Media size cap in MB.
-        public var mediaMaxMb: Double?
-        /// `off`, `first`, `all` or `batched`.
-        public var replyToMode: String?
-        /// Thread bindings.
-        public var threadBindings: Session.ThreadBindings?
-        /// Exec approvals routed through the channel.
-        public var execApprovals: AnyCodable?
-        /// Streaming behavior.
-        public var streaming: AnyCodable?
-        /// Accounts keyed by account id.
-        public var accounts: [String: ChannelBlock]?
-        /// Passthrough keys (channel-specific settings).
-        public var additionalProperties: [String: AnyCodable] = [:]
-
-        /// Creates an empty block.
-        public init() {}
-
-        /// Typed fields.
-        public static var configFields: [ConfigField<Self>] {
-            [
-                .init("enabled", \.enabled), .init("name", \.name), .init("dmPolicy", \.dmPolicy),
-                .init("groupPolicy", \.groupPolicy), .init("allowFrom", \.allowFrom), .init("groupAllowFrom", \.groupAllowFrom),
-                .init("defaultTo", \.defaultTo), .init("defaultAccount", \.defaultAccount),
-                .init("responsePrefix", \.responsePrefix), .init("historyLimit", \.historyLimit),
-                .init("textChunkLimit", \.textChunkLimit), .init("mediaMaxMb", \.mediaMaxMb), .init("replyToMode", \.replyToMode),
-                .init("threadBindings", \.threadBindings), .init("execApprovals", \.execApprovals), .init("streaming", \.streaming),
-                .init("accounts", \.accounts),
-            ]
+    private static func stringList(_ value: AnyCodable?) -> [String] {
+        (value?.arrayValue ?? []).compactMap { entry in
+            if let string = entry.stringValue {
+                return string
+            }
+            if let int = entry.intValue {
+                return String(int)
+            }
+            return entry.doubleValue.map(OpenClawJSON5.formatNumber)
         }
     }
 }
