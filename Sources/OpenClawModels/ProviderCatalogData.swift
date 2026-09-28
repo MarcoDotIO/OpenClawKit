@@ -244,7 +244,7 @@ enum ProviderCatalogGeneratedData {
       "id": "openai-compatible",
       "displayName": "OpenAI Compatible",
       "aliases": [],
-      "capabilities": ["text"],
+      "capabilities": ["text","embedding"],
       "auth": "api-key",
       "authMethods": ["api-key"],
       "envVars": ["OPENAI_API_KEY"],
@@ -6342,7 +6342,8 @@ enum ProviderCatalogGeneratedData {
       "edge",
       "tts-local-cli",
       "cli",
-      "vydra"
+      "vydra",
+      "apple-speech"
     ],
     "realtime-voice": ["openai","google","xai","grok-voice","xai-realtime-voice"],
     "realtime-transcription": ["openai","xai","mistral","deepgram","elevenlabs"],
@@ -6366,7 +6367,7 @@ enum ProviderCatalogGeneratedData {
       "elevenlabs",
       "senseaudio"
     ],
-    "embedding": ["openai","gemini","mistral","bedrock","github-copilot","ollama","lmstudio","deepinfra","local","voyage"],
+    "embedding": ["openai","openai-compatible","gemini","mistral","bedrock","github-copilot","ollama","lmstudio","deepinfra","local","voyage"],
     "web-search": [
       "gemini",
       "grok",

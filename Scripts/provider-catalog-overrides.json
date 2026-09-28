@@ -39,7 +39,11 @@
           "mediaInput",
           "contextTokens"
         ]
-      }
+      },
+      "capabilities": [
+        "embedding"
+      ],
+      "$comment": "SDK-local OpenAI-compatible endpoint; upstream core also registers an openai-compatible embedding provider."
     },
     {
       "id": "anthropic",

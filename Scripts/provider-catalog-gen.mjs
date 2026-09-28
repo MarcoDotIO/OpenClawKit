@@ -712,6 +712,7 @@ function buildCatalog(upstream, overrides) {
       }
     }
     recordCapabilityProvider("text", override.id);
+    for (const capability of override.capabilities ?? []) recordCapabilityProvider(capability, override.id);
 
     const record = {
       id: override.id,
@@ -747,6 +748,7 @@ function buildCatalog(upstream, overrides) {
     if (!plugin && !override.sdkLocal) throw new Error(`${context}: no upstream plugin`);
     const manifest = plugin?.manifest ?? {};
     const capabilities = [...(override.capabilities ?? [])];
+    for (const capability of override.capabilities ?? []) recordCapabilityProvider(capability, override.id);
     const ids = new Set();
     for (const [capability, contractIds] of contractCapabilities(manifest)) {
       if (capability === "tool") continue;

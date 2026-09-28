@@ -57,7 +57,7 @@ enum ProviderCatalogReferenceFixture {
             api: .openAICompletions,
             baseURL: "https://api.openai.com/v1",
             defaultModelID: "gpt-5.4-mini",
-            capabilities: [.text]
+            capabilities: [.text, .embedding]
         ),
         .init(
             providerID: "anthropic",
