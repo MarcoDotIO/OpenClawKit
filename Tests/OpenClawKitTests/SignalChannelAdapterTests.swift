@@ -7,6 +7,13 @@ import Testing
 
 @Suite("Signal channel adapter")
 struct SignalChannelAdapterTests {
+    /// Container WebSocket upgrades fail, so these tests exercise the GET /v1/receive fallback.
+    struct NoWebSocketConnector: ChannelWebSocketConnecting {
+        func connect(_: URLRequest, maximumMessageSize _: Int?) async throws -> any ChannelWebSocketConnection {
+            throw URLError(.badServerResponse)
+        }
+    }
+
     actor InboundCollector {
         private(set) var messages: [InboundMessage] = []
 
@@ -76,7 +83,8 @@ struct SignalChannelAdapterTests {
                 authToken: "signal-auth-token"
             ),
             transport: transport,
-            serviceURL: URL(string: "https://signal.example")!
+            serviceURL: URL(string: "https://signal.example")!,
+            webSocketConnector: NoWebSocketConnector()
         )
         try await adapter.start()
         try await adapter.send(
@@ -108,7 +116,8 @@ struct SignalChannelAdapterTests {
                 defaultRecipient: "+15550000009"
             ),
             transport: transport,
-            serviceURL: URL(string: "https://signal.example")!
+            serviceURL: URL(string: "https://signal.example")!,
+            webSocketConnector: NoWebSocketConnector()
         )
         try await adapter.start()
         try await adapter.send(
@@ -130,7 +139,8 @@ struct SignalChannelAdapterTests {
                 accountID: nil
             ),
             transport: MockSignalTransport(),
-            serviceURL: URL(string: "https://signal.example")!
+            serviceURL: URL(string: "https://signal.example")!,
+            webSocketConnector: NoWebSocketConnector()
         )
 
         do {
@@ -207,13 +217,14 @@ struct SignalChannelAdapterTests {
                 pollIntervalMs: 250
             ),
             transport: transport,
-            serviceURL: URL(string: "https://signal.example")!
+            serviceURL: URL(string: "https://signal.example")!,
+            webSocketConnector: NoWebSocketConnector()
         )
         await adapter.setInboundHandler { inbound in
             await collector.append(inbound)
         }
         try await adapter.start()
-        try await Task.sleep(nanoseconds: 750_000_000)
+        try await waitUntil("both messages delivered") { await collector.snapshot().count >= 2 }
         await adapter.stop()
 
         let inbound = await collector.snapshot()
