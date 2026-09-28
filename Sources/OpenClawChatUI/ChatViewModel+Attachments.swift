@@ -230,7 +230,7 @@ extension OpenClawChatViewModel {
         let processed: Data
         do {
             processed = try await Task.detached(priority: .userInitiated) {
-                try ChatAttachmentImageProcessing.processForUpload(data: data)
+                try ChatImageProcessor.processForUpload(data: data)
             }.value
         } catch {
             guard self.ownsAttachmentSession(expectedSession) else { return }

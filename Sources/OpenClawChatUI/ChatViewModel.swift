@@ -58,6 +58,15 @@ public final class OpenClawChatViewModel {
     public internal(set) var thinkingLevelOptions: [OpenClawChatThinkingLevelOption]
     /// Whether the thinking picker applies (reasoning model with non-off levels).
     public internal(set) var showsThinkingPicker = false
+    /// Whether the thinking picker falls back to the SDK provider catalog
+    /// (`OpenClawReferenceProviderCatalog.thinkingProfile(providerID:modelID:agentRuntime:)`) when the gateway
+    /// advertises no thinking levels for a model the catalog knows (for example the in-process `GatewayServer`).
+    ///
+    /// The catalog offers `xhigh`, `max` and `ultra` only where the model declares them. Gateway metadata always
+    /// wins. Set it to `false` to show only gateway-advertised levels (upstream behavior).
+    public var usesCatalogThinkingFallback = true {
+        didSet { self.syncThinkingLevelOptions() }
+    }
     /// Preferred verbose level.
     public internal(set) var preferredVerboseLevel: String
     var prefersExplicitVerboseLevel: Bool
@@ -195,6 +204,13 @@ public final class OpenClawChatViewModel {
 
     /// Whether the last `sessions.list` response was truncated by the gateway (more rows exist).
     public internal(set) var sessionsListIsTruncated = false
+    /// `totalCount` from the last `sessions.list` response, when the gateway reports it.
+    public internal(set) var sessionsTotalCount: Int?
+    /// Whether ``loadMoreSessions()`` is fetching a larger page.
+    public internal(set) var isLoadingMoreSessions = false
+    /// Row limit the user paged up to with ``loadMoreSessions()``; later refreshes never shrink below it.
+    @ObservationIgnored
+    var requestedSessionListLimit: Int?
 
     /// Swarm child rows of the active session.
     public internal(set) var swarmSessions: [OpenClawChatSessionEntry] = []
@@ -1109,14 +1125,20 @@ extension OpenClawChatViewModel {
         let transport = self.transport
         for runId in runIds {
             do {
-                try await transport.abortRun(sessionKey: sessionKey, runId: runId)
+                // `chat.abort` is cleanup: send it even when the caller's task (for example a view's .task
+                // torn down with the stop button) is cancelled mid-loop.
+                try await CancellationShieldSupport.run {
+                    try await transport.abortRun(sessionKey: sessionKey, runId: runId)
+                }
             } catch {
                 // Best-effort.
             }
         }
     }
 
-    func fetchSessions(limit: Int?, sessionSnapshot: SessionSnapshot? = nil) async {
+    func fetchSessions(limit requestedLimit: Int?, sessionSnapshot: SessionSnapshot? = nil) async {
+        // Event-driven refreshes ask for small pages; keep rows the user explicitly paged in.
+        let limit = requestedLimit.map { max($0, self.requestedSessionListLimit ?? 0) }
         self.nextSessionsFetchRequestID &+= 1
         let sessionsFetchRequestID = self.nextSessionsFetchRequestID
         let session = sessionSnapshot ?? self.currentSessionSnapshot()
@@ -1190,6 +1212,7 @@ extension OpenClawChatViewModel {
             }
             self.sessions = self.applyingLocalUnreadOverrides(to: organized)
             self.sessionsListIsTruncated = res.isTruncated
+            self.sessionsTotalCount = res.totalCount
             self.sessionDefaults = res.defaults
             self.restoreOverlappingSettingsPatch(
                 requestID: overlappingSuccessfulSettingsPatchRequestID,

@@ -12424,6 +12424,8 @@ struct ChatViewModelTests {
         let (_, vm) = await makeViewModel(
             historyResponses: [history],
             sessionsResponses: [sessions])
+        // Gateway-metadata-only policy (upstream); the SDK catalog fallback is covered in ChatComposerShellTests.
+        await MainActor.run { vm.usesCatalogThinkingFallback = false }
 
         try await loadAndWaitBootstrap(vm: vm, sessionId: "sess-main")
 
