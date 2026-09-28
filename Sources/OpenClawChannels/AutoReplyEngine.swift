@@ -62,7 +62,7 @@ public struct AutoReplyGroupChatOptions: Sendable, Equatable {
     /// What happens to unmentioned group messages in rooms that do not require a mention.
     public enum UnmentionedInbound: String, Sendable, Equatable, CaseIterable {
         /// Treat them as regular user requests (default).
-        case drop
+        case userRequest = "user_request"
         /// Deliver them as ambient ``InboundEventKind/roomEvent`` turns.
         case roomEvent = "room_event"
     }
@@ -84,7 +84,7 @@ public struct AutoReplyGroupChatOptions: Sendable, Equatable {
     /// - Parameters:
     ///   - unmentionedInbound: Unmentioned group message handling.
     ///   - visibleReplies: Reply visibility.
-    public init(unmentionedInbound: UnmentionedInbound = .drop, visibleReplies: VisibleReplies = .automatic) {
+    public init(unmentionedInbound: UnmentionedInbound = .userRequest, visibleReplies: VisibleReplies = .automatic) {
         self.unmentionedInbound = unmentionedInbound
         self.visibleReplies = visibleReplies
     }
@@ -121,6 +121,8 @@ public actor AutoReplyEngine {
     nonisolated public let pairingStore: ChannelPairingStore
     /// Bot-loop guard shared across messages handled by this engine.
     nonisolated public let botLoopGuard: ChannelBotLoopGuard
+    /// Join-introduction claims (one introduction per room per 90 days).
+    nonisolated public let joinIntroClaims: ChannelJoinIntroClaimStore
 
     /// Creates an auto-reply engine.
     /// - Parameters:
@@ -136,6 +138,7 @@ public actor AutoReplyEngine {
     ///   - pairingStore: DM pairing store (defaults to an in-memory store; pass a file-backed store
     ///     so approvals survive restarts).
     ///   - botLoopGuard: Bot-loop guard (defaults to a fresh guard).
+    ///   - joinIntroClaims: Join-introduction claim store (defaults to in-memory claims).
     ///   - groupChat: Group-chat handling options.
     public init(
         config: OpenClawConfig,
@@ -148,6 +151,7 @@ public actor AutoReplyEngine {
         diagnosticsSink: RuntimeDiagnosticSink? = nil,
         pairingStore: ChannelPairingStore? = nil,
         botLoopGuard: ChannelBotLoopGuard? = nil,
+        joinIntroClaims: ChannelJoinIntroClaimStore? = nil,
         groupChat: AutoReplyGroupChatOptions = AutoReplyGroupChatOptions()
     ) {
         self.config = config
@@ -160,6 +164,7 @@ public actor AutoReplyEngine {
         self.diagnosticsSink = diagnosticsSink
         self.pairingStore = pairingStore ?? ChannelPairingStore()
         self.botLoopGuard = botLoopGuard ?? ChannelBotLoopGuard()
+        self.joinIntroClaims = joinIntroClaims ?? ChannelJoinIntroClaimStore()
         self.groupChat = groupChat
     }
 
@@ -855,6 +860,81 @@ public actor AutoReplyEngine {
                 metadata: metadata
             )
         )
+    }
+}
+
+// MARK: - Join introductions
+
+public extension AutoReplyEngine {
+    /// Posts a one-time room introduction after the bot joins a group (upstream `joinIntro`).
+    ///
+    /// Runs only on channels with ``ChannelCapabilities/roomIntroductions`` when the channel's
+    /// `joinIntro` is not `false`, at most once per (channel, account, room) per 90 days. The turn
+    /// runs without tools, is bounded to 60 seconds, and sees at most 100 messages / 12,000
+    /// characters of history wrapped as untrusted content.
+    /// - Parameter event: Join event.
+    /// - Returns: The posted introduction, or `nil` when skipped.
+    func handleJoin(_ event: ChannelJoinEvent) async throws -> OutboundMessage? {
+        guard ChannelJoinIntro.isSupported(event.channel) else {
+            return nil
+        }
+        let policy = self.config.channels.messagingPolicy(for: event.channel.rawValue, accountID: event.accountID)
+        guard policy.joinIntro ?? true else {
+            return nil
+        }
+        guard await self.joinIntroClaims.claim(channel: event.channel, accountID: event.accountID, peerID: event.peerID) else {
+            await self.emitDiagnostic(
+                name: "join_intro.skipped",
+                sessionKey: nil,
+                metadata: ["channel": event.channel.rawValue, "reason": "already_claimed"]
+            )
+            return nil
+        }
+        let inbound = InboundMessage(
+            channel: event.channel,
+            accountID: event.accountID,
+            peerID: event.peerID,
+            text: "",
+            chatType: event.chatType,
+            eventKind: .roomEvent
+        )
+        let sessionKey = ChannelSessionRouting.sessionKey(for: inbound, config: self.config)
+        let request = AgentRunRequest(
+            sessionKey: sessionKey,
+            prompt: ChannelJoinIntro.prompt(for: event),
+            workspaceRootPath: self.config.agents.workspaceRoot
+        )
+        let runtime = self.runtime
+        let output = try await withThrowingTaskGroup(of: String?.self) { group in
+            group.addTask {
+                try await runtime.run(request).output
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(ChannelJoinIntro.turnTimeoutSeconds * 1_000_000_000))
+                return nil
+            }
+            let first = try await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+        guard let text = output?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else {
+            await self.emitDiagnostic(
+                name: "join_intro.skipped",
+                sessionKey: sessionKey,
+                metadata: ["channel": event.channel.rawValue, "reason": output == nil ? "timeout" : "empty"]
+            )
+            return nil
+        }
+        let outbound = OutboundMessage(
+            channel: event.channel,
+            accountID: event.accountID,
+            peerID: event.peerID,
+            text: text,
+            chatType: event.chatType
+        )
+        _ = try await self.deliverChunks(outbound, policy: policy, replyMode: .off, sessionKey: sessionKey)
+        await self.emitDiagnostic(name: "join_intro.posted", sessionKey: sessionKey, metadata: ["channel": event.channel.rawValue])
+        return outbound
     }
 }
 
