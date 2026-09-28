@@ -6,7 +6,8 @@ import Foundation
 //   `OCRTool` (not on watchOS). Offered when the request carries images and the model can call
 //   tools; images are labeled `image-1...N` and the labels listed in the prompt so the model can fill
 //   the tools' `attachmentLabel` argument.
-// - Spotlight (`_CoreSpotlight_FoundationModels`, iOS/macOS/visionOS 27): `SpotlightSearchTool` for
+// - Spotlight (`_CoreSpotlight_FoundationModels`, iOS/macOS/visionOS 27, arm64 only -- the Intel
+//   macOS slice of the overlay does not declare the tool): `SpotlightSearchTool` for
 //   semantic search over Core Spotlight (and optional file scopes). Its ~5,000-character description
 //   consumes a large share of the on-device 8,192-token window, so it is offered to Private Cloud
 //   Compute sessions and to the on-device model only with an explicit opt-in.
@@ -21,7 +22,7 @@ import FoundationModels
 import Vision
 import _Vision_FoundationModels
 #endif
-#if canImport(_CoreSpotlight_FoundationModels)
+#if canImport(_CoreSpotlight_FoundationModels) && arch(arm64)
 import CoreSpotlight
 import _CoreSpotlight_FoundationModels
 #endif
@@ -44,7 +45,7 @@ public enum AppleIntelligenceTools {
         return tools
     }
 
-    #if canImport(_CoreSpotlight_FoundationModels) && !os(watchOS)
+    #if canImport(_CoreSpotlight_FoundationModels) && !os(watchOS) && arch(arm64)
     /// Builds a `SpotlightSearchTool` over Core Spotlight (plus optional file scopes).
     ///
     /// Uses `CoreSpotlightSource(searchableIndexDelegate:fetchAttributes:)` with title, text content,
@@ -88,7 +89,7 @@ public enum AppleIntelligenceTools {
         if options.visionTools, vision, plan.containsImages {
             tools.append(contentsOf: Self.visionTools())
         }
-        #if canImport(_CoreSpotlight_FoundationModels) && !os(watchOS)
+        #if canImport(_CoreSpotlight_FoundationModels) && !os(watchOS) && arch(arm64)
         if let spotlight = options.spotlightSearch, target == .privateCloudCompute || spotlight.allowOnSystemModel {
             tools.append(Self.spotlightSearchTool(options: spotlight))
         }
