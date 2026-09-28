@@ -140,7 +140,7 @@ struct MicrosoftTeamsChannelAdapterTests {
         let inbound = await collector.snapshot()
         #expect(inbound.count == 1)
         #expect(inbound.first?.channel == .msteams)
-        #expect(inbound.first?.accountID == "user-id")
+        #expect(inbound.first?.senderID == "user-id")
         #expect(inbound.first?.peerID == "conversation-id")
         #expect(inbound.first?.text == "OpenClaw  summarize this")
     }
@@ -212,7 +212,7 @@ struct MicrosoftTeamsChannelAdapterTests {
         let inbound = await collector.snapshot()
         #expect(inbound.count == 1)
         #expect(inbound.first?.channel == .msteams)
-        #expect(inbound.first?.accountID == "user-id")
+        #expect(inbound.first?.senderID == "user-id")
         #expect(inbound.first?.peerID == "conversation-id")
         #expect(inbound.first?.text == "hello teams without mention")
     }

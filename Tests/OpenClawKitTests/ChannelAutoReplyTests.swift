@@ -127,6 +127,10 @@ struct ChannelAutoReplyTests {
             self.sentMessages.append(message)
         }
 
+        nonisolated var supportsTypingIndicator: Bool {
+            true
+        }
+
         func sendTypingIndicator(accountID _: String?, peerID _: String) async throws {
             guard self.started else {
                 throw OpenClawCoreError.unavailable("adapter not started")
@@ -295,7 +299,12 @@ struct ChannelAutoReplyTests {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let sessionsPath = root.appendingPathComponent("sessions.json", isDirectory: false)
 
-        let config = OpenClawConfig()
+        // DMs default to `dmPolicy: pairing` since 2026.3.0; open the channel explicitly.
+        let config = OpenClawConfig(
+            channels: ChannelsConfig(
+                whatsappCloud: WhatsAppCloudChannelConfig(policy: ChannelMessagingPolicyConfig(dmPolicy: .open))
+            )
+        )
         let sessionStore = SessionStore(fileURL: sessionsPath)
         let registry = ChannelRegistry()
         let whatsapp = InMemoryChannelAdapter(id: .whatsapp)
@@ -337,6 +346,9 @@ struct ChannelAutoReplyTests {
                 routeAgentMap: [
                     AgentsConfig.routeKey(channel: "whatsapp"): "support",
                 ]
+            ),
+            channels: ChannelsConfig(
+                whatsappCloud: WhatsAppCloudChannelConfig(policy: ChannelMessagingPolicyConfig(dmPolicy: .open))
             )
         )
         let sessionStore = SessionStore(fileURL: sessionsPath)
@@ -660,6 +672,8 @@ struct ChannelAutoReplyTests {
         let engine = AutoReplyEngine(
             config: OpenClawConfig(
                 agents: AgentsConfig(defaultAgentID: "main", workspaceRoot: root.path),
+                // Opt out of the 2026.3.0 ingress access policy for this typing-only test.
+                channels: ChannelsConfig(compatibility: ChannelsCompatibilityConfig(ingressAccessPolicy: .legacyAllowAll)),
                 models: ModelsConfig(defaultProviderID: "slow-prompt")
             ),
             sessionStore: sessionStore,

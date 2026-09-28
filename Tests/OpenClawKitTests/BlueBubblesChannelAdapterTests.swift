@@ -137,7 +137,7 @@ struct BlueBubblesChannelAdapterTests {
         let messages = await collector.snapshot()
         #expect(messages.count == 1)
         #expect(messages.first?.channel == .bluebubbles)
-        #expect(messages.first?.accountID == "+15557654321")
+        #expect(messages.first?.senderID == "+15557654321")
         #expect(messages.first?.peerID == "iMessage;-;+15551234567")
         #expect(messages.first?.text == "hello from bluebubbles")
         #expect(messages.first?.attachments.count == 1)

@@ -56,6 +56,11 @@ private struct SignalInboundPayload: Decodable {
 
 private struct SignalDataMessage: Decodable {
     let message: String?
+    let groupInfo: SignalGroupInfo?
+}
+
+private struct SignalGroupInfo: Decodable {
+    let groupId: String?
 }
 
 /// Signal adapter backed by a Signal bridge REST API.
@@ -198,11 +203,15 @@ public actor SignalChannelAdapter: InboundChannelAdapter {
             guard !self.shouldSkipInbound(source: source, timestamp: timestamp, text: text) else {
                 continue
             }
+            let isGroup = (inbound.dataMessage ?? inbound.envelope?.dataMessage)?.groupInfo != nil
             let message = InboundMessage(
                 channel: .signal,
-                accountID: source,
                 peerID: source,
-                text: text
+                text: text,
+                senderID: source,
+                chatType: isGroup ? .group : .direct,
+                messageID: String(timestamp),
+                legacyRoutingAccountID: source
             )
             if let inboundHandler {
                 await inboundHandler(message)

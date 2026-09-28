@@ -267,7 +267,7 @@ public struct ChannelsCompatibilityConfig: Codable, Sendable, Equatable, Hashabl
     ///
     /// 2026.3.0 fixed `InboundMessage.accountID` to mean the channel account key (upstream
     /// `accountId`) and moved the human sender to `senderID`. Session keys therefore change from
-    /// `telegram:<senderID>:<peerID>` to `telegram:default:<peerID>`. Set this to `true` for one
+    /// `telegram:<senderID>:<peerID>` to `telegram:<peerID>` for the built-in adapters. Set this to `true` for one
     /// release to keep existing session keys (and conversation memory) stable.
     public var legacySessionAccountKeys: Bool
     /// Whether ingress access policy is enforced (default ``ChannelIngressAccessMode/enforce``).

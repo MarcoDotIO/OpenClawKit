@@ -175,7 +175,7 @@ struct TelegramChannelAdapterTests {
         let messages = await collector.snapshot()
         #expect(messages.count >= 1)
         #expect(messages.first?.channel == .telegram)
-        #expect(messages.first?.accountID == "42")
+        #expect(messages.first?.senderID == "42")
         #expect(messages.first?.peerID == "111")
         #expect(messages.first?.text == "hello from tg")
     }
@@ -211,7 +211,7 @@ struct TelegramChannelAdapterTests {
 
         let messages = await collector.snapshot()
         #expect(messages.count == 1)
-        #expect(messages.first?.accountID == "11")
+        #expect(messages.first?.senderID == "11")
         #expect(messages.first?.text.contains("status please") == true)
     }
 

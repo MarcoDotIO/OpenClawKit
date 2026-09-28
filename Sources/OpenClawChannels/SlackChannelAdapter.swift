@@ -246,11 +246,18 @@ public actor SlackChannelAdapter: InboundChannelAdapter {
             let peerID = (message.threadTS?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
                 ? (message.threadTS ?? channelID)
                 : channelID
+            let threadTS = message.threadTS?.trimmingCharacters(in: .whitespacesAndNewlines)
             let inbound = InboundMessage(
                 channel: .slack,
-                accountID: message.user,
                 peerID: peerID,
-                text: text
+                text: text,
+                senderID: message.user,
+                chatType: Self.chatType(forChannelID: channelID, inThread: threadTS?.isEmpty == false),
+                messageID: message.ts,
+                threadID: threadTS?.isEmpty == false ? threadTS : nil,
+                wasMentioned: self.isMentioningBot(text: message.text ?? ""),
+                isFromBot: message.botID != nil,
+                legacyRoutingAccountID: message.user
             )
             if let inboundHandler {
                 await inboundHandler(inbound)
@@ -279,6 +286,15 @@ public actor SlackChannelAdapter: InboundChannelAdapter {
             return self.isMentioningBot(text: text)
         }
         return true
+    }
+
+    /// Maps a Slack conversation id onto the envelope chat type (`D` = IM, `G` = MPIM/private).
+    private static func chatType(forChannelID channelID: String, inThread: Bool) -> ChannelChatType {
+        switch channelID.first {
+        case "D": return .direct
+        case "G": return inThread ? .thread : .group
+        default: return inThread ? .thread : .channel
+        }
     }
 
     private func isMentioningBot(text: String) -> Bool {

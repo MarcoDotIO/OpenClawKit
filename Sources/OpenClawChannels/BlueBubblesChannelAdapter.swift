@@ -181,12 +181,15 @@ public actor BlueBubblesChannelAdapter: InboundChannelAdapter {
             return
         }
 
+        let handle = envelope.from?.trimmingCharacters(in: .whitespacesAndNewlines)
         let inbound = InboundMessage(
             channel: .bluebubbles,
-            accountID: envelope.from?.trimmingCharacters(in: .whitespacesAndNewlines),
             peerID: peerID,
             text: text,
-            attachments: attachments
+            attachments: attachments,
+            senderID: handle,
+            chatType: peerID.contains(";+;") ? .group : .direct,
+            legacyRoutingAccountID: handle
         )
         if let inboundHandler {
             await inboundHandler(inbound)

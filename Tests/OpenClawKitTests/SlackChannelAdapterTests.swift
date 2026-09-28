@@ -191,7 +191,7 @@ struct SlackChannelAdapterTests {
         let inbound = await collector.snapshot()
         #expect(inbound.count == 1)
         #expect(inbound.first?.channel == .slack)
-        #expect(inbound.first?.accountID == "U123")
+        #expect(inbound.first?.senderID == "U123")
         #expect(inbound.first?.peerID == "1000.000100")
         #expect(inbound.first?.text == "can you summarize this thread?")
     }
@@ -320,7 +320,7 @@ struct SlackChannelAdapterTests {
 
         let inbound = await collector.snapshot()
         #expect(inbound.count == 1)
-        #expect(inbound.first?.accountID == "U123")
+        #expect(inbound.first?.senderID == "U123")
         #expect(inbound.first?.peerID == "C123")
         #expect(inbound.first?.text == "hello without mention")
     }

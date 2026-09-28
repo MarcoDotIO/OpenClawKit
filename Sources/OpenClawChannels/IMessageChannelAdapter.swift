@@ -166,7 +166,9 @@ public actor IMessageChannelAdapter: InboundChannelAdapter {
             accountID: event.accountID,
             peerID: peerID,
             text: text,
-            attachments: event.attachments
+            attachments: event.attachments,
+            senderID: peerID,
+            legacyRoutingAccountID: event.accountID
         )
         if let inboundHandler {
             await inboundHandler(inbound)
