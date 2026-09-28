@@ -8,7 +8,8 @@ import EventKit
 #if canImport(Photos)
 import Photos
 #endif
-#if canImport(Speech)
+// Speech ships on tvOS, but SFSpeechRecognizer is unavailable there.
+#if canImport(Speech) && !os(tvOS)
 import Speech
 #endif
 #if canImport(AVFoundation)
@@ -208,7 +209,7 @@ public struct SpeechConnectorAdapter: PersonalDataConnectorAdapter {
     public init() {}
 
     public func authorizationStatus() -> ConnectorAuthorizationStatus {
-        #if canImport(Speech)
+        #if canImport(Speech) && !os(tvOS)
         switch SFSpeechRecognizer.authorizationStatus() {
         case .authorized:
             return .authorized
@@ -225,7 +226,7 @@ public struct SpeechConnectorAdapter: PersonalDataConnectorAdapter {
     }
 
     public func requestAccess() async -> Bool {
-        #if canImport(Speech)
+        #if canImport(Speech) && !os(tvOS)
         let status = await withCheckedContinuation { continuation in
             SFSpeechRecognizer.requestAuthorization { value in
                 continuation.resume(returning: value)
@@ -245,7 +246,7 @@ public struct CameraConnectorAdapter: PersonalDataConnectorAdapter {
     public init() {}
 
     public func authorizationStatus() -> ConnectorAuthorizationStatus {
-        #if canImport(AVFoundation)
+        #if canImport(AVFoundation) && !os(watchOS)
         switch AVCaptureDevice.authorizationStatus(for: .video) {
         case .authorized:
             return .authorized
@@ -262,7 +263,7 @@ public struct CameraConnectorAdapter: PersonalDataConnectorAdapter {
     }
 
     public func requestAccess() async -> Bool {
-        #if canImport(AVFoundation)
+        #if canImport(AVFoundation) && !os(watchOS)
         await withCheckedContinuation { continuation in
             AVCaptureDevice.requestAccess(for: .video) { granted in
                 continuation.resume(returning: granted)
@@ -281,7 +282,19 @@ public struct MicrophoneConnectorAdapter: PersonalDataConnectorAdapter {
     public init() {}
 
     public func authorizationStatus() -> ConnectorAuthorizationStatus {
-        #if canImport(AVFoundation)
+        #if canImport(AVFoundation) && os(watchOS)
+        // watchOS has no AVCaptureDevice; record permission lives on AVAudioApplication (watchOS 10+).
+        switch AVAudioApplication.shared.recordPermission {
+        case .granted:
+            return .authorized
+        case .denied:
+            return .denied
+        case .undetermined:
+            return .notDetermined
+        @unknown default:
+            return .denied
+        }
+        #elseif canImport(AVFoundation)
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized:
             return .authorized
@@ -298,7 +311,13 @@ public struct MicrophoneConnectorAdapter: PersonalDataConnectorAdapter {
     }
 
     public func requestAccess() async -> Bool {
-        #if canImport(AVFoundation)
+        #if canImport(AVFoundation) && os(watchOS)
+        await withCheckedContinuation { continuation in
+            AVAudioApplication.requestRecordPermission { granted in
+                continuation.resume(returning: granted)
+            }
+        }
+        #elseif canImport(AVFoundation)
         await withCheckedContinuation { continuation in
             AVCaptureDevice.requestAccess(for: .audio) { granted in
                 continuation.resume(returning: granted)
