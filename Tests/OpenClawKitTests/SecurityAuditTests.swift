@@ -126,11 +126,23 @@ struct SecurityAuditTests {
                 .first(where: { $0.id == "secrets.config.plaintext" })?
                 .detail.contains("models.providers.qwen-portal.apiKey") == true
         )
+        // Typed channel secrets are reported once, with upstream path spelling, by the channels slice.
+        #expect(
+            report.findings
+                .first(where: { $0.id == "channels.secrets.plaintext" })?
+                .detail.contains("channels.bluebubbles.password") == true
+        )
         #expect(
             report.findings
                 .first(where: { $0.id == "secrets.config.plaintext" })?
-                .detail.contains("channels.bluebubbles.password") == true
+                .detail.contains("channels.") == true
         )
+        #expect(
+            report.findings
+                .first(where: { $0.id == "secrets.config.plaintext" })?
+                .detail.contains("channels.discord") == false
+        )
+        #expect(report.findings.contains(where: { $0.id == "channels.bluebubbles.removed-upstream" }))
         #expect(
             report.findings
                 .first(where: { $0.id == "secrets.config.plaintext" })?
