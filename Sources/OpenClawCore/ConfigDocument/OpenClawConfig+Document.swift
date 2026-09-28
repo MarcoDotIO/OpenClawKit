@@ -110,8 +110,16 @@ extension OpenClawConfig {
             tree[key] = ConfigTree.deepMerge(tree[key], value)
         }
 
-        merge("secrets", ConfigTreeCoding.encode(self.secrets, projection: true), onlyIfChangedFrom: ConfigTreeCoding.encode(defaults.secrets, projection: true))
-        merge("gateway", ConfigTreeCoding.encode(self.gateway, projection: true), onlyIfChangedFrom: ConfigTreeCoding.encode(defaults.gateway, projection: true))
+        merge(
+            "secrets",
+            ConfigTreeCoding.encode(self.secrets, projection: true),
+            onlyIfChangedFrom: ConfigTreeCoding.encode(defaults.secrets, projection: true)
+        )
+        merge(
+            "gateway",
+            ConfigTreeCoding.encode(self.gateway, projection: true),
+            onlyIfChangedFrom: ConfigTreeCoding.encode(defaults.gateway, projection: true)
+        )
         if self.auth.profiles != defaults.auth.profiles || self.auth.order != defaults.auth.order || tree["auth"] != nil {
             var auth: [String: AnyCodable] = [:]
             if !self.auth.profiles.isEmpty {

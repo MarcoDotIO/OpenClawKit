@@ -65,6 +65,9 @@ public actor OpenClawConfigDocumentStore {
         public var migrateLegacyKeys: Bool
         /// Remove SDK-only keys that upstream rejects (`routing`, `runtime`, `models.openAI`, …).
         public var stripSDKOnlyKeys: Bool
+        /// Allow a write that drops the existing `gateway.auth` block (refused by default, like the
+        /// upstream macOS fallback writer, so partial documents cannot silently remove gateway auth).
+        public var allowGatewayAuthRemoval: Bool
 
         /// Creates write options.
         /// - Parameters:
@@ -72,16 +75,19 @@ public actor OpenClawConfigDocumentStore {
         ///   - currentVersion: Compatible upstream version.
         ///   - migrateLegacyKeys: Migrate legacy keys before writing.
         ///   - stripSDKOnlyKeys: Strip SDK-only keys.
+        ///   - allowGatewayAuthRemoval: Allow removing an existing `gateway.auth`.
         public init(
             touchedVersion: String? = OpenClawConfigDocument.upstreamParityVersion,
             currentVersion: String = OpenClawConfigDocument.upstreamParityVersion,
             migrateLegacyKeys: Bool = true,
-            stripSDKOnlyKeys: Bool = true
+            stripSDKOnlyKeys: Bool = true,
+            allowGatewayAuthRemoval: Bool = false
         ) {
             self.touchedVersion = touchedVersion
             self.currentVersion = currentVersion
             self.migrateLegacyKeys = migrateLegacyKeys
             self.stripSDKOnlyKeys = stripSDKOnlyKeys
+            self.allowGatewayAuthRemoval = allowGatewayAuthRemoval
         }
     }
 
@@ -95,10 +101,15 @@ public actor OpenClawConfigDocumentStore {
         case futureVersion(touchedVersion: String, currentVersion: String)
         /// The file's root is not a JSON object.
         case notAnObject
+        /// The write would remove the existing `gateway.auth` block.
+        case gatewayAuthRemoval
 
         /// Human-readable description.
         public var errorDescription: String? {
             switch self {
+            case .gatewayAuthRemoval:
+                return "Refusing to write openclaw.json without its existing gateway.auth block; "
+                    + "pass allowGatewayAuthRemoval to remove it intentionally."
             case .conflict(let expected, let actual):
                 return "openclaw.json changed since it was read (expected hash \(expected), found \(actual ?? "no file")); reload and retry."
             case .includesNotWritable:
@@ -297,6 +308,12 @@ public actor OpenClawConfigDocumentStore {
             throw StoreError.includesNotWritable
         }
         try self.checkFutureVersion(previousTree: previousTree, tree: tree, currentVersion: options.currentVersion)
+        if !options.allowGatewayAuthRemoval,
+           previousTree?["gateway"]?.dictionaryValue?["auth"] != nil,
+           tree["gateway"]?.dictionaryValue?["auth"] == nil
+        {
+            throw StoreError.gatewayAuthRemoval
+        }
 
         var keyOrder = self.lastKeyOrder
         if let entryOrder = document.agents?.entryOrder, !entryOrder.isEmpty {

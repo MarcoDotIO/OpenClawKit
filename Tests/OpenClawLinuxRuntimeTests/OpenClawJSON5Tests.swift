@@ -107,7 +107,7 @@ struct OpenClawJSON5Tests {
         #expect(OpenClawJSON5.formatNumber(1e21) == "1e+21")
         #expect(OpenClawJSON5.formatNumber(1e-7) == "1e-7")
         #expect(OpenClawJSON5.formatNumber(0.000001) == "0.000001")
-        #expect(OpenClawJSON5.formatNumber(123456789012345680000) == "123456789012345680000")
+        #expect(OpenClawJSON5.formatNumber(1.2345678901234568e20) == "123456789012345680000")
         #expect(OpenClawJSON5.formatNumber(-2.5e-10) == "-2.5e-10")
         #expect(OpenClawJSON5.formatNumber(.infinity) == "null")
     }
@@ -116,7 +116,7 @@ struct OpenClawJSON5Tests {
     func largeIntegersKeepFidelityWhereAnyCodableCan() throws {
         let value = try #require(try OpenClawJSON5.parse(#"{"ms": 4102444800000, "huge": 18446744073709551615}"#).dictionaryValue)
         #expect(value["ms"]?.int64Value == 4_102_444_800_000)
-        #expect(value["huge"]?.doubleValue == 18_446_744_073_709_551_615)
+        #expect(value["huge"]?.doubleValue == 1.8446744073709552e19)
     }
 
     #if canImport(Darwin)

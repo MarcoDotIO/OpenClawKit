@@ -119,6 +119,24 @@ struct ConfigDocumentStoreTests {
     }
 
     @Test
+    func refusesToDropGatewayAuthUnlessAsked() async throws {
+        let directory = try Self.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("openclaw.json")
+        try Self.write(#"{"gateway":{"auth":{"mode":"token","token":"${GATEWAY_TOKEN}"}},"wizard":{"lastRunMode":"local"}}"#, to: url)
+        let store = OpenClawConfigDocumentStore(fileURL: url, environment: [:])
+        let loaded = try await store.load()
+        var partial = loaded.document
+        partial.gateway = OpenClawConfigDocument.Gateway()
+        await #expect(throws: OpenClawConfigDocumentStore.StoreError.gatewayAuthRemoval) {
+            try await store.save(partial, expectedHash: loaded.hash)
+        }
+        let written = try await store.save(partial, expectedHash: loaded.hash, options: .init(allowGatewayAuthRemoval: true))
+        #expect(written.document.gateway?.auth == nil)
+        #expect(written.document.wizard?.lastRunMode == "local")
+    }
+
+    @Test
     func writesStripSDKOnlyKeys() async throws {
         let directory = try Self.temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

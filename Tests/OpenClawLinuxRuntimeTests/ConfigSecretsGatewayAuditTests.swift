@@ -12,7 +12,10 @@ struct ConfigSecretsGatewayAuditTests {
         let collector = ConfigDecodeIssueCollector()
         let decoder = JSONDecoder()
         decoder.userInfo[.openClawConfigIssues] = collector
-        let values = try decoder.decode([SecretInput].self, from: Data(#"["$OPENAI_API_KEY", "${OPENAI_API_KEY}", "secretref-env:OPENAI_API_KEY", "__env__:OPENAI_API_KEY", "$lowercase", "plain"]"#.utf8))
+        let payload = #"""
+        ["$OPENAI_API_KEY", "${OPENAI_API_KEY}", "secretref-env:OPENAI_API_KEY", "__env__:OPENAI_API_KEY", "$lowercase", "plain"]
+        """#
+        let values = try decoder.decode([SecretInput].self, from: Data(payload.utf8))
         let envRef = SecretInput.ref(SecretRef(source: .env, id: "OPENAI_API_KEY"))
         #expect(Array(values.prefix(4)) == [envRef, envRef, envRef, envRef])
         #expect(values[4] == .string("$lowercase"))
@@ -101,7 +104,13 @@ struct ConfigSecretsGatewayAuditTests {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let script = directory.appendingPathComponent("resolver.sh")
-        try Data("#!/bin/sh\ncat >/dev/null\nprintf '{\"protocolVersion\":1,\"values\":{\"vault/openai#key\":\"%s\"}}' \"$SECRET_SUFFIX\"\n".utf8).write(to: script)
+        let body = """
+        #!/bin/sh
+        cat >/dev/null
+        printf '{"protocolVersion":1,"values":{"vault/openai#key":"%s"}}' "$SECRET_SUFFIX"
+
+        """
+        try Data(body.utf8).write(to: script)
         try FileManager.default.setAttributes([.posixPermissions: NSNumber(value: 0o700)], ofItemAtPath: script.path)
         let config = SecretsConfig(providers: [
             "vault": .exec(ExecSecretProviderConfig(command: script.path, env: ["SECRET_SUFFIX": "from-exec"], trustedDirs: [directory.path])),

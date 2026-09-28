@@ -14,7 +14,8 @@ struct ConfigDocumentBridgeTests {
                             "future:x": {"provider": "future", "mode": "quantum"}},
                "order": {"amazon-bedrock": ["aws:default"]}},
       "models": {"mode": "replace", "providers": {
-        "custom": {"baseUrl": "https://llm.example.com/v1", "api": "pi-messages", "apiKey": {"source": "store", "id": "CUSTOM_KEY"}, "models": [{"id": "m1", "name": "M1"}]}}},
+        "custom": {"baseUrl": "https://llm.example.com/v1", "api": "pi-messages",
+                   "apiKey": {"source": "store", "id": "CUSTOM_KEY"}, "models": [{"id": "m1", "name": "M1"}]}}},
       "agents": {"defaults": {"workspace": "~/ws", "model": {"primary": "custom/m1", "fallbacks": ["openai/gpt-5.4"]},
                               "thinkingDefault": "ultra", "verboseDefault": "full", "elevatedDefault": "ask", "futureKnob": {"x": 1}},
                  "ownership": "explicit",
@@ -32,7 +33,8 @@ struct ConfigDocumentBridgeTests {
                   "remote": {"url": "wss://gw.example.com", "remotePort": 18789, "sshHostKeyPolicy": "strict",
                              "edgeAuth": {"CF-Access-Client-Id": {"source": "env", "id": "CF_ID"}}},
                   "nodes": {"commands": {"deny": ["system.run"]}}, "publicOrigin": "https://gw.example.com"},
-      "channels": {"defaults": {"groupPolicy": "allowlist"}, "telegram": {"enabled": true}, "matrix": {"enabled": true, "homeserver": "https://matrix.example.com", "limit": 5}}
+      "channels": {"defaults": {"groupPolicy": "allowlist"}, "telegram": {"enabled": true},
+                   "matrix": {"enabled": true, "homeserver": "https://matrix.example.com", "limit": 5}}
     }
     """#
 

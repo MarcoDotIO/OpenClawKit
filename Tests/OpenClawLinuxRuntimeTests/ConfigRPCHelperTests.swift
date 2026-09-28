@@ -120,7 +120,10 @@ struct ConfigRPCHelperTests {
 
     @Test
     func writeResultDecodesChangedPaths() throws {
-        let json = #"{"ok": true, "path": "/x/openclaw.json", "hash": "h2", "config": {"gateway": {"port": 1}}, "changedPaths": ["gateway.port"], "restart": {"scheduled": false}}"#
+        let json = #"""
+        {"ok": true, "path": "/x/openclaw.json", "hash": "h2", "config": {"gateway": {"port": 1}},
+         "changedPaths": ["gateway.port"], "restart": {"scheduled": false}}
+        """#
         let result = try JSONDecoder().decode(ConfigWriteResult.self, from: Data(json.utf8))
         #expect(result.ok)
         #expect(!result.noop)

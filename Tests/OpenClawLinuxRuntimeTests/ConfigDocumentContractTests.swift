@@ -165,7 +165,8 @@ struct ConfigDocumentContractTests {
           "futureRootKey": {"nested": [1, 2, {"deep": true}]},
           "gateway": {"port": "not-a-number", "mode": "satellite", "brandNew": 7},
           "session": {"dmScope": "per-galaxy", "maintenance": {"pruneAfter": "30d"}},
-          "agents": {"defaults": {"thinkingDefault": "ULTRA", "fastModeDefault": "auto"}, "entries": {"main": {"model": {"primary": "openai/gpt-5.4", "fallbacks": ["anthropic/x"]}}}}
+          "agents": {"defaults": {"thinkingDefault": "ULTRA", "fastModeDefault": "auto"},
+                     "entries": {"main": {"model": {"primary": "openai/gpt-5.4", "fallbacks": ["anthropic/x"]}}}}
         }
         """#
         let collector = ConfigDecodeIssueCollector()

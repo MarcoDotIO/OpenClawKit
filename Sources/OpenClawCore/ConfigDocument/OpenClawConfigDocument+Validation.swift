@@ -164,7 +164,8 @@ extension OpenClawConfigDocument.Agents {
         if entries.count > 1, marked == 0, self.ownership != "explicit" {
             issues.append(OpenClawConfigDocument.invalid(
                 "agents.ownership",
-                "multi-agent rosters require agents.ownership=\"explicit\" or one legacy default=true marker; add agents.ownership=\"explicit\" or run openclaw doctor"
+                "multi-agent rosters require agents.ownership=\"explicit\" or one legacy default=true marker; "
+                    + "add agents.ownership=\"explicit\" or run openclaw doctor"
             ))
         }
         return issues
@@ -341,7 +342,11 @@ extension OpenClawConfigDocument.MCP {
             for legacy in ["connectTimeout", "connect_timeout", "timeout", "workingDirectory", "disabled", "type",
                            "supports_parallel_tool_calls", "ssl_verify", "client_cert", "client_key"]
             where server.additionalProperties[legacy] != nil {
-                issues.append(ConfigDecodeIssue(path: "\(path).\(legacy)", message: "\(path).\(legacy) is a legacy alias; run openclaw doctor --fix", kind: .legacyKey))
+                issues.append(ConfigDecodeIssue(
+                    path: "\(path).\(legacy)",
+                    message: "\(path).\(legacy) is a legacy alias; run openclaw doctor --fix",
+                    kind: .legacyKey
+                ))
             }
         }
         return issues
@@ -376,7 +381,10 @@ extension OpenClawConfigDocument.Channels {
                 ))
             }
             if block.additionalProperties["bindings"]?.dictionaryValue?["acp"] != nil {
-                issues.append(OpenClawConfigDocument.invalid("\(path).bindings.acp", "channel-local bindings.acp is not supported; use top-level bindings[] entries"))
+                issues.append(OpenClawConfigDocument.invalid(
+                    "\(path).bindings.acp",
+                    "channel-local bindings.acp is not supported; use top-level bindings[] entries"
+                ))
             }
         }
         return issues

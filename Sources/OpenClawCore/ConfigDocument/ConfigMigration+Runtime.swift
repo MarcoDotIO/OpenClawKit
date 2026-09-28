@@ -56,7 +56,8 @@ extension ConfigMigrationRules {
         if otel.bool("enabled") == true, hasSignals {
             otel["enabled"] = .bool(false)
             changes.append(
-                "Disabled diagnostics.otel.enabled because legacy grpc configs with OTLP signals cannot export telemetry; re-enable it after choosing an OTLP/HTTP collector."
+                "Disabled diagnostics.otel.enabled because legacy grpc configs with OTLP signals cannot export telemetry; "
+                    + "re-enable it after choosing an OTLP/HTTP collector."
             )
         }
     }
@@ -118,7 +119,8 @@ extension ConfigMigrationRules {
             root.remove("gateway")
         }
         changes.append(
-            "Removed out-of-range gateway.port (\(OpenClawJSON5.formatNumber(port))). Valid TCP ports are 1–65535; the gateway will use the default port 18789."
+            "Removed out-of-range gateway.port (\(OpenClawJSON5.formatNumber(port))). "
+                + "Valid TCP ports are 1–65535; the gateway will use the default port 18789."
         )
     }
 

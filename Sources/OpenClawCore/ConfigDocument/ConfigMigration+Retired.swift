@@ -22,7 +22,8 @@ extension ConfigMigrationRules {
                 changes.append("Removed onboarding-owned agents.defaults.experimental.localModelLean.")
             } else {
                 changes.append(
-                    "Retained explicit or unowned agents.defaults.experimental.localModelLean=true; remove it or set it to false to restore the full tool capabilities through Tool Search."
+                    "Retained explicit or unowned agents.defaults.experimental.localModelLean=true; "
+                        + "remove it or set it to false to restore the full tool capabilities through Tool Search."
                 )
             }
         }
@@ -946,26 +947,37 @@ extension ConfigMigrationRules {
 
     // MARK: Unported migrations
 
+    private static func issue(_ path: String, _ message: String, _ kind: ConfigDecodeIssue.Kind) -> ConfigDecodeIssue {
+        ConfigDecodeIssue(path: path, message: message, kind: kind)
+    }
+
     static var unported: [ConfigUnportedMigration] {
         [
             .init(id: "legacy.pre-multi-agent-root", summary: "routing/agent/identity root keys have no migration path") { root in
                 ["routing", "agent", "identity"].filter(root.has).map {
-                    ConfigDecodeIssue(
-                        path: $0,
-                        message: "Top-level \($0) is a pre-multi-agent key without a migration path; fix it by hand against the current configuration reference.",
-                        kind: .invalidValue
+                    Self.issue(
+                        $0,
+                        "Top-level \($0) is a pre-multi-agent key without a migration path; "
+                            + "fix it by hand against the current configuration reference.",
+                        .invalidValue
                     )
                 }
             },
             .init(id: "runtime.memory-qmd-retired", summary: "memory.qmd paths need openclaw doctor") { root in
-                root.object("memory")?.has("qmd") == true
-                    ? [ConfigDecodeIssue(path: "memory.qmd", message: "memory.qmd is retired; run openclaw doctor --fix to import its paths into memory.search.extraPaths.", kind: .retiredKey)]
-                    : []
+                guard root.object("memory")?.has("qmd") == true else { return [] }
+                return [Self.issue(
+                    "memory.qmd",
+                    "memory.qmd is retired; run openclaw doctor --fix to import its paths into memory.search.extraPaths.",
+                    .retiredKey
+                )]
             },
             .init(id: "plugins.installs-state-import", summary: "plugins.installs records move to the shared state database") { root in
-                root.object("plugins")?.has("installs") == true
-                    ? [ConfigDecodeIssue(path: "plugins.installs", message: "plugins.installs moved to shared SQLite state; the gateway imports it on startup (left in place).", kind: .retiredKey)]
-                    : []
+                guard root.object("plugins")?.has("installs") == true else { return [] }
+                return [Self.issue(
+                    "plugins.installs",
+                    "plugins.installs moved to shared SQLite state; the gateway imports it on startup (left in place).",
+                    .retiredKey
+                )]
             },
             .init(id: "tools.allow-also-allow-conflict", summary: "allow and alsoAllow in the same scope need a permission-preserving merge") { root in
                 var issues: [ConfigDecodeIssue] = []
@@ -973,7 +985,11 @@ extension ConfigMigrationRules {
                     guard let tools, !(tools["allow"]?.array?.items.isEmpty ?? true), !(tools["alsoAllow"]?.array?.items.isEmpty ?? true) else {
                         return
                     }
-                    issues.append(ConfigDecodeIssue(path: path, message: "\(path) sets both allow and alsoAllow; upstream rejects this until openclaw doctor --fix merges them.", kind: .invalidValue))
+                    issues.append(Self.issue(
+                        path,
+                        "\(path) sets both allow and alsoAllow; upstream rejects this until openclaw doctor --fix merges them.",
+                        .invalidValue
+                    ))
                 }
                 check(root.object("tools"), "tools")
                 MigrationSupport.visitAgentEntries(root) { agent, path in check(agent.object("tools"), "\(path).tools") }
@@ -984,9 +1000,12 @@ extension ConfigMigrationRules {
             .init(id: "gateway.controlUi.allowedOrigins-seed-for-non-loopback", summary: "Seeding Control UI origins needs host context") { _ in [] },
             .init(id: "runtime.utility-model-separation", summary: "Utility model separation needs the previous config") { _ in [] },
             .init(id: "plugins.voice-call", summary: "Voice-call plugin migrations are plugin-owned") { root in
-                root.object("plugins")?.object("entries")?.object("voice-call") != nil
-                    ? [ConfigDecodeIssue(path: "plugins.entries.voice-call", message: "Voice-call plugin config migrations are plugin-owned; run openclaw doctor --fix.", kind: .legacyKey)]
-                    : []
+                guard root.object("plugins")?.object("entries")?.object("voice-call") != nil else { return [] }
+                return [Self.issue(
+                    "plugins.entries.voice-call",
+                    "Voice-call plugin config migrations are plugin-owned; run openclaw doctor --fix.",
+                    .legacyKey
+                )]
             },
         ]
     }

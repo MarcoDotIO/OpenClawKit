@@ -303,7 +303,8 @@ extension ConfigMigrationRules {
             merge(
                 "channels", channelHeartbeat,
                 moved: "Moved heartbeat visibility → channels.defaults.heartbeat.",
-                merged: "Merged heartbeat visibility → channels.defaults.heartbeat (filled missing fields from legacy; kept explicit channels.defaults values)."
+                merged: "Merged heartbeat visibility → channels.defaults.heartbeat "
+                    + "(filled missing fields from legacy; kept explicit channels.defaults values)."
             )
         }
         if agentHeartbeat.isEmpty, channelHeartbeat.isEmpty {
