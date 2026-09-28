@@ -88,7 +88,7 @@ struct AppleMediaUnderstandingLiveTests {
     @Test(.enabled(if: ProcessInfo.processInfo.environment["OPENCLAW_LIVE_SPEECH"] == "1"))
     func speechTranscriberTranscribesSynthesizedSpeech() async throws {
         #if os(macOS) && canImport(Speech)
-        guard AppleSpeechTranscriber.isSupported, await AppleSpeechTranscriber.installedLocales().contains("en-US") else {
+        guard AppleSpeechTranscriber.isSupported else {
             return
         }
         let directory = MediaUnderstandingTests.makeTemporaryDirectory("speech-live")
@@ -98,7 +98,14 @@ struct AppleMediaUnderstandingLiveTests {
         say.arguments = ["-o", file.path, "hello world from open claw"]
         try say.run()
         say.waitUntilExit()
-        let result = try await AppleSpeechTranscriber(locale: "en-US", installMissingAssets: false).transcribe(audioAt: file, locale: nil)
+        let result: AudioTranscriptionResult
+        do {
+            result = try await AppleSpeechTranscriber(locale: "en-US", installMissingAssets: false).transcribe(audioAt: file, locale: nil)
+        } catch MediaUnderstandingError.unavailable(let reason) {
+            // Speech assets are system downloads; without them there is nothing to check here.
+            #expect(reason.contains("not installed") || reason.contains("not supported"))
+            return
+        }
         #expect(result.text.lowercased().contains("hello"))
         #expect(result.locale == "en-US")
         #endif
