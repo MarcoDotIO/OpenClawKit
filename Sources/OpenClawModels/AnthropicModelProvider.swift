@@ -20,6 +20,10 @@ extension HTTPClient: AnthropicHTTPTransport {}
 /// Anthropic API: default betas (`fine-grained-tool-streaming-2025-05-14`,
 /// `interleaved-thinking-2025-05-14`), adaptive thinking for Claude 5-family and 4.6+ models,
 /// native fast mode for Opus 5 / Opus 4.8, and the legacy service tier for older models.
+///
+/// Headers come from the runtime context's canonical config (`headers`), model headers and
+/// ``ModelGenerationRequest/headers``. API keys that are not scoped to a workspace need an
+/// `anthropic-workspace-id` header.
 public struct AnthropicModelProvider: ModelProvider {
     /// Canonical provider identifier.
     public static let providerID = "anthropic"
@@ -44,6 +48,8 @@ public struct AnthropicModelProvider: ModelProvider {
     ) {
         self.id = id
         self.configuration = configuration
+        // AnthropicModelConfig has no headers; keep the canonical config's (factory-built providers),
+        // for example `anthropic-workspace-id` for keys that are not scoped to a workspace.
         let service = ProviderServiceConfig(
             enabled: configuration.enabled,
             apiStyle: .anthropicMessages,
@@ -53,7 +59,8 @@ public struct AnthropicModelProvider: ModelProvider {
             apiKey: configuration.apiKey,
             baseURL: configuration.baseURL,
             messagesPath: "messages",
-            apiVersion: configuration.apiVersion
+            apiVersion: configuration.apiVersion,
+            headers: runtime.providerConfig?.headers ?? [:]
         )
         self.engine = AnthropicMessagesEngine(
             settings: ProviderEndpointSettings(providerID: id, service: service, api: .anthropicMessages, runtime: runtime),

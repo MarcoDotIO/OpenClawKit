@@ -189,4 +189,106 @@ struct LiveProviderRegressionTests {
         #expect(requests.first?.url?.path == "/v1/chat/completions")
         #expect(requests.first?.value(forHTTPHeaderField: "Authorization") == "Bearer sk-test")
     }
+
+    // MARK: - Provider headers on factory-built providers
+
+    /// Live finding: unscoped Anthropic keys need `anthropic-workspace-id`, but the factory-built
+    /// `AnthropicModelProvider` dropped `models.providers.anthropic.headers`.
+    @Test
+    func anthropicFactoryProviderKeepsConfiguredHeaders() async throws {
+        let host = "anthropic-headers.regression.test"
+        RegressionURLProtocol.stub(host: host, body: anthropicBody)
+        URLProtocol.registerClass(RegressionURLProtocol.self)
+        defer {
+            URLProtocol.unregisterClass(RegressionURLProtocol.self)
+            RegressionURLProtocol.remove(host: host)
+        }
+        let config = ModelProviderConfig(
+            enabled: true,
+            baseURL: "https://\(host)",
+            apiKey: "sk-ant-test",
+            auth: .apiKey,
+            api: .anthropicMessages,
+            headers: ["anthropic-workspace-id": "wrkspc_regression"],
+            models: [ModelDefinitionConfig(id: "claude-haiku-4-5", reasoning: true, maxTokens: 64)]
+        )
+        let provider = try ModelProviderFactory.makeProvider(providerID: "anthropic", config: config)
+        #expect(provider is AnthropicModelProvider)
+
+        let response = try await provider.generate(ModelGenerationRequest(sessionKey: "s", prompt: "Reply with pong"))
+
+        #expect(response.text == "pong")
+        let request = try #require(RegressionURLProtocol.requests(host: host).first)
+        #expect(request.url?.path == "/v1/messages")
+        #expect(request.value(forHTTPHeaderField: "anthropic-workspace-id") == "wrkspc_regression")
+        #expect(request.value(forHTTPHeaderField: "x-api-key") == "sk-ant-test")
+    }
+
+    @Test
+    func anthropicProviderKeepsRuntimeConfigHeaders() async throws {
+        let transport = RegressionStubTransport(body: anthropicBody)
+        let providerConfig = ModelProviderConfig(
+            enabled: true,
+            baseURL: "https://api.anthropic.com",
+            apiKey: "sk-ant-test",
+            api: .anthropicMessages,
+            headers: ["anthropic-workspace-id": "wrkspc_regression", "anthropic-beta": "custom-beta-2026-01-01"]
+        )
+        let provider = AnthropicModelProvider(
+            configuration: AnthropicModelConfig(enabled: true, modelID: "claude-haiku-4-5", apiKey: "sk-ant-test", maxTokens: 64),
+            transport: transport,
+            runtime: ModelProviderRuntimeContext(providerConfig: providerConfig, api: .anthropicMessages)
+        )
+
+        _ = try await provider.generate(ModelGenerationRequest(sessionKey: "s", prompt: "hi"))
+
+        let request = try #require(await transport.requests.first)
+        #expect(request.value(forHTTPHeaderField: "anthropic-workspace-id") == "wrkspc_regression")
+        // Configured betas merge with the direct-API defaults instead of replacing them.
+        let betas = request.value(forHTTPHeaderField: "anthropic-beta") ?? ""
+        #expect(betas.contains("custom-beta-2026-01-01"))
+        #expect(betas.contains("fine-grained-tool-streaming-2025-05-14"))
+    }
+
+    @Test
+    func openAIChatProviderKeepsRuntimeConfigHeadersAndMetadata() async throws {
+        let transport = RegressionStubTransport(body: chatCompletionBody)
+        let providerConfig = ModelProviderConfig(
+            enabled: true,
+            apiKey: "sk-test",
+            headers: ["X-Gateway-Route": "blue"],
+            organizationID: "org-configured",
+            metadata: ["openai.projectID": "proj_configured"]
+        )
+        let provider = OpenAIModelProvider(
+            configuration: OpenAIModelConfig(enabled: true, modelID: "gpt-6-luna", apiKey: "sk-test"),
+            transport: transport,
+            runtime: ModelProviderRuntimeContext(providerConfig: providerConfig, api: .openAICompletions)
+        )
+
+        _ = try await provider.generate(ModelGenerationRequest(sessionKey: "s", prompt: "hi"))
+
+        let request = try #require(await transport.requests.first)
+        #expect(request.value(forHTTPHeaderField: "X-Gateway-Route") == "blue")
+        #expect(request.value(forHTTPHeaderField: "OpenAI-Project") == "proj_configured")
+        #expect(request.value(forHTTPHeaderField: "x-organization-id") == "org-configured")
+
+        // Request metadata still wins over provider metadata.
+        _ = try await provider.generate(ModelGenerationRequest(sessionKey: "s", prompt: "hi", metadata: ["openai.projectID": "proj_request"]))
+        #expect(await transport.requests.last?.value(forHTTPHeaderField: "OpenAI-Project") == "proj_request")
+    }
+
+    @Test
+    func openAICompatibleProviderKeepsRuntimeConfigHeaders() async throws {
+        let transport = RegressionStubTransport(body: chatCompletionBody)
+        let provider = OpenAICompatibleModelProvider(
+            configuration: OpenAICompatibleModelConfig(enabled: true, modelID: "local-model", apiKey: "k", baseURL: "http://127.0.0.1:4000/v1"),
+            transport: transport,
+            runtime: ModelProviderRuntimeContext(providerConfig: ModelProviderConfig(enabled: true, headers: ["X-Tenant": "acme"]))
+        )
+
+        _ = try await provider.generate(ModelGenerationRequest(sessionKey: "s", prompt: "hi"))
+
+        #expect(await transport.requests.first?.value(forHTTPHeaderField: "X-Tenant") == "acme")
+    }
 }
