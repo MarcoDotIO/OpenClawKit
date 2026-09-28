@@ -51,6 +51,9 @@ public struct AgentLoopConfiguration: Sendable, Equatable {
     public var providerConfigs: [String: ModelProviderConfig]
     /// Converts media the model cannot read (OCR text, video frames, transcripts) before dispatch.
     public var mediaUnderstanding: Bool
+    /// Media-understanding hints (`ocrImages`, `mediaUnderstanding`, `transcriptionLocale`; see
+    /// `MediaUnderstandingInputPolicy`), also forwarded to providers as local runtime hints.
+    public var mediaUnderstandingHints: [String: String]
     /// Skill settings passed to the workspace skill registry.
     public var skills: SkillsConfiguration?
     /// Forces a skill prompt mode; `nil` picks the v6 catalog when the model can call tools and a
@@ -80,6 +83,7 @@ public struct AgentLoopConfiguration: Sendable, Equatable {
     ///   - agentRuntimeID: Agent runtime id for thinking profiles.
     ///   - providerConfigs: Provider configurations keyed by provider id.
     ///   - mediaUnderstanding: Convert unreadable media before dispatch.
+    ///   - mediaUnderstandingHints: Media-understanding hints.
     ///   - skills: Skill settings.
     ///   - skillPromptMode: Forced skill prompt mode.
     ///   - providesSkillReadTool: Offer the jailed `read` tool in catalog mode.
@@ -98,6 +102,7 @@ public struct AgentLoopConfiguration: Sendable, Equatable {
         agentRuntimeID: String? = nil,
         providerConfigs: [String: ModelProviderConfig] = [:],
         mediaUnderstanding: Bool = true,
+        mediaUnderstandingHints: [String: String] = [:],
         skills: SkillsConfiguration? = nil,
         skillPromptMode: SkillPromptMode? = nil,
         providesSkillReadTool: Bool = true,
@@ -116,6 +121,7 @@ public struct AgentLoopConfiguration: Sendable, Equatable {
         self.agentRuntimeID = agentRuntimeID
         self.providerConfigs = providerConfigs
         self.mediaUnderstanding = mediaUnderstanding
+        self.mediaUnderstandingHints = mediaUnderstandingHints
         self.skills = skills
         self.skillPromptMode = skillPromptMode
         self.providesSkillReadTool = providesSkillReadTool
@@ -1189,7 +1195,8 @@ struct AgentLoop: Sendable {
         )
     }
 
-    /// Configured provider config, else the reference catalog's.
+    /// Configured provider config, else the reference catalog's. Apple Foundation Models uses the
+    /// probed on-device model facts (OS 27 vision adds image input) over the static catalog row.
     private func providerConfig(for providerID: String) -> ModelProviderConfig? {
         let configs = self.deps.configuration.providerConfigs
         if let config = configs[providerID] {
@@ -1199,7 +1206,15 @@ struct AgentLoop: Sendable {
         if let config = configs[canonical] {
             return config
         }
-        return OpenClawReferenceProviderCatalog.entry(for: canonical)?.config
+        let catalog = OpenClawReferenceProviderCatalog.entry(for: canonical)?.config
+        guard FoundationModelsProvider.handles(providerID: canonical), var config = catalog else {
+            return catalog
+        }
+        let facts = FoundationModelsProvider.systemModelFacts()
+        if facts.available, let index = config.models.firstIndex(where: { $0.id == FoundationModelsProvider.systemModelID }) {
+            config.models[index] = FoundationModelsProvider.modelDefinition(facts: facts)
+        }
+        return config
     }
 
     /// Clamps a thinking level to what a catalog-known model supports (upstream
@@ -2237,7 +2252,7 @@ struct AgentLoop: Sendable {
         let inputPolicy = MediaUnderstandingInputPolicy.resolve(
             providerConfig: model.providerConfig,
             modelID: model.modelID,
-            hints: [:]
+            hints: self.deps.configuration.mediaUnderstandingHints
         )
         let outcome = await self.deps.mediaPipeline.applyMediaUnderstanding(
             attachments,
@@ -2295,6 +2310,7 @@ struct AgentLoop: Sendable {
             policy: ModelGenerationPolicy(
                 streamTokens: streamTokens,
                 requestTimeoutMs: request.modelTimeoutMs,
+                localRuntimeHints: self.deps.configuration.mediaUnderstandingHints,
                 // Providers resolve the native effort from `thinkingLevel` (ReasoningEffortResolver).
                 thinkingLevel: model.thinkingLevel,
                 reasoningLevel: request.reasoningLevel,

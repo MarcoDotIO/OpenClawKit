@@ -447,8 +447,13 @@ public struct ModelCatalogCompatConfig: Codable, Sendable, Equatable {
         self.supportsReasoningEffort == false || self.supportedReasoningEfforts?.isEmpty == true
     }
 
-    /// Maps the manifest compat row onto the runtime `ModelCompatConfig` fields OpenClawCore defines today.
+    /// Maps the manifest compat row onto the runtime `ModelCompatConfig` (every field, through the shared
+    /// upstream JSON shape; the explicit mapping below is the fallback).
     public var runtimeConfig: ModelCompatConfig {
+        ModelCatalogJSONBridge.convert(self, to: ModelCompatConfig.self) ?? self.explicitRuntimeConfig
+    }
+
+    private var explicitRuntimeConfig: ModelCompatConfig {
         ModelCompatConfig(
             supportsStore: self.supportsStore,
             supportsDeveloperRole: self.supportsDeveloperRole,
@@ -702,9 +707,7 @@ public struct ModelCatalogModel: Codable, Sendable, Equatable, Identifiable {
             contextWindow: self.contextWindow ?? 0,
             maxTokens: self.maxTokens ?? 0,
             headers: self.headers ?? [:],
-            compat: self.compat.map { compat in
-                ModelCatalogJSONBridge.convert(compat, to: ModelCompatConfig.self) ?? compat.runtimeConfig
-            },
+            compat: self.compat?.runtimeConfig,
             baseURL: self.baseURL,
             contextTokens: self.contextTokens,
             thinkingLevelMap: self.thinkingLevelMap.flatMap { ModelCatalogJSONBridge.convert($0, to: ModelThinkingLevelMap.self) },

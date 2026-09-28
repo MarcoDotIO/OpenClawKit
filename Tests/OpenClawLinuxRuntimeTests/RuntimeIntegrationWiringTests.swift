@@ -354,6 +354,58 @@ struct RuntimeIntegrationWiringTests {
         #expect(InteractiveAuthFlowCatalog.descriptors.map(\.providerID).filter { $0 == "openai" }.count == 2)
     }
 
+    @Test
+    func catalogRefreshSettingsResolveFromConfig() throws {
+        let enabled = try ModelCatalogRefreshConfiguration(config: ModelCatalogRefreshConfig(enabled: true, url: "https://catalog.example.com/v1.json"))
+        #expect(enabled.isEnabled)
+        #expect(enabled.url.absoluteString == "https://catalog.example.com/v1.json")
+        #expect(try ModelCatalogRefreshConfiguration(config: ModelCatalogRefreshConfig()).isEnabled == false)
+        #expect(throws: OpenClawCoreError.self) {
+            _ = try ModelCatalogRefreshConfiguration(config: ModelCatalogRefreshConfig(enabled: true, url: "http://example.com/catalog.json"))
+        }
+        let document = try Self.document(#"{"models": {"catalogRefresh": {"enabled": true}}}"#)
+        #expect(try ModelCatalogRefreshConfiguration.resolve(from: document)?.url.absoluteString == ModelCatalogRefreshConfiguration.defaultURL)
+        #expect(try ModelCatalogRefreshConfiguration.resolve(from: OpenClawConfigDocument()) == nil)
+    }
+
+    @Test
+    func appleProviderConfigCarriesTimeoutAndJSONSchemaSupport() {
+        let facts = AppleFoundationModelFacts(available: true, modelName: "AFM", contextWindow: 8_192)
+        let config = FoundationModelsProvider.buildProviderConfig(facts: facts)
+        #expect(config.timeoutSeconds == FoundationModelsProvider.defaultTimeoutSeconds)
+        #expect(config.models.first?.compat?.supportsJSONSchemaResponseFormat == true)
+    }
+
+    @Test
+    func subagentsEmitSpawnedAndEndedHooks() async throws {
+        let hooks = HookRegistry()
+        let log = HookEventLog()
+        for hook in [HookName.subagentSpawned, .subagentEnded] {
+            await hooks.register(hook) { context in
+                await log.record(hook, context)
+                return nil
+            }
+        }
+        let provider = ScriptedToolProvider(turns: [], fallback: ScriptedToolProvider.text("child done"))
+        let runtime = EmbeddedAgentRuntime(
+            toolRegistry: AgentToolRegistry(),
+            modelRouter: ModelRouter(defaultProviderID: provider.id, providers: [provider]),
+            transcriptStore: InMemorySessionTranscriptStore(),
+            hookRegistry: hooks,
+            mediaUnderstandingServices: .none
+        )
+        let manager = SubagentManager(runtime: runtime)
+        let record = try await manager.spawn(SubagentSpawnParams(task: "summarize", label: "Summary"), parentSessionKey: "agent:main:main")
+        for _ in 0..<300 where await !log.names.contains("subagent_ended") {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        #expect(await log.names == ["subagent_spawned", "subagent_ended"])
+        let spawned = try #require(await log.first(.subagentSpawned))
+        #expect(spawned["childSessionKey"]?.stringValue == record.childSessionKey)
+        #expect(spawned["label"]?.stringValue == "Summary")
+        #expect(await log.first(.subagentEnded)?["outcome"]?.stringValue == "ok")
+    }
+
     // MARK: Foundation Models sessions
 
     @Test

@@ -122,27 +122,39 @@ public extension MemoryEngineConfiguration {
     ///   - agentID: Agent whose overrides apply.
     /// - Returns: The settings, or `nil` when memory search is disabled (`enabled: false`).
     static func resolve(from document: OpenClawConfigDocument, agentID: String? = nil) -> MemoryEngineConfiguration? {
-        let root = document.memory?.search
-        let agent: OpenClawConfigDocument.MemorySearch? = agentID.flatMap { id in
-            let entries = document.agents?.entries ?? [:]
-            let key = entries.keys.first { $0.lowercased() == id.lowercased() }
-            return key.flatMap { entries[$0]?.memory?.search }
+        // Read the encoded upstream shape so the mapping keeps working as document sections gain types.
+        let json = (try? AnyCodable(encoding: document))?.dictionaryValue ?? [:]
+        func object(_ value: AnyCodable?, _ path: [String]) -> [String: AnyCodable]? {
+            var current = value
+            for key in path {
+                current = current?.dictionaryValue?[key]
+            }
+            return current?.dictionaryValue
         }
-        guard agent?.enabled ?? root?.enabled ?? true else { return nil }
+        let root = object(AnyCodable(json), ["memory", "search"]) ?? [:]
+        let entries = object(AnyCodable(json), ["agents", "entries"]) ?? [:]
+        let agentKey = agentID.flatMap { id in entries.keys.first { $0.lowercased() == id.lowercased() } }
+        let agent = agentKey.flatMap { object(entries[$0], ["memory", "search"]) } ?? [:]
+        func layered(_ key: String) -> AnyCodable? {
+            if let value = agent[key], !value.isNull { return value }
+            if let value = root[key], !value.isNull { return value }
+            return nil
+        }
+        guard layered("enabled")?.boolValue ?? true else { return nil }
         let defaults = MemoryEngineConfiguration()
-        let query = agent?.query?.dictionaryValue ?? root?.query?.dictionaryValue ?? [:]
-        let rootQuery = root?.query?.dictionaryValue ?? [:]
-        let maxResults = query["maxResults"]?.intValue ?? rootQuery["maxResults"]?.intValue ?? defaults.maxResults
-        let minScore = query["minScore"]?.doubleValue ?? rootQuery["minScore"]?.doubleValue ?? defaults.minScore
-        let rawSources = agent?.sources ?? root?.sources
-        let sources = rawSources?.compactMap { MemoryHitSource(rawValue: $0.lowercased()) }
-        let extraPaths = ((root?.extraPaths ?? []) + (agent?.extraPaths ?? [])).compactMap { raw -> MemoryExtraPath? in
+        let agentQuery = agent["query"]?.dictionaryValue ?? [:]
+        let rootQuery = root["query"]?.dictionaryValue ?? [:]
+        let maxResults = agentQuery["maxResults"]?.intValue ?? rootQuery["maxResults"]?.intValue ?? defaults.maxResults
+        let minScore = agentQuery["minScore"]?.doubleValue ?? rootQuery["minScore"]?.doubleValue ?? defaults.minScore
+        let sources = layered("sources")?.arrayValue?.compactMap { $0.stringValue.flatMap { MemoryHitSource(rawValue: $0.lowercased()) } }
+        let rawPaths = (root["extraPaths"]?.arrayValue ?? []) + (agent["extraPaths"]?.arrayValue ?? [])
+        let extraPaths = rawPaths.compactMap { raw -> MemoryExtraPath? in
             guard let data = try? JSONEncoder().encode(raw) else { return nil }
             return try? JSONDecoder().decode(MemoryExtraPath.self, from: data)
         }
         var configuration = defaults
-        configuration.provider = (agent?.provider ?? root?.provider)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        configuration.model = (agent?.model ?? root?.model)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        configuration.provider = layered("provider")?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+        configuration.model = layered("model")?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
         configuration.extraPaths = extraPaths
         if let sources, !sources.isEmpty {
             configuration.sources = sources
