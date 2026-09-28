@@ -222,6 +222,20 @@ public actor GatewayServer: GatewayMethodRegistrar {
         self.methods.removeValue(forKey: method.trimmingCharacters(in: .whitespacesAndNewlines)) != nil
     }
 
+    /// Returns a handler invoking the built-in implementation of `method`, so a module can register
+    /// a wrapper that falls back to it (for example `agent.wait` for runs the module does not own).
+    /// - Parameter method: Wire method name.
+    /// - Returns: The built-in handler, or `nil` when `method` has no built-in implementation.
+    public func builtinHandler(for method: String) -> GatewayMethodHandler? {
+        guard let builtin = Self.builtinMethods[method] else { return nil }
+        return { [weak self] request in
+            guard let self else {
+                throw GatewayMethodError.unavailable("gateway server is no longer available")
+            }
+            return try await self.invokeBuiltin(builtin, request: request)
+        }
+    }
+
     /// Adds a resolver consulted for methods without a registered handler, in insertion order.
     /// - Parameter resolver: Resolver returning a handler, or `nil` to pass.
     public func addMethodResolver(_ resolver: @escaping GatewayMethodResolver) {

@@ -131,113 +131,41 @@ extension GatewayServer {
     }
 
     private func handleSessionPatch(_ request: GatewayMethodRequest) async throws -> GatewaySessionMutationResult {
-        let params = try request.decodeParams(GatewaySessionPatchParams.self)
-        let raw = request.params
-        let key = params.key.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty else {
-            throw GatewayMethodError.invalidRequest("Session key must not be empty")
-        }
-        let agentID = Self.normalizedText(params.agentID) ?? request.stringParam("agentId")
-        var record = await self.sessionStore.recordForKey(key) ?? SessionRecord(
-            key: key,
-            agentID: agentID ?? self.defaultAgentID,
-            updatedAtMs: Self.nowMs()
-        )
-        record.updatedAtMs = Self.nowMs()
-        if let agentID {
-            record.agentID = agentID
-        }
-        // Upstream clears a field with an explicit JSON null; legacy clients omit unchanged fields.
-        func isCleared(_ keys: String...) -> Bool {
-            keys.contains { raw[$0]?.isNull == true }
-        }
-        if let label = params.label {
-            record.label = Self.normalizedText(label)
-        } else if isCleared("label") {
-            record.label = nil
-        }
-        if let model = params.modelOverride ?? raw["model"]?.stringValue {
-            record.modelOverride = Self.normalizedText(model)
-        } else if isCleared("modelOverride", "model") {
-            record.modelOverride = nil
-        }
-        if let fastMode = raw["fastMode"]?.boolValue {
-            record.fastMode = fastMode
-        } else if isCleared("fastMode") {
-            record.fastMode = nil
-        }
-        if let thinkingLevel = params.thinkingLevel {
-            record.thinkingLevel = ThinkLevel.normalize(thinkingLevel)
-        } else if isCleared("thinkingLevel") {
-            record.thinkingLevel = nil
-        }
-        if let verboseLevel = params.verboseLevel {
-            record.verboseLevel = VerboseLevel.normalize(verboseLevel)
-        } else if isCleared("verboseLevel") {
-            record.verboseLevel = nil
-        }
-        if let reasoningLevel = params.reasoningLevel {
-            record.reasoningLevel = ReasoningLevel.normalize(reasoningLevel)
-        } else if isCleared("reasoningLevel") {
-            record.reasoningLevel = nil
-        }
-        if let responseUsage = params.responseUsage {
-            record.responseUsage = UsageDisplayLevel.normalize(responseUsage)
-        } else if isCleared("responseUsage") {
-            record.responseUsage = nil
-        }
-        if let elevatedLevel = params.elevatedLevel {
-            record.elevatedLevel = ElevatedLevel.normalize(elevatedLevel)
-        } else if isCleared("elevatedLevel") {
-            record.elevatedLevel = nil
-        }
-        if let groupActivation = params.groupActivation {
-            record.groupActivation = Self.normalizeGroupActivation(groupActivation)
-        } else if isCleared("groupActivation") {
-            record.groupActivation = nil
-        }
-        if let sendPolicy = params.sendPolicy {
-            record.sendPolicy = Self.normalizeSendPolicy(sendPolicy)
-        } else if isCleared("sendPolicy") {
-            record.sendPolicy = nil
-        }
-        if let execHost = params.execHost {
-            record.execHost = Self.normalizeExecHost(execHost)
-        } else if isCleared("execHost") {
-            record.execHost = nil
-        }
-        if let execSecurity = params.execSecurity {
-            record.execSecurity = Self.normalizeExecSecurity(execSecurity)
-        } else if isCleared("execSecurity") {
-            record.execSecurity = nil
-        }
-        if let execAsk = params.execAsk {
-            record.execAsk = Self.normalizeExecAsk(execAsk)
-        } else if isCleared("execAsk") {
-            record.execAsk = nil
-        }
-        if let execNode = params.execNode {
-            record.execNode = Self.normalizedText(execNode)
-        } else if isCleared("execNode") {
-            record.execNode = nil
-        }
-        await self.sessionStore.upsert(record)
+        _ = try request.decodeParams(GatewaySessionPatchParams.self)
+        let record = try await Self.applySessionPatch(request, store: self.sessionStore, defaultAgentID: self.defaultAgentID).record
         try await self.sessionStore.save()
-        return GatewaySessionMutationResult(key: key, session: Self.sessionInfo(from: record))
+        return GatewaySessionMutationResult(key: record.key, session: Self.sessionInfo(from: record))
+    }
+
+    /// Applies `sessions.patch` params through ``SessionStore/applyPatch(_:defaultAgentID:grantedScopes:)``,
+    /// mapping patch errors to gateway errors (retired `execSecurity`/`execAsk` → `INVALID_REQUEST`,
+    /// `permissionMode: full` without `operator.admin` → `FORBIDDEN`).
+    public static func applySessionPatch(
+        _ request: GatewayMethodRequest,
+        store: SessionStore,
+        defaultAgentID: String
+    ) async throws -> SessionPatchOutcome {
+        do {
+            return try await store.applyPatch(
+                request.params,
+                defaultAgentID: defaultAgentID,
+                grantedScopes: request.connection.role == "operator" ? Set(request.connection.scopes) : nil
+            )
+        } catch let error as SessionPatchError {
+            switch error {
+            case .invalid(let message):
+                throw GatewayMethodError.invalidRequest(message)
+            case .missingScope(let scope, _):
+                throw GatewayMethodError.missingScope(scope)
+            }
+        }
     }
 
     private func handleSessionReset(_ request: GatewayMethodRequest) async throws -> GatewaySessionMutationResult {
         let params = try request.decodeParams(GatewaySessionKeyParams.self)
-        guard let existing = await self.sessionStore.recordForKey(params.key) else {
+        guard let reset = await self.sessionStore.rotateSession(forKey: params.key) else {
             return GatewaySessionMutationResult(key: params.key, session: nil)
         }
-        let reset = SessionRecord(
-            key: existing.key,
-            agentID: existing.agentID,
-            updatedAtMs: Self.nowMs(),
-            lastRoute: existing.lastRoute
-        )
-        await self.sessionStore.upsert(reset)
         try await self.sessionStore.save()
         return GatewaySessionMutationResult(key: params.key, session: Self.sessionInfo(from: reset))
     }
@@ -345,11 +273,14 @@ extension GatewayServer {
 
     // MARK: - Helpers
 
-    static func sessionInfo(from record: SessionRecord) -> GatewaySessionInfo {
+    /// Legacy `GatewaySessionInfo` projection of a session record (timestamps clamp to `Int`).
+    /// - Parameter record: Session record.
+    /// - Returns: The session summary.
+    public static func sessionInfo(from record: SessionRecord) -> GatewaySessionInfo {
         GatewaySessionInfo(
             key: record.key,
             agentID: record.agentID,
-            updatedAtMs: record.updatedAtMs,
+            updatedAtMs: Int(clamping: record.updatedAtMs),
             channel: record.lastRoute?.channel,
             accountID: record.lastRoute?.accountID,
             peerID: record.lastRoute?.peerID,
@@ -404,75 +335,6 @@ extension GatewayServer {
         guard let value else { return nil }
         let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return normalized.isEmpty ? nil : normalized
-    }
-
-    private static func normalizeSendPolicy(_ raw: String) -> SendPolicy? {
-        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "allow", "on", "true", "yes":
-            return .allow
-        case "deny", "off", "false", "no":
-            return .deny
-        default:
-            return nil
-        }
-    }
-
-    private static func normalizeGroupActivation(_ raw: String) -> GroupActivation? {
-        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "always":
-            return .always
-        case "mention", "mentions":
-            return .mention
-        default:
-            return nil
-        }
-    }
-
-    private static func normalizeExecHost(_ raw: String) -> ExecHost? {
-        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "sandbox":
-            return .sandbox
-        case "gateway":
-            return .gateway
-        case "node":
-            return .node
-        default:
-            return nil
-        }
-    }
-
-    private static func normalizeExecSecurity(_ raw: String) -> ExecSecurity? {
-        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().replacingOccurrences(of: "-", with: "") {
-        case "deny":
-            return .deny
-        case "allowlist":
-            return .allowlist
-        case "full":
-            return .full
-        default:
-            return nil
-        }
-    }
-
-    private static func normalizeExecAsk(_ raw: String) -> ExecAsk? {
-        let normalized = raw
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-            .replacingOccurrences(of: "_", with: "-")
-        switch normalized {
-        case "off":
-            return .off
-        case "on-miss", "onmiss":
-            return .onMiss
-        case "always":
-            return .always
-        default:
-            return nil
-        }
-    }
-
-    private static func nowMs() -> Int {
-        Int(Date().timeIntervalSince1970 * 1000)
     }
 }
 

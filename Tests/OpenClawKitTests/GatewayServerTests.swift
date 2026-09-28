@@ -571,8 +571,6 @@ struct GatewayServerTests {
                 groupActivation: "mentions",
                 sendPolicy: "deny",
                 execHost: "gateway",
-                execSecurity: "allow-list",
-                execAsk: "on_miss",
                 execNode: "  node-20  "
             ),
             as: GatewaySessionMutationResult.self
@@ -588,8 +586,8 @@ struct GatewayServerTests {
         #expect(patched.session?.groupActivation == "mention")
         #expect(patched.session?.sendPolicy == "deny")
         #expect(patched.session?.execHost == "gateway")
-        #expect(patched.session?.execSecurity == "allowlist")
-        #expect(patched.session?.execAsk == "on-miss")
+        #expect(patched.session?.execSecurity == nil)
+        #expect(patched.session?.execAsk == nil)
         #expect(patched.session?.execNode == "node-20")
 
         let sandboxPatch = try await self.request(
@@ -598,31 +596,38 @@ struct GatewayServerTests {
             params: GatewaySessionPatchParams(
                 key: "controls",
                 groupActivation: "always",
-                execHost: "sandbox",
-                execSecurity: "deny",
-                execAsk: "off"
+                execHost: "sandbox"
             ),
             as: GatewaySessionMutationResult.self
         )
         #expect(sandboxPatch.session?.groupActivation == "always")
         #expect(sandboxPatch.session?.execHost == "sandbox")
-        #expect(sandboxPatch.session?.execSecurity == "deny")
-        #expect(sandboxPatch.session?.execAsk == "off")
+
+        let autoPatch = try await self.request(
+            server,
+            method: "sessions.patch",
+            params: GatewaySessionPatchParams(key: "controls", execHost: "auto"),
+            as: GatewaySessionMutationResult.self
+        )
+        #expect(autoPatch.session?.execHost == "auto")
 
         let nodePatch = try await self.request(
             server,
             method: "sessions.patch",
-            params: GatewaySessionPatchParams(
-                key: "controls",
-                execHost: "node",
-                execSecurity: "full",
-                execAsk: "always"
-            ),
+            params: GatewaySessionPatchParams(key: "controls", execHost: "node"),
             as: GatewaySessionMutationResult.self
         )
         #expect(nodePatch.session?.execHost == "node")
-        #expect(nodePatch.session?.execSecurity == "full")
-        #expect(nodePatch.session?.execAsk == "always")
+
+        // 2026.3.0: the retired exec policy fields are rejected (upstream permission-modes.md).
+        let retired = await self.rawRequest(
+            server,
+            method: "sessions.patch",
+            params: GatewaySessionPatchParams(key: "controls", execSecurity: "full", execAsk: "always")
+        )
+        #expect(retired.ok == false)
+        #expect(retired.error?.errorCode == .invalidRequest)
+        #expect(retired.error?.message.contains("permissionMode") == true)
 
         let invalidPatch = try await self.request(
             server,
@@ -633,8 +638,6 @@ struct GatewayServerTests {
                 groupActivation: "sometimes",
                 sendPolicy: "maybe",
                 execHost: "remote",
-                execSecurity: "strict",
-                execAsk: "later",
                 execNode: "   "
             ),
             as: GatewaySessionMutationResult.self
@@ -643,8 +646,6 @@ struct GatewayServerTests {
         #expect(invalidPatch.session?.groupActivation == nil)
         #expect(invalidPatch.session?.sendPolicy == nil)
         #expect(invalidPatch.session?.execHost == nil)
-        #expect(invalidPatch.session?.execSecurity == nil)
-        #expect(invalidPatch.session?.execAsk == nil)
         #expect(invalidPatch.session?.execNode == nil)
 
         let completedRun = try await self.request(
