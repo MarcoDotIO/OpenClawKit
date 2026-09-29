@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
+# Runs the iOS example unit and UI tests on an available iPhone simulator.
+#
+# IOS_SIMULATOR_NAME selects the simulator (default: the first available iPhone). DerivedData goes
+# to .build/xcode-example-ios-tests (override with OPENCLAW_EXAMPLE_DERIVED_DATA).
 set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "${ROOT_DIR}"
 
 PROJECT="Examples/iOS/OpenClawiOS/OpenClawiOS.xcodeproj"
 SCHEME="OpenClawiOS"
@@ -9,12 +16,14 @@ if [[ -z "${SIMULATOR_NAME}" ]]; then
   exit 1
 fi
 DESTINATION="platform=iOS Simulator,name=${SIMULATOR_NAME}"
+DERIVED_DATA_PATH="${OPENCLAW_EXAMPLE_DERIVED_DATA:-${ROOT_DIR}/.build/xcode-example-ios-tests}"
 
 xcodebuild \
   -project "$PROJECT" \
   -scheme "$SCHEME" \
   -configuration Debug \
   -destination "$DESTINATION" \
+  -derivedDataPath "$DERIVED_DATA_PATH" \
   CODE_SIGNING_ALLOWED=NO \
   CODE_SIGNING_REQUIRED=NO \
   test \
