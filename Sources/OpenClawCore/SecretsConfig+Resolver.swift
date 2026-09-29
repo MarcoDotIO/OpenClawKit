@@ -80,16 +80,24 @@ public struct DefaultSecretRefResolver: SecretRefResolver {
         }
         let alias = config.effectiveProviderAlias(for: ref)
         var provider = config.providers[alias]
+        // Upstream `isBuiltInDefaultSecretProviderRef`: only env/store refs on the source's default alias
+        // may use the built-in provider.
+        let isBuiltInDefault = (ref.source == .env || ref.source == .store) && alias == config.defaults.providerAlias(for: ref.source)
         if let configured = provider, configured.source != ref.source {
-            // Upstream `isBuiltInDefaultSecretProviderRef`: env/store refs on the source's default alias
-            // use the built-in provider even when another source claims that alias.
-            if (ref.source == .env || ref.source == .store), alias == config.defaults.providerAlias(for: ref.source) {
+            // The built-in default wins even when another source claims that alias.
+            if isBuiltInDefault {
                 provider = nil
             } else {
                 throw OpenClawCoreError.invalidConfiguration(
                     "Secret provider \"\(alias)\" is a \(configured.source.rawValue) provider, not \(ref.source.rawValue)."
                 )
             }
+        } else if provider == nil, !isBuiltInDefault {
+            // Upstream SECRET_PROVIDER_NOT_CONFIGURED: an unknown alias never falls back to the
+            // unrestricted built-in provider (which would skip a configured env allowlist).
+            throw OpenClawCoreError.invalidConfiguration(
+                "Secret provider \"\(alias)\" is not configured (ref: \(ref.source.rawValue):\(alias):\(ref.id))."
+            )
         }
         switch ref.source {
         case .env:
