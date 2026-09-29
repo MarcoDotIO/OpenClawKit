@@ -22,6 +22,11 @@ struct ContentView: View {
                     Label("Chat", systemImage: "message")
                 }
 
+            GatewayChatView()
+                .tabItem {
+                    Label("Gateway", systemImage: "network")
+                }
+
             ModelsView()
                 .tabItem {
                     Label("Models", systemImage: "cpu")

@@ -8,6 +8,8 @@
 
 /* Begin PBXBuildFile section */
 		7D2D812E2F5597EC0048298D /* OpenClawKit in Frameworks */ = {isa = PBXBuildFile; productRef = 7D2D81332F5597EC0048298D /* OpenClawKit */; };
+		7D2D81502F60000000D0476B /* OpenClawAppIntents in Frameworks */ = {isa = PBXBuildFile; productRef = 7D2D81512F60000000D0476B /* OpenClawAppIntents */; };
+		7D2D81522F60000000D0476B /* OpenClawChatUI in Frameworks */ = {isa = PBXBuildFile; productRef = 7D2D81532F60000000D0476B /* OpenClawChatUI */; };
 		7D2D812F2F5597EC0048298D /* skills in Resources */ = {isa = PBXBuildFile; fileRef = 7D2D81312F5597EC0048298D /* skills */; };
 /* End PBXBuildFile section */
 
@@ -60,6 +62,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				7D2D812E2F5597EC0048298D /* OpenClawKit in Frameworks */,
+				7D2D81502F60000000D0476B /* OpenClawAppIntents in Frameworks */,
+				7D2D81522F60000000D0476B /* OpenClawChatUI in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -131,6 +135,8 @@
 			name = OpenClawtvOS;
 			packageProductDependencies = (
 				7D2D81332F5597EC0048298D /* OpenClawKit */,
+				7D2D81512F60000000D0476B /* OpenClawAppIntents */,
+				7D2D81532F60000000D0476B /* OpenClawChatUI */,
 			);
 			productName = OpenClawtvOS;
 			productReference = 7D2D81042F5597EA0048298D /* OpenClawtvOS.app */;
@@ -423,6 +429,7 @@
 				DEVELOPMENT_TEAM = 8GNE6ML5WX;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "OpenClawtvOS-Info.plist";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UIUserInterfaceStyle = Automatic;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -452,6 +459,7 @@
 				DEVELOPMENT_TEAM = 8GNE6ML5WX;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "OpenClawtvOS-Info.plist";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UIUserInterfaceStyle = Automatic;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -608,6 +616,16 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 7D2D81342F5597EC0048298D /* XCLocalSwiftPackageReference "../../.." */;
 			productName = OpenClawKit;
+		};
+		7D2D81512F60000000D0476B /* OpenClawAppIntents */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 7D2D81342F5597EC0048298D /* XCLocalSwiftPackageReference "../../.." */;
+			productName = OpenClawAppIntents;
+		};
+		7D2D81532F60000000D0476B /* OpenClawChatUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 7D2D81342F5597EC0048298D /* XCLocalSwiftPackageReference "../../.." */;
+			productName = OpenClawChatUI;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
