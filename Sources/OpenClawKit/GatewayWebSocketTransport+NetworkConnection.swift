@@ -1,5 +1,4 @@
 #if canImport(Network) && compiler(>=6.2)
-import CryptoKit
 import Foundation
 import Network
 import Security
@@ -15,56 +14,71 @@ public enum NetworkConnectionPathEvent: Sendable, Equatable {
 /// Opt-in Network.framework transport for ``GatewayChannelActor``.
 ///
 /// Pass it as the channel's session box to run the gateway WebSocket over
-/// `NetworkConnection<WebSocket>` instead of `URLSessionWebSocketTask`. Each connection gets its
-/// own TLS validator implementing the gateway pinning policy (explicit pin, stored pin, first-use
-/// pin after system trust, or system trust alone), and path/viability updates are surfaced so
-/// owners can call ``GatewayChannelActor/nudgeReconnect()`` instead of waiting for the watchdog.
+/// `NetworkConnection<WebSocket>` instead of `URLSessionWebSocketTask`. Certificates are evaluated
+/// by the same policy as ``GatewayTLSPinningSession`` (``GatewayTLSServerTrust``): an explicit pin,
+/// the stored pin claimed through ``GatewayTLSStore`` (first use only after system trust for the
+/// requested hostname, failing closed when pin storage is unavailable), staged-pin promotion,
+/// `requiresSystemTrust`, or system trust alone. The enforced pin survives reconnects of the same
+/// session. A rejected certificate surfaces as ``GatewayTLSValidationError``, so pin mismatches pause
+/// automatic reconnects and produce a rotation request. Path/viability updates are surfaced so owners
+/// can call ``GatewayChannelActor/nudgeReconnect()`` instead of waiting for the watchdog.
 /// The URLSession transport remains the default; on watchOS low-level networking is
 /// runtime-restricted, so prefer URLSession there.
 @available(iOS 26.0, macOS 26.0, tvOS 26.0, watchOS 26.0, visionOS 26.0, *)
 public final class NetworkConnectionWebSocketSession: WebSocketSessioning, GatewayTLSRouteMetadataProviding,
-    GatewayDeviceTokenRetryTrustProviding, GatewayTLSFailureProviding, @unchecked Sendable
+    GatewayDeviceTokenRetryTrustProviding, GatewayTLSFailureProviding, GatewayTLSPinRotationAccepting,
+    @unchecked Sendable
 {
-    private let lock = NSLock()
-    private let tls: GatewayTLSParams?
+    /// Parameters used when the session has no pinning parameters: system trust for the host only.
+    static let systemTrustOnlyParams = GatewayTLSParams(
+        required: true,
+        expectedFingerprint: nil,
+        allowTOFU: false,
+        storeKey: nil,
+        requiresSystemTrust: true)
+
+    /// Trust owner shared with the URLSession transport; its `URLSession` is never created here.
+    private let trustPolicy: GatewayTLSPinningSession
     private let onPathEvent: (@Sendable (NetworkConnectionPathEvent) -> Void)?
-    private var acceptedFingerprint: String?
-    private var pinEnforced = false
-    private var lastFailure: GatewayTLSValidationFailure?
 
     /// Creates a Network.framework WebSocket session.
     /// - Parameters:
-    ///   - tls: Pinning parameters for `wss://` routes; `nil` uses system trust.
+    ///   - tls: Pinning parameters for `wss://` routes; `nil` uses system trust for the host.
     ///   - onPathEvent: Called with viability and better-path updates from each connection.
     public init(
         tls: GatewayTLSParams? = nil,
         onPathEvent: (@Sendable (NetworkConnectionPathEvent) -> Void)? = nil)
     {
-        self.tls = tls
+        self.trustPolicy = GatewayTLSPinningSession(params: tls ?? Self.systemTrustOnlyParams)
         self.onPathEvent = onPathEvent
     }
 
     /// Accepted leaf SHA-256 fingerprint of the most recent `wss://` connection.
     public var effectiveTLSFingerprintSHA256: String? {
-        self.lock.lock()
-        defer { self.lock.unlock() }
-        return self.acceptedFingerprint
+        self.trustPolicy.effectiveTLSFingerprintSHA256
     }
 
-    /// `true` once a pin was enforced for the route, which makes device-token retry safe.
+    /// `true` once a pin is enforced for the route, which makes device-token retry safe.
     public var allowsDeviceTokenRetryAuth: Bool {
-        self.lock.lock()
-        defer { self.lock.unlock() }
-        return self.pinEnforced
+        self.trustPolicy.allowsDeviceTokenRetryAuth
     }
 
     /// Returns and clears the most recent TLS rejection.
     public func consumeLastTLSFailure() -> GatewayTLSValidationFailure? {
-        self.lock.lock()
-        defer { self.lock.unlock() }
-        let failure = self.lastFailure
-        self.lastFailure = nil
-        return failure
+        self.trustPolicy.consumeLastTLSFailure()
+    }
+
+    /// Accepts a pin rotation the user reviewed (see ``GatewayTLSPinningSession/acceptPinRotation(_:)``).
+    /// - Parameter request: Rotation request from the pin mismatch.
+    /// - Returns: `true` when the rotation was stored and this session now enforces the new pin.
+    @discardableResult
+    public func acceptPinRotation(_ request: GatewayTLSPinRotationRequest) -> Bool {
+        self.trustPolicy.acceptPinRotation(request)
+    }
+
+    /// Evaluates a server trust for `url`; returns the rejection, or `nil` when it was accepted.
+    func serverTrustFailure(_ trust: SecTrust, for url: URL) -> GatewayTLSValidationFailure? {
+        self.trustPolicy.serverTrustFailure(trust, for: url)
     }
 
     /// Creates a task for a URL.
@@ -76,136 +90,29 @@ public final class NetworkConnectionWebSocketSession: WebSocketSessioning, Gatew
     public func makeWebSocketTask(request: URLRequest) -> WebSocketTaskBox {
         let url = request.url ?? URL(fileURLWithPath: "/")
         let headers = (request.allHTTPHeaderFields ?? [:]).sorted { $0.key < $1.key }
-        let validator = NetworkConnectionTLSValidator(
-            host: url.host ?? "",
-            port: url.port,
-            params: self.tls,
-            record: { [weak self] outcome in self?.record(outcome) })
+        // A rejection recorded by an earlier attempt must never be attributed to this one.
+        _ = self.trustPolicy.consumeLastTLSFailure()
+        let trustPolicy = self.trustPolicy
         let task = NetworkConnectionWebSocketTask(
             url: url,
             headers: headers.map { (name: $0.key, value: $0.value) },
-            validator: validator,
+            validate: { trust in trustPolicy.serverTrustFailure(trust, for: url) },
             onPathEvent: self.onPathEvent)
         return WebSocketTaskBox(task: task)
     }
-
-    private func record(_ outcome: NetworkConnectionTLSValidator.Outcome) {
-        self.lock.lock()
-        defer { self.lock.unlock() }
-        switch outcome {
-        case let .accepted(fingerprint, enforced):
-            self.acceptedFingerprint = fingerprint
-            self.pinEnforced = enforced
-            self.lastFailure = nil
-        case let .rejected(failure):
-            self.lastFailure = failure
-        }
-    }
 }
 
-/// Per-connection TLS decision for ``NetworkConnectionWebSocketSession``.
-@available(iOS 26.0, macOS 26.0, tvOS 26.0, watchOS 26.0, visionOS 26.0, *)
-final class NetworkConnectionTLSValidator: Sendable {
-    enum Outcome: Sendable {
-        case accepted(fingerprint: String?, enforced: Bool)
-        case rejected(GatewayTLSValidationFailure)
+/// The TLS rejection one connection's certificate validator recorded.
+private final class NetworkConnectionTLSRejection: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: GatewayTLSValidationFailure?
+
+    var failure: GatewayTLSValidationFailure? {
+        self.lock.withLock { self.recorded }
     }
 
-    private let host: String
-    private let port: Int?
-    private let params: GatewayTLSParams?
-    private let record: @Sendable (Outcome) -> Void
-
-    init(host: String, port: Int?, params: GatewayTLSParams?, record: @escaping @Sendable (Outcome) -> Void) {
-        self.host = host
-        self.port = port
-        self.params = params
-        self.record = record
-    }
-
-    func evaluate(_ trust: SecTrust) -> Bool {
-        let outcome = Self.decide(
-            observed: Self.leafFingerprint(trust),
-            systemTrustOk: SecTrustEvaluateWithError(trust, nil),
-            host: self.host,
-            port: self.port,
-            params: self.params)
-        self.record(outcome)
-        if case .accepted = outcome { return true }
-        return false
-    }
-
-    /// Pinning policy: an explicit or stored pin must match; a first-use pin is saved only after
-    /// system trust passes; without pins, system trust (or a non-required policy) decides.
-    static func decide(
-        observed: String?,
-        systemTrustOk: Bool,
-        host: String,
-        port: Int?,
-        params: GatewayTLSParams?) -> Outcome
-    {
-        guard let params else {
-            return systemTrustOk
-                ? .accepted(fingerprint: observed, enforced: false)
-                : .rejected(self.failure(.untrustedCertificate, host, port, nil, observed, systemTrustOk, nil))
-        }
-        let expected = params.expectedFingerprint.map(self.normalize)
-            ?? params.storeKey.flatMap { GatewayTLSStore.loadFingerprint(stableID: $0) }.map(self.normalize)
-        if let expected, !expected.isEmpty {
-            guard let observed else {
-                return .rejected(self.failure(.certificateUnavailable, host, port, expected, nil, systemTrustOk, params.storeKey))
-            }
-            return observed == expected
-                ? .accepted(fingerprint: observed, enforced: true)
-                : .rejected(self.failure(.pinMismatch, host, port, expected, observed, systemTrustOk, params.storeKey))
-        }
-        if params.allowTOFU, let observed, systemTrustOk {
-            if let storeKey = params.storeKey {
-                GatewayTLSStore.saveFingerprint(observed, stableID: storeKey)
-            }
-            return .accepted(fingerprint: observed, enforced: true)
-        }
-        if systemTrustOk || !params.required {
-            return .accepted(fingerprint: observed, enforced: false)
-        }
-        return .rejected(self.failure(.untrustedCertificate, host, port, nil, observed, systemTrustOk, params.storeKey))
-    }
-
-    private static func failure(
-        _ kind: GatewayTLSValidationFailureKind,
-        _ host: String,
-        _ port: Int?,
-        _ expected: String?,
-        _ observed: String?,
-        _ systemTrustOk: Bool,
-        _ storeKey: String?) -> GatewayTLSValidationFailure
-    {
-        GatewayTLSValidationFailure(
-            kind: kind,
-            host: host,
-            storeKey: storeKey,
-            expectedFingerprint: expected,
-            observedFingerprint: observed,
-            systemTrustOk: systemTrustOk,
-            port: port)
-    }
-
-    static func normalize(_ raw: String) -> String {
-        var value = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        for prefix in ["sha-256:", "sha256:", "sha-256", "sha256"] where value.hasPrefix(prefix) {
-            value.removeFirst(prefix.count)
-            break
-        }
-        return value.filter(\.isHexDigit)
-    }
-
-    private static func leafFingerprint(_ trust: SecTrust) -> String? {
-        guard let chain = SecTrustCopyCertificateChain(trust) as? [SecCertificate],
-              let leaf = chain.first
-        else { return nil }
-        return SHA256.hash(data: SecCertificateCopyData(leaf) as Data)
-            .map { String(format: "%02x", $0) }
-            .joined()
+    func record(_ failure: GatewayTLSValidationFailure) {
+        self.lock.withLock { self.recorded = failure }
     }
 }
 
@@ -221,24 +128,32 @@ public final class NetworkConnectionWebSocketTask: WebSocketTasking, @unchecked 
     }
 
     private let connection: NetworkConnection<WebSocket>
+    private let url: URL
+    private let tlsRejection: NetworkConnectionTLSRejection
     private let lock = NSLock()
     private var _state: URLSessionTask.State = .suspended
 
-    /// Creates a task for `url` with upgrade `headers` and system-trust TLS (no pin).
+    /// Creates a task for `url` with upgrade `headers` and system-trust TLS for the host (no pin).
     public convenience init(url: URL, headers: [(name: String, value: String)] = []) {
+        let trustPolicy = GatewayTLSPinningSession(params: NetworkConnectionWebSocketSession.systemTrustOnlyParams)
         self.init(
             url: url,
             headers: headers,
-            validator: NetworkConnectionTLSValidator(host: url.host ?? "", port: url.port, params: nil, record: { _ in }),
+            validate: { trust in trustPolicy.serverTrustFailure(trust, for: url) },
             onPathEvent: nil)
     }
 
+    /// - Parameter validate: Evaluates the server trust of a `wss://` connection and returns the
+    ///   rejection, or `nil` to accept the certificate.
     init(
         url: URL,
         headers: [(name: String, value: String)],
-        validator: NetworkConnectionTLSValidator,
+        validate: @escaping @Sendable (SecTrust) -> GatewayTLSValidationFailure?,
         onPathEvent: (@Sendable (NetworkConnectionPathEvent) -> Void)?)
     {
+        let rejection = NetworkConnectionTLSRejection()
+        self.url = url
+        self.tlsRejection = rejection
         let endpoint = NWEndpoint.url(url)
         if url.scheme?.lowercased() == "wss" {
             self.connection = NetworkConnection(to: endpoint) {
@@ -247,7 +162,11 @@ public final class NetworkConnectionWebSocketTask: WebSocketTasking, @unchecked 
                         TCP()
                     }
                     .certificateValidator { _, secTrust in
-                        validator.evaluate(sec_trust_copy_ref(secTrust).takeRetainedValue())
+                        guard let failure = validate(sec_trust_copy_ref(secTrust).takeRetainedValue()) else {
+                            return true
+                        }
+                        rejection.record(failure)
+                        return false
                     }
                 }
                 .additionalHeaders(headers)
@@ -275,6 +194,20 @@ public final class NetworkConnectionWebSocketTask: WebSocketTasking, @unchecked 
                 onPathEvent(.betterPathAvailable(better))
             }
         }
+    }
+
+    /// Network.framework reports a rejected certificate as an `NWError`, never a `URLError`. Surface
+    /// the validator's typed rejection instead, and any other TLS failure as
+    /// `URLError(.secureConnectionFailed)`, so channels treat both like the URLSession transport.
+    func mapConnectionError(_ error: Error) -> Error {
+        if error is CancellationError { return error }
+        if let failure = self.tlsRejection.failure {
+            return GatewayTLSValidationError(failure: failure, context: "connect to gateway @ \(self.url.absoluteString)")
+        }
+        if let networkError = error as? NWError, case .tls = networkError {
+            return URLError(.secureConnectionFailed, userInfo: [NSUnderlyingErrorKey: error])
+        }
+        return error
     }
 
     private func apply(_ state: NetworkChannel<WebSocket>.State) {
@@ -339,13 +272,19 @@ public final class NetworkConnectionWebSocketTask: WebSocketTasking, @unchecked 
 
     /// Sends one text or binary message.
     public func send(_ message: URLSessionWebSocketTask.Message) async throws {
-        switch message {
-        case let .data(data):
-            try await self.connection.send(data)
-        case let .string(text):
-            try await self.connection.send(text)
-        @unknown default:
-            throw TransportError.unexpectedMessage
+        do {
+            switch message {
+            case let .data(data):
+                try await self.connection.send(data)
+            case let .string(text):
+                try await self.connection.send(text)
+            @unknown default:
+                throw TransportError.unexpectedMessage
+            }
+        } catch let error as TransportError {
+            throw error
+        } catch {
+            throw self.mapConnectionError(error)
         }
     }
 
@@ -357,7 +296,7 @@ public final class NetworkConnectionWebSocketTask: WebSocketTasking, @unchecked 
                 try await connection.ping(Data())
                 pongReceiveHandler(nil)
             } catch {
-                pongReceiveHandler(error)
+                pongReceiveHandler(self.mapConnectionError(error))
             }
         }
     }
@@ -365,7 +304,12 @@ public final class NetworkConnectionWebSocketTask: WebSocketTasking, @unchecked 
     /// Receives the next text or binary message; control frames are skipped.
     public func receive() async throws -> URLSessionWebSocketTask.Message {
         while true {
-            let message = try await self.connection.receive()
+            let message: WebSocket.Message<Data>
+            do {
+                message = try await self.connection.receive()
+            } catch {
+                throw self.mapConnectionError(error)
+            }
             switch message.metadata.opcode {
             case .text:
                 self.markRunningAfterDelivery()

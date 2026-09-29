@@ -937,6 +937,13 @@ public struct GatewayTLSAuthority: Equatable, Sendable {
     }
 }
 
+/// Sessions that keep an in-memory pin, so an accepted rotation must update them as well as
+/// ``GatewayTLSStore``.
+protocol GatewayTLSPinRotationAccepting: AnyObject {
+    /// Stores the reviewed rotation and makes the session enforce the presented fingerprint.
+    func acceptPinRotation(_ request: GatewayTLSPinRotationRequest) -> Bool
+}
+
 struct GatewayTLSPinningState {
     private(set) var acceptedFingerprint: String?
     private(set) var enforcedFingerprint: String?
@@ -966,7 +973,7 @@ struct GatewayTLSPinningState {
 /// host or port are rejected with ``GatewayTLSValidationFailureKind/authorityMismatch``.
 public final class GatewayTLSPinningSession: NSObject, WebSocketSessioning, URLSessionTaskDelegate,
     GatewayTLSFailureProviding, GatewayDeviceTokenRetryTrustProviding, GatewayTLSRouteMetadataProviding,
-    @unchecked Sendable
+    GatewayTLSPinRotationAccepting, @unchecked Sendable
 {
     private let params: GatewayTLSParams
     private let allowsRedirects: Bool
@@ -1009,7 +1016,9 @@ public final class GatewayTLSPinningSession: NSObject, WebSocketSessioning, URLS
         self.allowsRedirects = allowsRedirects
         self.allowsStoredCredentials = allowsStoredCredentials
         self.clientIdentity = clientIdentity
-        self.pinningState = GatewayTLSPinningState(expectedFingerprint: params.expectedFingerprint)
+        // System-trust-only mode never pins, so an explicit fingerprint is not an enforced pin there.
+        self.pinningState = GatewayTLSPinningState(
+            expectedFingerprint: params.requiresSystemTrust ? nil : params.expectedFingerprint)
         super.init()
     }
 
@@ -1018,7 +1027,8 @@ public final class GatewayTLSPinningSession: NSObject, WebSocketSessioning, URLS
     public var allowsDeviceTokenRetryAuth: Bool {
         self.failureLock.lock()
         defer { self.failureLock.unlock() }
-        return self.pinningState.enforcedFingerprint != nil
+        // An empty explicit pin rejects every certificate; it never vouches for the endpoint.
+        return !(self.pinningState.enforcedFingerprint ?? "").isEmpty
     }
 
     /// Accepted 64-hex certificate fingerprint for the current route, if any.
@@ -1062,7 +1072,24 @@ public final class GatewayTLSPinningSession: NSObject, WebSocketSessioning, URLS
     /// Approve the certificate from an externally hosted TLS stream before it sends HTTP headers.
     /// The existing pin owner also supplies typed repair evidence and first-use persistence.
     public func validateServerTrust(_ trust: SecTrust, for url: URL) -> Bool {
-        guard let authority = GatewayTLSAuthority(url: url), authority.scheme == "wss" else { return false }
+        self.serverTrustFailure(trust, for: url) == nil
+    }
+
+    /// Runs ``validateServerTrust(_:for:)`` and returns the recorded rejection, or `nil` when the
+    /// certificate was accepted. Transports that carry the failure on their own errors use this.
+    func serverTrustFailure(_ trust: SecTrust, for url: URL) -> GatewayTLSValidationFailure? {
+        guard let authority = GatewayTLSAuthority(url: url), authority.scheme == "wss" else {
+            let failure = GatewayTLSValidationFailure(
+                kind: .authorityMismatch,
+                host: url.host ?? "",
+                storeKey: self.params.storeKey,
+                expectedFingerprint: self.currentEnforcedFingerprint(),
+                observedFingerprint: nil,
+                systemTrustOk: false,
+                port: url.port)
+            self.recordTLSFailure(failure)
+            return failure
+        }
         switch GatewayTLSServerTrust.evaluate(
             trust: trust,
             host: authority.host,
@@ -1072,11 +1099,11 @@ public final class GatewayTLSPinningSession: NSObject, WebSocketSessioning, URLS
         {
         case let .accept(fingerprint, enforcePin):
             self.recordTLSAcceptance(fingerprint, enforcePin: enforcePin)
-            return true
+            return nil
         case let .reject(failure, enforcedFingerprint):
             if let enforcedFingerprint { self.recordTLSPinExpectation(enforcedFingerprint) }
             self.recordTLSFailure(failure)
-            return false
+            return failure
         }
     }
 

@@ -149,18 +149,20 @@ struct OpenClawAppIntentsGatewayHostTests {
         await requester.respond(to: "chat.send", json: #"{"status":"started"}"#)
         let host = GatewayOpenClawIntentHost(requester: requester)
         let stream = try await host.send(prompt: "hi", sessionKey: "main", agentId: nil)
-        // Before a run id is known, alias keys match ("agent:main:main" for "main") ...
-        await host.ingest(self.chatEvent(["runId": "r9", "sessionKey": "agent:main:main", "state": "delta", "deltaText": "A"]))
-        // ... then the adopted run id decides, whatever key the gateway publishes.
+        // Upstream runs are identified by the chat.send idempotency key, whatever key the gateway publishes.
+        let runId = try #require(await requester.requests(for: "chat.send").first?.params["idempotencyKey"]?.stringValue)
+        await host.ingest(self.chatEvent(["runId": runId, "sessionKey": "agent:main:main", "state": "delta", "deltaText": "A"]))
         await host.ingest(self.chatEvent(["runId": "r8", "sessionKey": "agent:main:main", "state": "final"]))
-        await host.ingest(self.chatEvent(["runId": "r9", "sessionKey": "agent:other:x", "state": "delta", "deltaText": "B"]))
-        await host.ingest(self.chatEvent(["runId": "r9", "sessionKey": "agent:main:main", "state": "final"]))
+        await host.ingest(self.chatEvent(["runId": runId, "sessionKey": "agent:other:x", "state": "delta", "deltaText": "B"]))
+        await host.ingest(self.chatEvent(["runId": runId, "sessionKey": "agent:main:main", "state": "final"]))
         let events = try await self.collect(stream)
         #expect(events.last?.phase == .completed)
         #expect(events.last?.text == "AB")
-        #expect(events.last?.runId == "r9")
+        #expect(events.last?.runId == runId)
 
+        // A gateway whose ack names no run: the first post-ack event from exactly this session does.
         let second = try await host.send(prompt: "again", sessionKey: "main", agentId: nil)
+        await host.ingest(self.chatEvent(["runId": "r-ops", "sessionKey": "agent:ops:main", "state": "status"]))
         await host.ingest(self.chatEvent(["runId": "r10", "sessionKey": "agent:main:main", "state": "status"]))
         await host.abort(sessionKey: "main")
         #expect(await requester.requests(for: "chat.abort").last?.params["runId"]?.stringValue == "r10")

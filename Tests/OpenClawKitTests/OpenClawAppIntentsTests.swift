@@ -282,6 +282,82 @@ struct OpenClawAppIntentsEntityLinkingTests {
         #expect(await coordinator.activeSessionKey == "team")
     }
 
+    /// Relevance updater whose updates suspend until the test releases them.
+    actor SuspendingRelevance: OpenClawRelevantEntitiesUpdating {
+        private(set) var calls: [String] = []
+        private var suspended: [CheckedContinuation<Void, Never>] = []
+        private var failNextSet = false
+
+        func setNowPlayingSession(_ session: OpenClawSessionAppEntity) async throws {
+            self.calls.append("set:\(session.id)")
+            await withCheckedContinuation { self.suspended.append($0) }
+            if self.failNextSet {
+                self.failNextSet = false
+                throw CancellationError()
+            }
+        }
+
+        func clearNowPlayingSession() async throws {
+            self.calls.append("clear")
+        }
+
+        var suspendedCount: Int {
+            self.suspended.count
+        }
+
+        func resumeAll() {
+            let continuations = self.suspended
+            self.suspended.removeAll()
+            continuations.forEach { $0.resume() }
+        }
+
+        func failNextUpdate() {
+            self.failNextSet = true
+        }
+    }
+
+    @Test
+    func quickStartAndStopNeverLeavesTheStoppedSessionPublished() async throws {
+        let relevance = SuspendingRelevance()
+        let coordinator = OpenClawTalkRelevanceCoordinator(updater: relevance)
+        let started = Task { await coordinator.talkStarted(sessionKey: "main") }
+        while await relevance.suspendedCount == 0 {
+            try await Task.sleep(for: .milliseconds(2))
+        }
+        // Stop arrives while the start update is still in flight.
+        let stopped = Task { await coordinator.talkStopped() }
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(await relevance.calls == ["set:main"], "the clear waits for the in-flight set")
+        await relevance.resumeAll()
+        await started.value
+        await stopped.value
+        #expect(await relevance.calls == ["set:main", "clear"])
+        #expect(await coordinator.activeSessionKey == nil)
+    }
+
+    @Test
+    func aFailedUpdateIsRetriedForTheSameSession() async throws {
+        let relevance = SuspendingRelevance()
+        let coordinator = OpenClawTalkRelevanceCoordinator(updater: relevance)
+        await relevance.failNextUpdate()
+        let failed = Task { await coordinator.talkStarted(sessionKey: "main") }
+        while await relevance.suspendedCount == 0 {
+            try await Task.sleep(for: .milliseconds(2))
+        }
+        await relevance.resumeAll()
+        await failed.value
+        #expect(await coordinator.activeSessionKey == nil)
+
+        let retried = Task { await coordinator.talkStarted(sessionKey: "main") }
+        while await relevance.suspendedCount == 0 {
+            try await Task.sleep(for: .milliseconds(2))
+        }
+        await relevance.resumeAll()
+        await retried.value
+        #expect(await relevance.calls == ["set:main", "set:main"])
+        #expect(await coordinator.activeSessionKey == "main")
+    }
+
     @Test
     func notificationAndNowPlayingContentLinkSessionsOnOS27() {
         #if compiler(>=6.4)

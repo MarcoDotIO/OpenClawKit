@@ -27,10 +27,11 @@ public struct OpenClawSystemRunExecutableBinding: Codable, Sendable, Equatable {
 /// Re-checks an approved `system.run` immediately before the process is spawned (macOS exec hosts).
 ///
 /// Between approval and launch the approval policy or the executable can change. Right before
-/// spawning, a host calls ``verifyBeforeLaunch(executablePath:binding:policySnapshot:agentId:stateDirectoryURL:)``,
-/// which re-reads the persisted exec policy, re-resolves the executable's real path and, for
-/// writable executables, re-hashes it. Any mismatch is a `SYSTEM_RUN_DENIED` node error; the host
-/// must not launch and must not re-present the request.
+/// spawning, a host calls ``verifyBeforeLaunch(params:executablePath:binding:stateDirectoryURL:)``,
+/// which reads the delayed-approval policy snapshot from the gateway-forwarded plan, re-reads the
+/// persisted exec policy, re-resolves the executable's real path and, for writable executables,
+/// re-hashes it. Any mismatch is a `SYSTEM_RUN_DENIED` node error; the host must not launch and must
+/// not re-present the request.
 public enum OpenClawSystemRunLaunchGuard {
     /// Environment keys a launch-directory `.env` must never inject (upstream: Homebrew's curl/git
     /// overrides let a checkout redirect package-manager downloads).
@@ -53,11 +54,58 @@ public enum OpenClawSystemRunLaunchGuard {
         return OpenClawSystemRunExecutableBinding(realPath: realPath, sha256: digest)
     }
 
-    /// Verifies an approved run right before launch.
+    /// Verifies a `system.run` right before launch, failing closed like upstream.
+    ///
+    /// A malformed ``OpenClawSystemRunParams/systemRunPlan`` is `INVALID_REQUEST`, and a run that
+    /// carries delayed approval (``OpenClawSystemRunParams/carriesDelayedApproval``) without a
+    /// prepared ``OpenClawSystemRunApprovalPlan/policySnapshot`` is `INVALID_REQUEST` ("delayed
+    /// approval requires a prepared policy snapshot"). Otherwise the snapshot is compared with the
+    /// persisted policy and the executable binding is re-checked.
+    /// - Parameters:
+    ///   - params: The decoded `system.run` params.
+    ///   - executablePath: Executable path about to be spawned.
+    ///   - binding: Binding captured at approval time, or `nil` when the approval did not bind one.
+    ///   - stateDirectoryURL: State directory of the exec-approvals store.
+    /// - Returns: `nil` when the launch may proceed, otherwise the node error to return.
+    public static func verifyBeforeLaunch(
+        params: OpenClawSystemRunParams,
+        executablePath: String,
+        binding: OpenClawSystemRunExecutableBinding?,
+        stateDirectoryURL: URL?) -> OpenClawNodeError?
+    {
+        let plan: OpenClawSystemRunApprovalPlan?
+        do {
+            plan = try params.approvalPlan()
+        } catch let error as OpenClawNodeError {
+            return error
+        } catch {
+            return OpenClawNodeError(code: .invalidRequest, message: "INVALID_REQUEST: systemRunPlan invalid")
+        }
+        var snapshot: OpenClawSystemRunApprovalPolicySnapshot?
+        if params.carriesDelayedApproval {
+            guard let planSnapshot = plan?.policySnapshot else {
+                return OpenClawNodeError(
+                    code: .invalidRequest,
+                    message: "INVALID_REQUEST: delayed approval requires a prepared policy snapshot")
+            }
+            snapshot = planSnapshot
+        }
+        return self.verifyBeforeLaunch(
+            executablePath: executablePath,
+            binding: binding,
+            policySnapshot: snapshot,
+            agentId: params.agentId,
+            stateDirectoryURL: stateDirectoryURL)
+    }
+
+    /// Verifies an approved run right before launch with an explicit snapshot. Prefer
+    /// ``verifyBeforeLaunch(params:executablePath:binding:stateDirectoryURL:)``, which reads the
+    /// snapshot from the forwarded plan and fails closed when a delayed approval lacks one; this
+    /// overload skips the policy re-check when `policySnapshot` is `nil`.
     /// - Parameters:
     ///   - executablePath: Executable path about to be spawned.
     ///   - binding: Binding captured at approval time, or `nil` when the approval did not bind one.
-    ///   - policySnapshot: Policy the approval was granted under (``OpenClawSystemRunParams/policySnapshot``).
+    ///   - policySnapshot: Policy the approval was granted under (``OpenClawSystemRunApprovalPlan/policySnapshot``).
     ///   - agentId: Agent whose policy applies.
     ///   - stateDirectoryURL: State directory of the exec-approvals store (required with `policySnapshot`).
     /// - Returns: `nil` when the launch may proceed, otherwise a `SYSTEM_RUN_DENIED` error.

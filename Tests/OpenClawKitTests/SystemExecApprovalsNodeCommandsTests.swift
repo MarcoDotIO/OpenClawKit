@@ -140,15 +140,63 @@ struct SystemExecApprovalsNodeCommandsTests {
     }
 
     @Test
-    func systemRunParamsCarryThePolicySnapshot() throws {
-        let policy = OpenClawSystemRunApprovalPolicySnapshot(
+    func systemRunParamsReadThePolicySnapshotFromTheForwardedPlan() throws {
+        // Upstream gateway shape: the snapshot lives only inside systemRunPlan (pickSystemRunParams).
+        let json = """
+        {"command":["/bin/ls","-la"],"rawCommand":"/bin/ls -la","approved":true,"approvalDecision":"allow-once",
+         "agentId":"main","systemRunPlan":{"argv":["/bin/ls","-la"],"cwd":null,"commandText":" /bin/ls -la ",
+         "agentId":"main","sessionKey":"agent:main:main","policySnapshot":{"security":"allowlist","ask":"on-miss",
+         "askFallback":"deny","autoAllowSkills":false,"allowlistRules":[{"pattern":"/bin/ls"}]}}}
+        """
+        let params = try JSONDecoder().decode(OpenClawSystemRunParams.self, from: Data(json.utf8))
+        #expect(params.carriesDelayedApproval)
+        let plan = try #require(try params.approvalPlan())
+        #expect(plan.argv == ["/bin/ls", "-la"])
+        #expect(plan.commandText == "/bin/ls -la")
+        #expect(plan.cwd == nil)
+        #expect(plan.policySnapshot == OpenClawSystemRunApprovalPolicySnapshot(
             security: .allowlist, ask: .onMiss, askFallback: .deny, autoAllowSkills: false,
-            allowlistRules: [.init(pattern: "/bin/ls")])
-        let params = OpenClawSystemRunParams(command: ["/bin/ls"], approved: true, policySnapshot: policy)
-        let data = try JSONEncoder().encode(params)
+            allowlistRules: [.init(pattern: "/bin/ls")]))
+
+        // A present but malformed snapshot invalidates the plan instead of being dropped.
+        let malformed = OpenClawSystemRunParams(
+            command: ["/bin/ls"],
+            approved: true,
+            systemRunPlan: AnyCodable([
+                "argv": AnyCodable([AnyCodable("/bin/ls")]),
+                "commandText": AnyCodable("/bin/ls"),
+                "policySnapshot": AnyCodable(["security": AnyCodable("everything")]),
+            ]))
+        #expect(throws: OpenClawNodeError.self) { try malformed.approvalPlan() }
+        #expect(try OpenClawSystemRunParams(command: ["/bin/ls"]).approvalPlan() == nil)
+        #expect(!OpenClawSystemRunParams(command: ["/bin/ls"], approvalDecision: "deny").carriesDelayedApproval)
+        #expect(OpenClawSystemRunParams(command: ["/bin/ls"], approvalSource: "auto-review").carriesDelayedApproval)
+        #expect(!OpenClawSystemRunParams(command: ["/bin/ls"], approvalSource: "ask-fallback").carriesDelayedApproval)
+    }
+
+    @Test
+    func prepareResultEmbedsThePolicySnapshotInThePlan() throws {
+        let document = ExecApprovalsDocument(
+            version: 1,
+            defaults: ExecApprovalsDefaultsDocument(security: .allowlist, ask: .always, askFallback: .deny),
+            agents: ["ops": ExecApprovalsAgentDocument(allowlist: [ExecApprovalsAllowlistEntry(pattern: "/usr/bin/git")])])
+        let result = OpenClawSystemRunPrepareResult(
+            plan: OpenClawSystemRunApprovalPlan(argv: ["/usr/bin/git", "status"], commandText: "git status", agentId: "ops"),
+            document: document)
+        let expected = OpenClawSystemRunApprovalPolicySnapshot(document: document, agentId: "ops")
+        #expect(result.plan.policySnapshot == expected)
+        #expect(result.execPolicy == .init(security: .allowlist, ask: .always))
+
+        let data = try JSONEncoder().encode(result)
         let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
-        #expect((object["policySnapshot"] as? [String: Any])?["security"] as? String == "allowlist")
-        #expect(try JSONDecoder().decode(OpenClawSystemRunParams.self, from: data).policySnapshot == policy)
+        let plan = try #require(object["plan"] as? [String: Any])
+        #expect((plan["policySnapshot"] as? [String: Any])?["security"] as? String == "allowlist")
+        #expect(plan["cwd"] is NSNull, "upstream plans carry explicit nulls")
+        #expect((object["allowAlwaysCoverage"] as? [String: Any])?["complete"] as? Bool == false)
+
+        // What the gateway forwards back decodes to the same plan.
+        let forwarded = try JSONDecoder().decode(AnyCodable.self, from: JSONSerialization.data(withJSONObject: plan))
+        #expect(try OpenClawSystemRunApprovalPlan(wireValue: forwarded) == result.plan)
     }
 
     #if os(macOS)
@@ -195,6 +243,38 @@ struct SystemExecApprovalsNodeCommandsTests {
             stateDirectoryURL: directory)?.message == "SYSTEM_RUN_DENIED: exec approvals changed before execution")
         #expect(OpenClawSystemRunLaunchGuard.verifyBeforeLaunch(
             executablePath: "/bin/ls", binding: nil, policySnapshot: policy)?.code == .systemRunDenied)
+
+        // The params overload reads the forwarded plan and fails closed without a snapshot.
+        let approvedWithoutSnapshot = OpenClawSystemRunParams(
+            command: ["/bin/ls"],
+            agentId: "main",
+            approved: true,
+            systemRunPlan: AnyCodable([
+                "argv": AnyCodable([AnyCodable("/bin/ls")]),
+                "commandText": AnyCodable("/bin/ls"),
+            ]))
+        let missing = OpenClawSystemRunLaunchGuard.verifyBeforeLaunch(
+            params: approvedWithoutSnapshot, executablePath: "/bin/ls", binding: nil, stateDirectoryURL: directory)
+        #expect(missing?.code == .invalidRequest)
+        #expect(missing?.message == "INVALID_REQUEST: delayed approval requires a prepared policy snapshot")
+        var noPlan = approvedWithoutSnapshot
+        noPlan.systemRunPlan = nil
+        #expect(OpenClawSystemRunLaunchGuard.verifyBeforeLaunch(
+            params: noPlan, executablePath: "/bin/ls", binding: nil, stateDirectoryURL: directory)?.code == .invalidRequest)
+
+        let planData = try JSONEncoder().encode(OpenClawSystemRunApprovalPlan(
+            argv: ["/bin/ls"], commandText: "/bin/ls", agentId: "main", policySnapshot: policy))
+        var approvedWithStaleSnapshot = approvedWithoutSnapshot
+        approvedWithStaleSnapshot.systemRunPlan = try JSONDecoder().decode(AnyCodable.self, from: planData)
+        let revoked = OpenClawSystemRunLaunchGuard.verifyBeforeLaunch(
+            params: approvedWithStaleSnapshot, executablePath: "/bin/ls", binding: nil, stateDirectoryURL: directory)
+        #expect(revoked?.message == "SYSTEM_RUN_DENIED: exec approvals changed before execution")
+        // Without delayed authority the run is policy-evaluated normally and needs no snapshot.
+        #expect(OpenClawSystemRunLaunchGuard.verifyBeforeLaunch(
+            params: OpenClawSystemRunParams(command: ["/bin/ls"]),
+            executablePath: "/bin/ls",
+            binding: nil,
+            stateDirectoryURL: directory) == nil)
 
         #expect(OpenClawSystemRunLaunchGuard.sanitizedLaunchEnvironment([
             "PATH": "/usr/bin", "HOMEBREW_CURL_PATH": "/tmp/curl", "HOMEBREW_GIT_PATH": "/tmp/git",

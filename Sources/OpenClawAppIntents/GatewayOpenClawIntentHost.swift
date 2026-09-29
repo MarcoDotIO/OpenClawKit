@@ -6,7 +6,9 @@ import OpenClawKit
 /// Uses `sessions.list`, `agents.list`, `chat.send` and `chat.abort`. Run progress comes from the
 /// same `chat`/`agent` push events the chat UI consumes, so forward the channel's pushes with
 /// ``ingest(_:)-(GatewayPush)`` (for example from `GatewayChannelActor`'s `pushHandler`) or hand an
-/// event stream to ``consume(_:)``.
+/// event stream to ``consume(_:)``. Events are matched to an intent's run by run id (the `chat.send`
+/// idempotency key, which upstream uses as the run id, or the id the ack names), never by a shared
+/// session-key suffix, so another agent's run cannot complete or stream into the intent.
 ///
 /// `chat.abort` runs inside a cancellation shield so an intent's cancel handler still reaches the
 /// gateway after the calling task was cancelled.
@@ -46,13 +48,30 @@ public actor GatewayOpenClawIntentHost: OpenClawIntentHost {
         }
     }
 
+    /// One intent's run. Upstream uses the `chat.send` idempotency key as the run id, so events are
+    /// matched by run id from the first byte; session keys never decide which run an event belongs to.
     private struct RunWatcher {
         let sessionKey: String
-        var runId: String?
+        let agentId: String?
+        /// Run id events must carry: the idempotency key until the `chat.send` ack names the run.
+        var runId: String
+        /// Whether ``runId`` is confirmed (acked, adopted, or seen on an event) and may be reported.
+        var runIdConfirmed = false
+        /// Whether the `chat.send` ack arrived.
+        var acknowledged = false
+        /// Set when the ack carried no run id (a gateway that ignores the idempotency key): the first
+        /// post-ack event from exactly this session names the run.
+        var adoptsRunFromEvents = false
+        /// Chat events from a matching session that arrived before the ack with another run id; only
+        /// those whose run id equals the acked run id are replayed.
+        var pendingEvents: [[String: AnyCodable]] = []
         var text: String
         let progress: OpenClawRunProgress
         let continuation: AsyncThrowingStream<OpenClawIntentRunEvent, any Error>.Continuation
     }
+
+    /// Bound on buffered pre-ack events per run.
+    private static let maxPendingEvents = 256
 
     private let requester: any OpenClawIntentGatewayRequesting
     /// Active configuration.
@@ -170,12 +189,17 @@ public actor GatewayOpenClawIntentHost: OpenClawIntentHost {
         let (stream, continuation) = AsyncThrowingStream<OpenClawIntentRunEvent, any Error>.makeStream()
         let watcherID = UUID()
         let progress = OpenClawRunProgress()
+        let idempotencyKey = UUID().uuidString
+        let requestedAgentId = Self.normalized(agentId)
         self.watchers[watcherID] = RunWatcher(
             sessionKey: key,
-            runId: nil,
+            agentId: requestedAgentId,
+            runId: idempotencyKey,
             text: "",
             progress: progress,
             continuation: continuation)
+        // Upstream registers the run under the idempotency key, so an abort before the ack targets it.
+        self.activeRunBySession[key] = idempotencyKey
         continuation.onTermination = { [weak self] _ in
             Task { await self?.dropWatcher(watcherID) }
         }
@@ -184,10 +208,10 @@ public actor GatewayOpenClawIntentHost: OpenClawIntentHost {
         var params: [String: AnyCodable] = [
             "sessionKey": AnyCodable(key),
             "message": AnyCodable(message),
-            "idempotencyKey": AnyCodable(UUID().uuidString),
+            "idempotencyKey": AnyCodable(idempotencyKey),
         ]
-        if let agentId = Self.normalized(agentId) {
-            params["agentId"] = AnyCodable(agentId)
+        if let requestedAgentId {
+            params["agentId"] = AnyCodable(requestedAgentId)
         }
         if let thinking = Self.normalized(self.configuration.thinking) {
             params["thinking"] = AnyCodable(thinking)
@@ -205,20 +229,7 @@ public actor GatewayOpenClawIntentHost: OpenClawIntentHost {
                 method: "chat.send",
                 params: params,
                 timeoutMs: self.configuration.requestTimeoutMs)
-            let runId = Self.decodeObject(data)?["runId"]?.stringValue
-            if var watcher = self.watchers[watcherID] {
-                if watcher.runId == nil {
-                    watcher.runId = runId
-                }
-                self.watchers[watcherID] = watcher
-                if let runId = watcher.runId {
-                    self.activeRunBySession[key] = runId
-                }
-                if !watcher.progress.isFinished {
-                    watcher.progress.advance(to: .running)
-                    self.emit(watcherID, phase: .running)
-                }
-            }
+            self.acknowledge(watcherID, runId: Self.normalized(Self.decodeObject(data)?["runId"]?.stringValue))
         } catch {
             self.finish(watcherID, throwing: error, runEnded: true)
             throw error
@@ -251,55 +262,111 @@ public actor GatewayOpenClawIntentHost: OpenClawIntentHost {
 
     // MARK: - Event handling
 
+    /// Applies the `chat.send` ack: the ack's run id (upstream: the idempotency key) becomes
+    /// authoritative, and buffered pre-ack events of exactly that run are replayed.
+    private func acknowledge(_ id: UUID, runId: String?) {
+        guard var watcher = self.watchers[id] else { return }
+        watcher.acknowledged = true
+        if let runId {
+            if self.activeRunBySession[watcher.sessionKey] == watcher.runId {
+                self.activeRunBySession[watcher.sessionKey] = runId
+            }
+            watcher.runId = runId
+            watcher.runIdConfirmed = true
+        } else if !watcher.runIdConfirmed {
+            // The gateway named no run and none of its events carried our idempotency key.
+            watcher.adoptsRunFromEvents = true
+            if self.activeRunBySession[watcher.sessionKey] == watcher.runId {
+                self.activeRunBySession[watcher.sessionKey] = nil
+            }
+        }
+        let pending = watcher.pendingEvents
+        watcher.pendingEvents = []
+        self.watchers[id] = watcher
+        if !watcher.progress.isFinished {
+            watcher.progress.advance(to: .running)
+            self.emit(id, phase: .running)
+        }
+        for payload in pending where payload["runId"]?.stringValue == watcher.runId {
+            guard self.watchers[id] != nil else { break }
+            self.applyChatEvent(payload, to: id)
+        }
+    }
+
     private func handleChatEvent(_ payload: [String: AnyCodable]) {
         guard let sessionKey = payload["sessionKey"]?.stringValue else { return }
         let runId = payload["runId"]?.stringValue
-        let state = payload["state"]?.stringValue ?? ""
-        for id in self.matchingWatchers(sessionKey: sessionKey, runId: runId) {
+        for id in Array(self.watchers.keys) {
             guard var watcher = self.watchers[id] else { continue }
-            if watcher.runId == nil, let runId {
+            if let runId, runId == watcher.runId {
+                self.applyChatEvent(payload, to: id)
+                continue
+            }
+            guard Self.sessionKeysMatch(watcher.sessionKey, sessionKey, agentId: watcher.agentId) else { continue }
+            if !watcher.acknowledged {
+                // Never adopt a run id before the ack: another agent's run may share the key.
+                if watcher.pendingEvents.count < Self.maxPendingEvents {
+                    watcher.pendingEvents.append(payload)
+                    self.watchers[id] = watcher
+                }
+            } else if watcher.adoptsRunFromEvents, let runId {
                 watcher.runId = runId
+                watcher.runIdConfirmed = true
+                watcher.adoptsRunFromEvents = false
+                self.watchers[id] = watcher
                 self.activeRunBySession[watcher.sessionKey] = runId
+                self.applyChatEvent(payload, to: id)
             }
-            switch state {
-            case "status":
-                self.watchers[id] = watcher
-                watcher.progress.advance(to: .running)
-                self.emit(id, phase: .running)
-            case "delta":
-                let delta = payload["deltaText"]?.stringValue ?? ""
-                if payload["replace"]?.boolValue == true {
-                    watcher.text = delta
-                } else if !delta.isEmpty {
-                    watcher.text += delta
-                } else if let text = OpenClawIntentMessageText.extract(from: payload["message"]) {
-                    watcher.text = text
-                }
-                self.watchers[id] = watcher
-                watcher.progress.advance(to: .streaming)
-                self.emit(id, phase: .streaming)
-            case "final":
-                if let text = OpenClawIntentMessageText.extract(from: payload["message"]), !text.isEmpty {
-                    watcher.text = text
-                }
-                self.watchers[id] = watcher
-                watcher.progress.advance(to: .completed)
-                self.emit(id, phase: .completed)
-                self.finish(id, throwing: nil, runEnded: true)
-            case "aborted":
-                self.watchers[id] = watcher
-                watcher.progress.advance(to: .aborted)
-                self.emit(id, phase: .aborted)
-                self.finish(id, throwing: nil, runEnded: true)
-            case "error":
-                self.watchers[id] = watcher
-                watcher.progress.advance(to: .failed)
-                self.emit(id, phase: .failed)
-                let message = payload["errorMessage"]?.stringValue ?? "The OpenClaw run failed."
-                self.finish(id, throwing: OpenClawIntentError.runFailed(message), runEnded: true)
-            default:
-                self.watchers[id] = watcher
+        }
+    }
+
+    private func applyChatEvent(_ payload: [String: AnyCodable], to id: UUID) {
+        guard var watcher = self.watchers[id] else { return }
+        if !watcher.runIdConfirmed {
+            // An event carrying our run id confirms it; nothing else may be adopted afterwards.
+            watcher.runIdConfirmed = true
+            watcher.adoptsRunFromEvents = false
+            self.activeRunBySession[watcher.sessionKey] = watcher.runId
+        }
+        let state = payload["state"]?.stringValue ?? ""
+        switch state {
+        case "status":
+            self.watchers[id] = watcher
+            watcher.progress.advance(to: .running)
+            self.emit(id, phase: .running)
+        case "delta":
+            let delta = payload["deltaText"]?.stringValue ?? ""
+            if payload["replace"]?.boolValue == true {
+                watcher.text = delta
+            } else if !delta.isEmpty {
+                watcher.text += delta
+            } else if let text = OpenClawIntentMessageText.extract(from: payload["message"]) {
+                watcher.text = text
             }
+            self.watchers[id] = watcher
+            watcher.progress.advance(to: .streaming)
+            self.emit(id, phase: .streaming)
+        case "final":
+            if let text = OpenClawIntentMessageText.extract(from: payload["message"]), !text.isEmpty {
+                watcher.text = text
+            }
+            self.watchers[id] = watcher
+            watcher.progress.advance(to: .completed)
+            self.emit(id, phase: .completed)
+            self.finish(id, throwing: nil, runEnded: true)
+        case "aborted":
+            self.watchers[id] = watcher
+            watcher.progress.advance(to: .aborted)
+            self.emit(id, phase: .aborted)
+            self.finish(id, throwing: nil, runEnded: true)
+        case "error":
+            self.watchers[id] = watcher
+            watcher.progress.advance(to: .failed)
+            self.emit(id, phase: .failed)
+            let message = payload["errorMessage"]?.stringValue ?? "The OpenClaw run failed."
+            self.finish(id, throwing: OpenClawIntentError.runFailed(message), runEnded: true)
+        default:
+            self.watchers[id] = watcher
         }
     }
 
@@ -325,24 +392,17 @@ public actor GatewayOpenClawIntentHost: OpenClawIntentHost {
         }
     }
 
-    /// Watchers an event belongs to. Once a run id is known it alone decides (the gateway may
-    /// publish canonical keys such as `agent:main:main` for an alias like `main`, and events of our
-    /// own run must never be dropped on a key mismatch); before that, keys match exactly or as an
-    /// alias suffix.
-    private func matchingWatchers(sessionKey: String, runId: String?) -> [UUID] {
-        self.watchers.compactMap { id, watcher in
-            if let expected = watcher.runId {
-                return runId == expected ? id : nil
-            }
-            return Self.sessionKeysMatch(watcher.sessionKey, sessionKey) ? id : nil
-        }
-    }
-
-    static func sessionKeysMatch(_ lhs: String, _ rhs: String) -> Bool {
-        let left = lhs.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let right = rhs.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    /// Whether an event's session key is exactly our session: the same key, or its canonical
+    /// `agent:<agentId>:<key>` form for the requested agent (upstream default agent `main`). Another
+    /// agent's session that merely shares the suffix (for example `agent:ops:main`) never matches.
+    static func sessionKeysMatch(_ watcherKey: String, _ eventKey: String, agentId: String?) -> Bool {
+        let left = watcherKey.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let right = eventKey.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !left.isEmpty, !right.isEmpty else { return false }
-        return left == right || left.hasSuffix(":" + right) || right.hasSuffix(":" + left)
+        if left == right { return true }
+        let agent = agentId?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        let prefix = "agent:\(agent.isEmpty ? "main" : agent):"
+        return right == prefix + left || left == prefix + right
     }
 
     private func emit(_ id: UUID, phase: OpenClawRunPhase) {
@@ -351,7 +411,7 @@ public actor GatewayOpenClawIntentHost: OpenClawIntentHost {
             phase: phase,
             fractionCompleted: watcher.progress.fractionCompleted,
             text: watcher.text.isEmpty ? nil : watcher.text,
-            runId: watcher.runId,
+            runId: watcher.runIdConfirmed ? watcher.runId : nil,
             sessionKey: watcher.sessionKey))
     }
 
@@ -361,7 +421,7 @@ public actor GatewayOpenClawIntentHost: OpenClawIntentHost {
     private func finish(_ id: UUID, throwing error: (any Error)?, runEnded: Bool = false) {
         guard let watcher = self.watchers.removeValue(forKey: id) else { return }
         self.timeoutTasks.removeValue(forKey: id)?.cancel()
-        if runEnded, let runId = watcher.runId, self.activeRunBySession[watcher.sessionKey] == runId {
+        if runEnded, self.activeRunBySession[watcher.sessionKey] == watcher.runId {
             self.activeRunBySession[watcher.sessionKey] = nil
         }
         if let error {
@@ -377,7 +437,9 @@ public actor GatewayOpenClawIntentHost: OpenClawIntentHost {
 
     private func scheduleTimeout(for id: UUID) {
         guard self.watchers[id] != nil else { return }
-        let nanoseconds = UInt64(self.configuration.runTimeout * 1_000_000_000)
+        // Saturate: a huge or infinite run timeout must not trap converting to UInt64.
+        let requested = self.configuration.runTimeout * 1_000_000_000
+        let nanoseconds = requested >= Double(UInt64.max) ? UInt64.max : UInt64(max(0, requested))
         self.timeoutTasks[id] = Task { [weak self] in
             try? await Task.sleep(nanoseconds: nanoseconds)
             guard !Task.isCancelled else { return }

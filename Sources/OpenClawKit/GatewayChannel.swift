@@ -31,9 +31,19 @@ private struct GatewayStartupUnavailableConnectError: Error {
 /// socket can never tear down (or leak state into) its replacement. All connect callers share one
 /// in-flight attempt; handshake failures back off on the monotonic clock (500 ms doubling to 30 s).
 public actor GatewayChannelActor {
-    /// Resolves a request deadline: `0` means no client deadline, `nil` means `defaultMs`.
+    /// Resolves a request deadline: `nil` means `defaultMs`; `0`, negative and non-finite values
+    /// (NaN, infinity) mean no client deadline.
     nonisolated static func resolveRequestTimeoutMs(_ timeoutMs: Double?, defaultMs: Double) -> Double? {
-        timeoutMs == 0 ? nil : (timeoutMs ?? defaultMs)
+        guard let timeoutMs else { return defaultMs }
+        return timeoutMs.isFinite && timeoutMs > 0 ? timeoutMs : nil
+    }
+
+    /// Saturating milliseconds-to-nanoseconds conversion for `Task.sleep`: `0` for NaN and
+    /// non-positive values, `UInt64.max` once the product no longer fits (never traps).
+    nonisolated static func sleepNanoseconds(milliseconds: Double) -> UInt64 {
+        guard milliseconds > 0 else { return 0 }
+        let nanoseconds = milliseconds * 1_000_000
+        return nanoseconds >= Double(UInt64.max) ? UInt64.max : UInt64(nanoseconds)
     }
 
     static let maxStartupUnavailableRetries = 20
@@ -367,15 +377,15 @@ public actor GatewayChannelActor {
 
     /// Accepts the pending pin rotation after the user confirmed it, then reconnects.
     ///
-    /// With a ``GatewayTLSPinningSession`` the session's in-memory pin is updated too
-    /// (``GatewayTLSPinningSession/acceptPinRotation(_:)``); other sessions only update
-    /// ``GatewayTLSStore``. Never call this without explicit user confirmation.
+    /// With a ``GatewayTLSPinningSession`` or `NetworkConnectionWebSocketSession` the session's
+    /// in-memory pin is updated too (``GatewayTLSPinningSession/acceptPinRotation(_:)``); other
+    /// sessions only update ``GatewayTLSStore``. Never call this without explicit user confirmation.
     /// - Parameter request: The request from ``pendingTLSPinRotationRequest()``.
     /// - Returns: `false` when `request` is not the pending one or the stored pin changed meanwhile.
     @discardableResult
     public func acceptTLSPinRotation(_ request: GatewayTLSPinRotationRequest) -> Bool {
         guard self.reconnectPausedForTLSFailure, self.pendingTLSPinRotation == request else { return false }
-        let accepted = if let pinningSession = self.session as? GatewayTLSPinningSession {
+        let accepted = if let pinningSession = self.session as? GatewayTLSPinRotationAccepting {
             pinningSession.acceptPinRotation(request)
         } else {
             GatewayTLSStore.acceptRotation(request)
@@ -664,6 +674,10 @@ public actor GatewayChannelActor {
         self.connected = true
         self.automaticReconnectRequested = false
         self.reconnectPausedForAuthFailure = false
+        // The TLS layer accepted the current certificate, so an earlier pin mismatch is resolved for
+        // this route: automatic reconnects resume and its rotation request must not stay acceptable.
+        self.reconnectPausedForTLSFailure = false
+        self.pendingTLSPinRotation = nil
         self.backoffMs = 500
         self.connectFailureBackoff.reset()
         self.lastSeq = nil
@@ -759,7 +773,7 @@ public actor GatewayChannelActor {
     private func keepaliveLoop(connectionGeneration: UInt64) async {
         while self.shouldReconnect {
             guard await self.sleepUnlessCancelled(
-                nanoseconds: UInt64(self.keepaliveIntervalSeconds * 1_000_000_000))
+                nanoseconds: Self.sleepNanoseconds(milliseconds: self.keepaliveIntervalSeconds * 1000))
             else { return }
             guard self.shouldReconnect else { return }
             guard self.isConnected(connectionGeneration: connectionGeneration) else { return }
@@ -807,13 +821,22 @@ public actor GatewayChannelActor {
         let identity = try await Self.loadDeviceIdentityForConnect(
             includeDeviceIdentity: includeDeviceIdentity,
             profile: deviceIdentityProfile)
+        // Stored device auth lives in the SQLite state store (BEGIN IMMEDIATE, 30 s busy timeout):
+        // read it on the native-state queue so a contended database never blocks this actor.
+        var storedEntry: DeviceAuthEntry?
+        if includeDeviceIdentity, options.allowStoredDeviceAuth, let deviceId = identity?.deviceId {
+            storedEntry = await DeviceAuthStore.loadTokenInBackground(
+                deviceId: deviceId,
+                role: role,
+                gatewayID: deviceAuthGatewayID,
+                profile: deviceIdentityProfile)
+        }
+        try self.ensureCurrentConnectAttempt(attemptID, task: task)
+        try self.requireCurrentConnection(connectionGeneration)
         let selectedAuth = self.selectConnectAuth(
             role: role,
             includeDeviceIdentity: includeDeviceIdentity,
-            allowStoredDeviceAuth: options.allowStoredDeviceAuth,
-            deviceAuthGatewayID: deviceAuthGatewayID,
-            deviceIdentityProfile: deviceIdentityProfile,
-            deviceId: identity?.deviceId,
+            storedEntry: storedEntry,
             requestedScopes: requestedScopes)
         self.gatewayStateReporter.context.authSource = selectedAuth.authSource.rawValue
         let scopes = self.resolveConnectScopes(
@@ -936,7 +959,7 @@ public actor GatewayChannelActor {
             {
                 // The gateway rejected the stored device token itself; clear the stale local copy
                 // so reconnects fall back to explicit credentials or pairing.
-                DeviceAuthStore.clearToken(
+                await DeviceAuthStore.clearTokenInBackground(
                     deviceId: identity.deviceId,
                     role: role,
                     gatewayID: deviceAuthGatewayID,
@@ -994,27 +1017,17 @@ extension GatewayChannelActor {
         }
     }
 
+    /// Chooses connect credentials; `storedEntry` is the stored device token for this role (read
+    /// off-actor by the caller), or `nil` when stored device auth does not apply.
     private func selectConnectAuth(
         role: String,
         includeDeviceIdentity: Bool,
-        allowStoredDeviceAuth: Bool,
-        deviceAuthGatewayID: String?,
-        deviceIdentityProfile: GatewayDeviceIdentityProfile,
-        deviceId: String?,
+        storedEntry: DeviceAuthEntry?,
         requestedScopes: [String]) -> SelectedConnectAuth
     {
         let explicitToken = self.token.gatewayTrimmedNonEmpty
         let explicitBootstrapToken = self.bootstrapToken.gatewayTrimmedNonEmpty
         let explicitPassword = self.password.gatewayTrimmedNonEmpty
-        let storedEntry: DeviceAuthEntry? = if includeDeviceIdentity, allowStoredDeviceAuth, let deviceId {
-            DeviceAuthStore.loadToken(
-                deviceId: deviceId,
-                role: role,
-                gatewayID: deviceAuthGatewayID,
-                profile: deviceIdentityProfile)
-        } else {
-            nil
-        }
         let storedToken = storedEntry?.token
         let storedScopes = storedEntry?.scopes ?? []
         let requestedScopesExceedStoredToken = Self.requestedScopesExceedStoredToken(
@@ -1207,55 +1220,53 @@ extension GatewayChannelActor {
         return requestedScopes
     }
 
-    @discardableResult
-    private func persistBootstrapHandoffToken(
-        deviceId: String,
-        role: String,
-        token: String,
-        scopes: [String],
-        deviceAuthGatewayID: String?,
-        deviceIdentityProfile: GatewayDeviceIdentityProfile) -> Bool
-    {
-        guard let filteredScopes = Self.filteredBootstrapHandoffScopes(role: role, scopes: scopes) else {
-            return false
-        }
-        return DeviceAuthStore.storeTokenResult(
-            deviceId: deviceId,
-            role: role,
-            token: token,
-            scopes: filteredScopes,
-            gatewayID: deviceAuthGatewayID,
-            profile: deviceIdentityProfile).persisted
+    /// A device token hello-ok issued, with the scopes to persist.
+    struct DeviceTokenWrite: Sendable {
+        let role: String
+        let token: String
+        let scopes: [String]
     }
 
-    private func persistIssuedDeviceToken(
+    /// Which issued token to persist: bootstrap-authenticated sockets only persist handoff tokens on
+    /// transports that allow it, with handoff-filtered scopes.
+    nonisolated static func issuedDeviceTokenWrite(
         authSource: GatewayAuthSource,
-        deviceId: String,
+        persistBootstrapHandoff: Bool,
         role: String,
         token: String,
-        scopes: [String],
-        deviceAuthGatewayID: String?,
-        deviceIdentityProfile: GatewayDeviceIdentityProfile) -> Bool
+        scopes: [String]) -> DeviceTokenWrite?
     {
-        if authSource == .bootstrapToken {
-            guard self.shouldPersistBootstrapHandoffTokens() else {
-                return false
-            }
-            return self.persistBootstrapHandoffToken(
-                deviceId: deviceId,
-                role: role,
-                token: token,
-                scopes: scopes,
-                deviceAuthGatewayID: deviceAuthGatewayID,
-                deviceIdentityProfile: deviceIdentityProfile)
+        guard authSource == .bootstrapToken else {
+            return DeviceTokenWrite(role: role, token: token, scopes: scopes)
         }
-        return DeviceAuthStore.storeTokenResult(
-            deviceId: deviceId,
-            role: role,
-            token: token,
-            scopes: scopes,
-            gatewayID: deviceAuthGatewayID,
-            profile: deviceIdentityProfile).persisted
+        guard persistBootstrapHandoff,
+              let filteredScopes = Self.filteredBootstrapHandoffScopes(role: role, scopes: scopes)
+        else { return nil }
+        return DeviceTokenWrite(role: role, token: token, scopes: filteredScopes)
+    }
+
+    /// Persists every issued token in one native-state-queue hop (one hop instead of a store open
+    /// and a full-fsync commit per token on this actor).
+    /// - Returns: The roles whose token reached disk.
+    nonisolated static func persistDeviceTokens(
+        _ writes: [DeviceTokenWrite],
+        deviceId: String,
+        gatewayID: String?,
+        profile: GatewayDeviceIdentityProfile) async -> Set<String>
+    {
+        guard !writes.isEmpty else { return [] }
+        let persisted = try? await DeviceIdentityPaths.runOnNativeStateQueue {
+            writes.filter { write in
+                DeviceAuthStore.storeTokenResult(
+                    deviceId: deviceId,
+                    role: write.role,
+                    token: write.token,
+                    scopes: write.scopes,
+                    gatewayID: gatewayID,
+                    profile: profile).persisted
+            }.map(\.role)
+        }
+        return Set(persisted ?? [])
     }
 
     private func handleConnectResponse(
@@ -1297,7 +1308,11 @@ extension GatewayChannelActor {
         self.lastHello = (connectionGeneration, ok)
         let auth = ok.auth
         var receivedRoles = Set<String>()
-        var persistedRoles = Set<String>()
+        // Capture actor state before the persistence hop, so a reentrant disconnect cannot change it.
+        let authSource = self.lastAuthSource
+        let persistBootstrapHandoff = self.shouldPersistBootstrapHandoffTokens()
+        let persists = identity != nil && options.allowsDeviceAuthPersistence
+        var writes: [DeviceTokenWrite] = []
         if let deviceToken = auth["deviceToken"]?.stringValue {
             let authRole = auth["role"]?.stringValue ?? role
             receivedRoles.insert(authRole)
@@ -1305,16 +1320,14 @@ extension GatewayChannelActor {
             let sameStoredToken = authRole == role && deviceToken == selectedAuth.storedToken
             // Hello scopes describe this socket. Reissuing the stored token must not narrow its reusable grant.
             let scopes = sameStoredToken ? (selectedAuth.storedScopes ?? helloScopes) : helloScopes
-            if let identity, options.allowsDeviceAuthPersistence, self.persistIssuedDeviceToken(
-                authSource: self.lastAuthSource,
-                deviceId: identity.deviceId,
+            if persists, let write = Self.issuedDeviceTokenWrite(
+                authSource: authSource,
+                persistBootstrapHandoff: persistBootstrapHandoff,
                 role: authRole,
                 token: deviceToken,
-                scopes: scopes,
-                deviceAuthGatewayID: deviceAuthGatewayID,
-                deviceIdentityProfile: deviceIdentityProfile)
+                scopes: scopes)
             {
-                persistedRoles.insert(authRole)
+                writes.append(write)
             }
         }
         if let tokenEntries = auth["deviceTokens"]?.arrayValue {
@@ -1327,18 +1340,22 @@ extension GatewayChannelActor {
                 }
                 let scopes = rawEntry["scopes"]?.arrayValue?.compactMap(\.stringValue) ?? []
                 receivedRoles.insert(authRole)
-                if let identity, options.allowsDeviceAuthPersistence, self.shouldPersistBootstrapHandoffTokens(),
-                   self.persistBootstrapHandoffToken(
-                       deviceId: identity.deviceId,
-                       role: authRole,
-                       token: deviceToken,
-                       scopes: scopes,
-                       deviceAuthGatewayID: deviceAuthGatewayID,
-                       deviceIdentityProfile: deviceIdentityProfile)
+                if persists, persistBootstrapHandoff,
+                   let filteredScopes = Self.filteredBootstrapHandoffScopes(role: authRole, scopes: scopes)
                 {
-                    persistedRoles.insert(authRole)
+                    writes.append(DeviceTokenWrite(role: authRole, token: deviceToken, scopes: filteredScopes))
                 }
             }
+        }
+        var persistedRoles = Set<String>()
+        if let identity, !writes.isEmpty {
+            persistedRoles = await Self.persistDeviceTokens(
+                writes,
+                deviceId: identity.deviceId,
+                gatewayID: deviceAuthGatewayID,
+                profile: deviceIdentityProfile)
+            // The socket may have been retired during the hop; never admit it afterwards.
+            try self.requireCurrentConnection(connectionGeneration)
         }
         self.acceptedHTTPBearer = (connectionGeneration, selectedAuth.httpResourceBearer(hello: ok, role: role))
         self.lastInboundAt = ContinuousClock.now
@@ -1577,7 +1594,9 @@ extension GatewayChannelActor {
     private func watchTicks(connectionGeneration: UInt64) async {
         let tolerance = self.helloPolicy.tickIntervalMs * 2
         while self.isConnected(connectionGeneration: connectionGeneration) {
-            guard await self.sleepUnlessCancelled(nanoseconds: UInt64(tolerance * 1_000_000)) else { return }
+            guard await self.sleepUnlessCancelled(nanoseconds: Self.sleepNanoseconds(milliseconds: tolerance)) else {
+                return
+            }
             guard self.isConnected(connectionGeneration: connectionGeneration) else { return }
             if let last = self.lastInboundAt {
                 let delta = Self.milliseconds(from: last, to: ContinuousClock.now)
@@ -1611,7 +1630,9 @@ extension GatewayChannelActor {
         else { return }
         let delay = self.backoffMs / 1000
         self.backoffMs = min(self.backoffMs * 2, 30000)
-        guard await self.sleepUnlessCancelled(nanoseconds: UInt64(delay * 1_000_000_000)) else { return }
+        guard await self.sleepUnlessCancelled(nanoseconds: Self.sleepNanoseconds(milliseconds: delay * 1000)) else {
+            return
+        }
         guard self.shouldReconnect else { return }
         guard !self.reconnectPausedForAuthFailure, !self.reconnectPausedForTLSFailure else { return }
         guard self.automaticReconnectRequested else { return }
@@ -1735,7 +1756,8 @@ extension GatewayChannelActor {
     /// - Parameters:
     ///   - method: Gateway method.
     ///   - params: Request params.
-    ///   - timeoutMs: Client deadline; `nil` uses 15 s and `0` leaves the deadline to the gateway.
+    ///   - timeoutMs: Client deadline, counted from the first dispatch (connect time is bounded
+    ///     separately by the handshake budget); `nil` uses 15 s and `0` leaves the deadline to the gateway.
     /// - Returns: The encoded response payload (empty when the gateway returns none).
     public func request(
         method: String,
@@ -1830,11 +1852,22 @@ extension GatewayChannelActor {
     {
         let budgetMs = Self.resolveRequestTimeoutMs(timeoutMs, defaultMs: self.defaultRequestTimeoutMs)
         let clock = ContinuousClock()
-        let start = clock.now
+        // The budget covers the request, not the connect in front of it: connect is bounded by
+        // its own handshake budget, and counting it here dispatched frames with a ~1 ms deadline
+        // the gateway would still execute after the caller saw a timeout.
+        var start: ContinuousClock.Instant?
         var startupRetries = 0
         while true {
             let target = try await self.requestTarget(boundGeneration: boundGeneration)
-            let remainingMs = budgetMs.map { max(1, $0 - Self.milliseconds(from: start, to: clock.now)) }
+            let requestStart = start ?? clock.now
+            start = requestStart
+            var remainingMs: Double?
+            if let budgetMs {
+                let remaining = budgetMs - Self.milliseconds(from: requestStart, to: clock.now)
+                // A reconnect during startup retries may exhaust the budget: never dispatch then.
+                guard remaining > 0 else { throw Self.requestTimeoutError(budgetMs: budgetMs) }
+                remainingMs = remaining
+            }
             do {
                 return try await self.request(
                     method: method,
@@ -1847,7 +1880,7 @@ extension GatewayChannelActor {
                 guard let delayMs = error.startupRetryAfterMs,
                       startupRetries < Self.maxStartupUnavailableRetries
                 else { throw error }
-                if let budgetMs, Self.milliseconds(from: start, to: clock.now) + Double(delayMs) >= budgetMs {
+                if let budgetMs, Self.milliseconds(from: requestStart, to: clock.now) + Double(delayMs) >= budgetMs {
                     throw error
                 }
                 startupRetries += 1
@@ -1894,14 +1927,11 @@ extension GatewayChannelActor {
                         request.timeoutTask = Task { [weak self] in
                             guard let self else { return }
                             guard await self.sleepUnlessCancelled(
-                                nanoseconds: UInt64(effectiveTimeout * 1_000_000))
+                                nanoseconds: Self.sleepNanoseconds(milliseconds: effectiveTimeout))
                             else { return }
-                            let error = NSError(
-                                domain: "Gateway",
-                                code: 5,
-                                userInfo: [NSLocalizedDescriptionKey:
-                                    "gateway request timed out after \(Int(effectiveTimeout))ms"])
-                            await self.finishRequest(id: payload.id, result: .failure(error))
+                            await self.finishRequest(
+                                id: payload.id,
+                                result: .failure(Self.requestTimeoutError(budgetMs: effectiveTimeout)))
                         }
                     }
                     self.pending[payload.id] = request
@@ -1911,6 +1941,8 @@ extension GatewayChannelActor {
                             self.finishRequest(id: payload.id, result: .failure(CancellationError()))
                             return
                         }
+                        // A request that already timed out or was cancelled never reaches the socket.
+                        guard self.pending[payload.id] != nil else { return }
                         do {
                             try await task.sendRequest(.data(payload.data), lifetime: transportLifetime)
                         } catch is CancellationError {
@@ -1960,6 +1992,14 @@ extension GatewayChannelActor {
             return try self.encoder.encode(payload)
         }
         return Data() // Should not happen, but tolerate empty payloads.
+    }
+
+    /// The client-side request deadline error (`Gateway` code 5).
+    nonisolated static func requestTimeoutError(budgetMs: Double) -> NSError {
+        NSError(
+            domain: "Gateway",
+            code: 5,
+            userInfo: [NSLocalizedDescriptionKey: "gateway request timed out after \(Int(budgetMs))ms"])
     }
 
     /// Sends a fire-and-forget command frame over the gateway socket, connecting first when needed.
