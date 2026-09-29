@@ -95,6 +95,31 @@ while IFS= read -r file; do
   fi
 done <<<"$(swift_files_matching '\.textSelection\(|TextEditor\(|\.scrollDismissesKeyboard\(|PhotosPicker' Sources/OpenClawChatUI)"
 
+# BGTaskScheduler.submitTaskRequest(_:) is the async iOS/tvOS 27 submission API. Every call needs a
+# `#if compiler(>=6.4)` guard in its file and an iOS 27.0 availability gate (`@available(iOS 27.0`
+# on the enclosing declaration or `#available(iOS 27.0` on the branch) within the preceding
+# lines; otherwise the 26 SDKs fail to compile it and iOS 17-26 devices reach a missing symbol.
+# Use OpenClawBackgroundTasks.submit(_:) from OpenClawKit, which already gates it.
+submit_task_request_window=15
+while IFS= read -r file; do
+  [[ -z "${file}" ]] && continue
+  # Only code lines count; doc comments that mention the API are fine.
+  call_lines="$(grep -nE 'submitTaskRequest\(' "${file}" | grep -vE '^[0-9]+:[[:space:]]*///?' || true)"
+  [[ -z "${call_lines}" ]] && continue
+  if ! grep -Fq '#if compiler(>=6.4)' "${file}"; then
+    echo "submitTaskRequest( used without a '#if compiler(>=6.4)' guard: ${file}"
+    status=1
+  fi
+  while IFS=: read -r line_number _; do
+    [[ -z "${line_number}" ]] && continue
+    start=$((line_number > submit_task_request_window ? line_number - submit_task_request_window : 1))
+    if ! sed -n "${start},${line_number}p" "${file}" | grep -Eq '[@#]available\([^)]*iOS 27\.0'; then
+      echo "submitTaskRequest( without an @available(iOS 27.0 / #available(iOS 27.0 gate in the preceding ${submit_task_request_window} lines: ${file}:${line_number}"
+      status=1
+    fi
+  done <<<"${call_lines}"
+done <<<"$(swift_files_matching 'submitTaskRequest\(' Sources Examples)"
+
 if [[ ${status} -ne 0 ]]; then
   exit 1
 fi
