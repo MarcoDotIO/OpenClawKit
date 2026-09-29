@@ -7,7 +7,9 @@ import OpenClawProtocol
 // module): memory tools, the `## Memory Recall` prompt section, the Spotlight search tool, config
 // resolution, transcript import and a closure embedding adapter.
 
-/// What ``EmbeddedAgentRuntime/installMemory(engine:configuration:sessionSearch:citationsMode:spotlightSearch:includeSystemFiles:spotlightIndexDelegate:)`` set up.
+/// What
+/// ``EmbeddedAgentRuntime/installMemory(engine:configuration:sessionSearch:citationsMode:spotlightSearch:includeSystemFiles:spotlightIndexDelegate:)``
+/// set up.
 public struct MemoryRuntimeInstallation: Sendable, Equatable {
     /// Registered memory tool names (`memory_search`, `memory_get`).
     public var memoryTools: [String]
