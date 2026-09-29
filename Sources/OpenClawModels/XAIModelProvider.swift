@@ -83,7 +83,7 @@ public struct XAIModelProvider: ModelProvider {
     /// - Parameter request: Model generation request.
     /// - Returns: Generated response payload.
     public func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
-        try self.validate()
+        try self.validate(request)
         if let responses {
             return try await responses.generate(request)
         }
@@ -95,7 +95,7 @@ public struct XAIModelProvider: ModelProvider {
     /// - Returns: Chunk stream ending with a `.final` chunk.
     public func generateStream(_ request: ModelGenerationRequest) async -> AsyncThrowingStream<ModelStreamChunk, Error> {
         do {
-            try self.validate()
+            try self.validate(request)
         } catch {
             return AsyncThrowingStream { $0.finish(throwing: error) }
         }
@@ -105,13 +105,32 @@ public struct XAIModelProvider: ModelProvider {
         return self.completions.stream(request)
     }
 
-    private func validate() throws {
+    private func validate(_ request: ModelGenerationRequest) throws {
         guard self.configuration.enabled else {
             throw OpenClawCoreError.unavailable("xAI model provider is disabled")
         }
         switch self.configuration.authMode {
-        case .none, .awsSDK:
+        case .awsSDK:
             throw OpenClawCoreError.invalidConfiguration("xAI provider requires token-based authentication")
+        case .none:
+            // A config without `auth` authenticates with request-time credentials (auth-profile keys
+            // or tokens, which the engines read through `bearerCredential(for:)`) or a configured
+            // `request.auth` override; with neither, fail before sending an unauthenticated request.
+            let hasOverride: Bool
+            switch self.completions.settings.runtime.providerConfig?.request?.auth {
+            case .authorizationBearer?, .header?:
+                hasOverride = true
+            case .providerDefault?, nil:
+                hasOverride = false
+            }
+            let credential = ModelGenerationRequest.normalized(self.configuration.apiKey)
+                ?? request.resolvedAPIKey
+                ?? request.resolvedAccessToken
+            guard credential != nil || hasOverride else {
+                throw OpenClawCoreError.invalidConfiguration(
+                    "xAI provider requires token-based authentication (configure an API key or an auth profile)"
+                )
+            }
         case .apiKey, .bearerToken, .oauthToken:
             return
         }

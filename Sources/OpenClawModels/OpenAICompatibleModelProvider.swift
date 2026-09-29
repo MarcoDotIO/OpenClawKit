@@ -40,7 +40,9 @@ public struct OpenAICompatibleModelProvider: ModelProvider {
         runtime: ModelProviderRuntimeContext = .empty
     ) {
         self.id = id
-        // OpenAICompatibleModelConfig has no headers; keep the canonical config's (factory-built providers).
+        // Canonical config headers (factory-built providers), then the direct config's headers.
+        var headers = runtime.providerConfig?.headers ?? [:]
+        headers.merge(configuration.headers ?? [:]) { _, direct in direct }
         let service = ProviderServiceConfig(
             enabled: configuration.enabled,
             apiStyle: .openAICompletions,
@@ -49,7 +51,7 @@ public struct OpenAICompatibleModelProvider: ModelProvider {
             apiKey: configuration.apiKey,
             baseURL: configuration.baseURL,
             chatCompletionsPath: configuration.chatCompletionsPath,
-            headers: runtime.providerConfig?.headers ?? [:]
+            headers: headers
         )
         self.engine = OpenAIChatCompletionsEngine(
             settings: ProviderEndpointSettings(providerID: id, service: service, api: .openAICompletions, runtime: runtime),

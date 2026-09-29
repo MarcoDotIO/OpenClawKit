@@ -224,7 +224,7 @@ struct OllamaChatEngine: Sendable {
         _ = OllamaChatWire.apply(try ProviderWireJSON.decode(response.body), assembler: &assembler)
         let parsed = assembler.response()
         let text = parsed.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty || !parsed.toolCalls.isEmpty else {
+        guard !text.isEmpty || !parsed.toolCalls.isEmpty || parsed.stopReason.permitsEmptyOutput else {
             throw OpenClawCoreError.unavailable("\(self.settings.providerID) response did not include message content")
         }
         return ModelGenerationResponse(
@@ -244,13 +244,21 @@ struct OllamaChatEngine: Sendable {
             let prepared = try self.prepare(request, stream: true)
             let lines = try await self.exchange.lines(for: prepared.urlRequest)
             var assembler = ProviderStreamAssembler(providerID: providerID, modelID: prepared.modelID)
+            var sawDone = false
             for try await line in lines {
                 let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty, let object = ProviderWireJSON.object(from: trimmed) else { continue }
                 if let error = object["error"]?.stringValue {
                     throw OpenClawCoreError.unavailable("\(providerID) stream failed: \(error)")
                 }
+                if object["done"]?.boolValue == true {
+                    sawDone = true
+                }
                 OllamaChatWire.apply(AnyCodable(.object(object)), assembler: &assembler).forEach { continuation.yield($0) }
+            }
+            // Upstream `OLLAMA_INCOMPLETE_STREAM_ERROR`: every complete NDJSON stream ends with `done: true`.
+            if !sawDone {
+                throw OpenClawCoreError.unavailable("\(providerID) stream ended before the final done chunk")
             }
             continuation.yield(.completed(response: assembler.response()))
         }
@@ -280,7 +288,7 @@ struct OllamaChatEngine: Sendable {
         }
         if !settings.applyRequestAuthOverride(to: &urlRequest) {
             switch settings.authMode {
-            case .none, .awsSDK:
+            case .awsSDK:
                 if let key = ModelGenerationRequest.normalized(settings.apiKey) {
                     urlRequest.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
                 }

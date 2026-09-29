@@ -316,7 +316,9 @@ struct ProviderEndpointSettings: Sendable {
                 providerID: self.providerID
             )
         case .none:
-            return ModelGenerationRequest.normalized(self.apiKey) ?? request.resolvedAPIKey
+            // No configured auth mode (upstream configs usually omit `auth`): use the configured key,
+            // then request-time credentials such as auth-profile keys or tokens.
+            return ModelGenerationRequest.normalized(self.apiKey) ?? request.resolvedAPIKey ?? request.resolvedAccessToken
         case .awsSDK:
             return nil
         }

@@ -316,6 +316,26 @@ public struct ModelGenerationRequest: Sendable, Equatable {
         )
     }
 
+    /// Returns a copy with a replaced model id, preserving every other field.
+    func replacingModelID(_ modelID: String) -> ModelGenerationRequest {
+        ModelGenerationRequest(
+            sessionKey: self.sessionKey,
+            prompt: self.prompt,
+            systemPrompt: self.systemPrompt,
+            providerID: self.providerID,
+            modelID: modelID,
+            preferredAuthProfileID: self.preferredAuthProfileID,
+            metadata: self.metadata,
+            headers: self.headers,
+            policy: self.policy,
+            attachments: self.attachments,
+            messages: self.messages,
+            tools: self.tools,
+            toolChoice: self.toolChoice,
+            responseFormat: self.responseFormat
+        )
+    }
+
     /// Returns a copy with replaced metadata, preserving every other field.
     func replacingMetadata(_ metadata: [String: String]) -> ModelGenerationRequest {
         ModelGenerationRequest(
@@ -896,33 +916,27 @@ public actor ModelRouter {
                     }
                     return response
                 } catch {
-                    let latencyMs = max(0, Int(Date().timeIntervalSince(startedAt) * 1000))
-                    self.recordAdaptiveObservation(
+                    // A caller abort is not a provider failure: stop the chain without recording
+                    // cooldowns or trying further candidates (upstream `caller_signal_aborted`).
+                    if Self.isCancellation(error) {
+                        throw error
+                    }
+                    await self.recordAttemptFailure(
                         providerID: providerID,
-                        succeeded: false,
-                        latencyMs: latencyMs,
+                        profileID: profileID,
+                        error: error,
+                        startedAt: startedAt,
                         metadata: request.metadata
                     )
-                    if let profileID, let authProfileStore {
-                        try? await authProfileStore.recordFailure(
-                            profileID: profileID,
-                            provider: providerID,
-                            reason: Self.failureReason(for: error),
-                            cooldowns: self.authConfig?.cooldowns ?? AuthCooldownConfig()
-                        )
-                    }
                     lastError = error
-                    if let nextProviderID = self.nextAvailableProviderID(after: index, in: orderedProviderIDs) {
-                        await self.emitDiagnostic(
-                            name: "model.request.retry",
-                            metadata: [
-                                "fromProviderID": providerID,
-                                "profileID": profileID ?? "",
-                                "nextProviderID": nextProviderID,
-                                "error": String(describing: error),
-                            ]
-                        )
-                    }
+                    await self.emitRetryDiagnostic(
+                        providerID: providerID,
+                        profileID: profileID,
+                        index: index,
+                        orderedProviderIDs: orderedProviderIDs,
+                        error: error,
+                        streaming: false
+                    )
                 }
             }
         }
@@ -935,19 +949,53 @@ public actor ModelRouter {
     }
 
     /// Returns a token stream from the first available provider in fallback order.
+    ///
+    /// Candidates (auth profiles within a provider, then fallback providers) are tried until one
+    /// stream produces its first non-usage chunk. A stream that fails before that point records the
+    /// failure, emits `model.request.retry` and falls through to the next candidate; once a stream has
+    /// produced output the router commits to it, so a later error ends the stream without replaying
+    /// output from another provider. Success is recorded only when the committed stream finishes
+    /// normally. Cancelling the consumer cancels the in-flight provider stream without recording a
+    /// failure.
     /// - Parameter request: Generation request payload.
     /// - Returns: Async throwing stream of model chunks.
     public func generateStream(_ request: ModelGenerationRequest) async -> AsyncThrowingStream<ModelStreamChunk, Error> {
         let orderedProviderIDs = self.resolveProviderOrder(for: request)
+        let (stream, continuation) = AsyncThrowingStream.makeStream(of: ModelStreamChunk.self, throwing: Error.self)
+        let producer = Task {
+            await self.relayStream(request: request, orderedProviderIDs: orderedProviderIDs, continuation: continuation)
+        }
+        continuation.onTermination = { _ in
+            producer.cancel()
+        }
+        return stream
+    }
+
+    /// Walks the streaming candidates, relaying the first stream that produces output.
+    ///
+    /// Runs outside the actor so provider stream iterators never cross isolation; the actor is
+    /// entered only for provider lookup, throttling, auth resolution and bookkeeping.
+    nonisolated private func relayStream(
+        request: ModelGenerationRequest,
+        orderedProviderIDs: [String],
+        continuation: AsyncThrowingStream<ModelStreamChunk, Error>.Continuation
+    ) async {
         var lastError: Error?
         for (index, providerID) in orderedProviderIDs.enumerated() {
-            guard let provider = self.providers[providerID] else {
+            guard let provider = await self.registeredProvider(providerID) else {
                 continue
             }
             let candidateProfileIDs = await self.resolveAuthProfileOrder(for: providerID, request: request)
             let candidateSet: [String?] = candidateProfileIDs.isEmpty ? [nil] : candidateProfileIDs.map(Optional.some)
             for profileID in candidateSet {
+                if Task.isCancelled {
+                    continuation.finish(throwing: CancellationError())
+                    return
+                }
                 let startedAt = Date()
+                var committed = false
+                var pending: [ModelStreamChunk] = []
+                var metadata = request.metadata
                 do {
                     try await self.applyThrottleIfNeeded(providerID: providerID)
                     let resolvedRequest = try await self.requestWithResolvedAuth(
@@ -955,57 +1003,137 @@ public actor ModelRouter {
                         providerID: providerID,
                         profileID: profileID
                     )
-                    let stream = await provider.generateStream(resolvedRequest)
-                    let latencyMs = max(0, Int(Date().timeIntervalSince(startedAt) * 1000))
-                    self.recordAdaptiveObservation(
-                        providerID: providerID,
-                        succeeded: true,
-                        latencyMs: latencyMs,
-                        metadata: resolvedRequest.metadata
-                    )
-                    if let profileID, let authProfileStore {
-                        try? await authProfileStore.recordSuccess(profileID: profileID, provider: providerID)
+                    metadata = resolvedRequest.metadata
+                    let providerStream = await provider.generateStream(resolvedRequest)
+                    for try await chunk in providerStream {
+                        if committed {
+                            continuation.yield(chunk)
+                        } else if chunk.kind == .usage {
+                            pending.append(chunk)
+                        } else {
+                            committed = true
+                            pending.forEach { continuation.yield($0) }
+                            pending.removeAll()
+                            continuation.yield(chunk)
+                        }
                     }
-                    return stream
-                } catch {
-                    let latencyMs = max(0, Int(Date().timeIntervalSince(startedAt) * 1000))
-                    self.recordAdaptiveObservation(
+                    if Task.isCancelled {
+                        // The consumer went away; the provider stream ended because it was cancelled.
+                        continuation.finish(throwing: CancellationError())
+                        return
+                    }
+                    pending.forEach { continuation.yield($0) }
+                    await self.recordAttemptSuccess(
                         providerID: providerID,
-                        succeeded: false,
-                        latencyMs: latencyMs,
-                        metadata: request.metadata
+                        profileID: profileID,
+                        startedAt: startedAt,
+                        metadata: metadata
                     )
-                    if let profileID, let authProfileStore {
-                        try? await authProfileStore.recordFailure(
-                            profileID: profileID,
-                            provider: providerID,
-                            reason: Self.failureReason(for: error),
-                            cooldowns: self.authConfig?.cooldowns ?? AuthCooldownConfig()
-                        )
+                    continuation.finish()
+                    return
+                } catch {
+                    if Self.isCancellation(error) || Task.isCancelled {
+                        continuation.finish(throwing: error)
+                        return
+                    }
+                    await self.recordAttemptFailure(
+                        providerID: providerID,
+                        profileID: profileID,
+                        error: error,
+                        startedAt: startedAt,
+                        metadata: metadata
+                    )
+                    if committed {
+                        continuation.finish(throwing: error)
+                        return
                     }
                     lastError = error
-                    if let nextProviderID = self.nextAvailableProviderID(after: index, in: orderedProviderIDs) {
-                        await self.emitDiagnostic(
-                            name: "model.request.retry",
-                            metadata: [
-                                "fromProviderID": providerID,
-                                "profileID": profileID ?? "",
-                                "nextProviderID": nextProviderID,
-                                "error": String(describing: error),
-                                "streaming": "true",
-                            ]
-                        )
-                    }
+                    await self.emitRetryDiagnostic(
+                        providerID: providerID,
+                        profileID: profileID,
+                        index: index,
+                        orderedProviderIDs: orderedProviderIDs,
+                        error: error,
+                        streaming: true
+                    )
                 }
             }
         }
-        return AsyncThrowingStream { continuation in
-            continuation.finish(
-                throwing: lastError ?? OpenClawCoreError.invalidConfiguration(
-                    "No registered model providers available for streaming request"
-                )
+        continuation.finish(
+            throwing: lastError ?? OpenClawCoreError.invalidConfiguration(
+                "No registered model providers available for streaming request"
+            )
+        )
+    }
+
+    private func registeredProvider(_ providerID: String) -> (any ModelProvider)? {
+        self.providers[providerID]
+    }
+
+    private func recordAttemptSuccess(
+        providerID: String,
+        profileID: String?,
+        startedAt: Date,
+        metadata: [String: String]
+    ) async {
+        let latencyMs = max(0, Int(Date().timeIntervalSince(startedAt) * 1000))
+        self.recordAdaptiveObservation(providerID: providerID, succeeded: true, latencyMs: latencyMs, metadata: metadata)
+        if let profileID, let authProfileStore {
+            try? await authProfileStore.recordSuccess(profileID: profileID, provider: providerID)
+        }
+    }
+
+    private func recordAttemptFailure(
+        providerID: String,
+        profileID: String?,
+        error: Error,
+        startedAt: Date,
+        metadata: [String: String]
+    ) async {
+        let latencyMs = max(0, Int(Date().timeIntervalSince(startedAt) * 1000))
+        self.recordAdaptiveObservation(providerID: providerID, succeeded: false, latencyMs: latencyMs, metadata: metadata)
+        if let profileID, let authProfileStore {
+            try? await authProfileStore.recordFailure(
+                profileID: profileID,
+                provider: providerID,
+                reason: Self.failureReason(for: error),
+                cooldowns: self.authConfig?.cooldowns ?? AuthCooldownConfig()
             )
         }
+    }
+
+    private func emitRetryDiagnostic(
+        providerID: String,
+        profileID: String?,
+        index: Int,
+        orderedProviderIDs: [String],
+        error: Error,
+        streaming: Bool
+    ) async {
+        guard let nextProviderID = self.nextAvailableProviderID(after: index, in: orderedProviderIDs) else {
+            return
+        }
+        var metadata = [
+            "fromProviderID": providerID,
+            "profileID": profileID ?? "",
+            "nextProviderID": nextProviderID,
+            "error": ProviderErrorRedaction.describe(error),
+        ]
+        if streaming {
+            metadata["streaming"] = "true"
+        }
+        await self.emitDiagnostic(name: "model.request.retry", metadata: metadata)
+    }
+
+    /// Whether an error is a caller abort rather than a provider failure.
+    static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError {
+            return true
+        }
+        if let urlError = error as? URLError, urlError.code == .cancelled {
+            return true
+        }
+        return Task.isCancelled
     }
 
     /// Broadcasts a cancellation request to registered providers.
@@ -1256,7 +1384,9 @@ public actor ModelRouter {
 
     private static func failureReason(for error: Error) -> AuthProfileFailureReason {
         let description = String(describing: error).lowercased()
-        if description.contains("rate") || description.contains("429") {
+        // Match rate-limit phrasing, not the bare substring "rate" ("generated", "moderate", …).
+        let rateLimitMarkers = ["rate limit", "rate-limit", "rate_limit", "ratelimit", "rate limited", "too many requests", "429"]
+        if rateLimitMarkers.contains(where: description.contains) {
             return .rateLimit
         }
         if description.contains("billing") || description.contains("quota") {

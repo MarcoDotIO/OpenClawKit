@@ -23,20 +23,94 @@ extension ModelProviderFactory {
     /// Builds providers for every entry of a `models.providers` map, skipping entries that cannot be
     /// routed (unknown `api`, unimplemented transports) instead of treating them as
     /// openai-completions.
+    ///
+    /// Keys that normalize to the same provider id (`openai` / `openai-codex`, `google` / `gemini`,
+    /// `xai` / `grok`, …) never produce two providers with one id, which the router would silently
+    /// collapse. The canonical key wins; a legacy `openai-codex` / `codex` entry is merged into
+    /// `openai` as ChatGPT-route models when upstream's doctor migration would merge it (neither
+    /// provider sets provider-level credentials, headers or transport overrides), and every other
+    /// alias is reported in ``ModelProviderFactoryResult/skipped``.
     /// - Parameter configs: Provider configs keyed by provider id.
     /// - Returns: Built providers and skipped ids.
     public static func makeProviders(from configs: [String: ModelProviderConfig]) -> ModelProviderFactoryResult {
         var providers: [any ModelProvider] = []
         var skipped: [String: String] = [:]
-        for providerID in configs.keys.sorted() {
-            guard let config = configs[providerID] else { continue }
+        var groups: [String: [String]] = [:]
+        for providerID in configs.keys {
+            groups[OpenClawReferenceProviderCatalog.normalize(providerID: providerID), default: []].append(providerID)
+        }
+        var builtIDs: Set<String> = []
+        for normalizedID in groups.keys.sorted() {
+            let keys = (groups[normalizedID] ?? []).sorted()
+            guard let primaryKey = keys.first(where: { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalizedID })
+                ?? keys.first,
+                var config = configs[primaryKey]
+            else {
+                continue
+            }
+            for alias in keys where alias != primaryKey {
+                guard let aliasConfig = configs[alias] else { continue }
+                if let merged = self.mergeLegacyCodexConfig(aliasConfig, aliasID: alias, into: config, canonicalID: primaryKey) {
+                    config = merged
+                } else {
+                    skipped[alias] = "duplicate of normalized provider \"\(normalizedID)\" (models.providers.\(primaryKey)); "
+                        + "reconcile models.providers.\(alias) manually"
+                }
+            }
             do {
-                providers.append(try self.makeProvider(providerID: providerID, config: config))
+                let provider = try self.makeProvider(providerID: primaryKey, config: config)
+                guard builtIDs.insert(provider.id).inserted else {
+                    skipped[primaryKey] = "duplicate provider id \"\(provider.id)\"; reconcile models.providers.\(primaryKey) manually"
+                    continue
+                }
+                providers.append(provider)
             } catch {
-                skipped[providerID] = String(describing: error)
+                skipped[primaryKey] = String(describing: error)
             }
         }
         return ModelProviderFactoryResult(providers: providers, skipped: skipped)
+    }
+
+    /// Merges a legacy `openai-codex` / `codex` config into the canonical `openai` config (upstream
+    /// `legacy-config-migrations.runtime.models.codex.ts`): legacy models move onto the ChatGPT route
+    /// (`openai-chatgpt-responses`, ChatGPT base URL) per model and are appended when their id is new.
+    ///
+    /// Returns `nil` (merge blocked) unless the canonical key is `openai`, the alias is a legacy codex
+    /// id, the legacy provider sets no provider-level defaults its models would lose (`apiKey`, `auth`,
+    /// `headers`, `authHeader`, `request`, `timeoutSeconds`, `region`, …) and the canonical provider
+    /// sets none its new models would wrongly inherit.
+    static func mergeLegacyCodexConfig(
+        _ legacy: ModelProviderConfig,
+        aliasID: String,
+        into canonical: ModelProviderConfig,
+        canonicalID: String
+    ) -> ModelProviderConfig? {
+        guard canonicalID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == OpenAIModelProvider.providerID,
+              OpenAIRouteResolution.isLegacyCodexProviderID(aliasID)
+        else {
+            return nil
+        }
+        let legacyBlocked = legacy.apiKeyInput != nil || legacy.auth != nil || legacy.request != nil
+            || legacy.timeoutSeconds != nil || legacy.region != nil || legacy.injectNumCtxForOpenAICompat
+            || legacy.localService != nil || !legacy.headerInputs.isEmpty || legacy.authHeader != nil
+        let canonicalBlocked = canonical.apiKeyInput != nil || canonical.auth != nil || canonical.request != nil
+            || canonical.timeoutSeconds != nil || canonical.region != nil || canonical.injectNumCtxForOpenAICompat
+            || canonical.localService != nil || !canonical.headerInputs.isEmpty || canonical.authHeader != nil
+            || canonical.maxTokens != nil || canonical.params != nil || canonical.agentRuntime != nil
+        guard !legacyBlocked, !canonicalBlocked else {
+            return nil
+        }
+        let migrated = OpenAIRouteResolution.migrateLegacyCodexConfig(legacy)
+        var merged = canonical
+        let existingIDs = Set(canonical.models.map(\.id))
+        for var model in migrated.models where !existingIDs.contains(model.id) {
+            model.api = model.api ?? .openAIChatGPTResponses
+            if model.baseURL?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true {
+                model.baseURL = migrated.baseURL
+            }
+            merged.models.append(model)
+        }
+        return merged
     }
 
     /// Runtime factory behind ``makeProvider(providerID:config:)``.
@@ -260,7 +334,7 @@ public struct RoutingModelProvider: ModelProvider {
     /// - Parameter request: Generation request.
     /// - Returns: Generation response payload.
     public func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
-        try await self.provider(for: request).generate(request)
+        try await self.provider(for: request).generate(self.wireRequest(for: request))
     }
 
     /// Streams chunks through the route of the requested model.
@@ -273,7 +347,16 @@ public struct RoutingModelProvider: ModelProvider {
         } catch {
             return AsyncThrowingStream { $0.finish(throwing: error) }
         }
-        return await provider.generateStream(request)
+        return await provider.generateStream(self.wireRequest(for: request))
+    }
+
+    /// Rewrites the model id to a row's ClawRouter upstream model (native routes send the upstream id).
+    private func wireRequest(for request: ModelGenerationRequest) -> ModelGenerationRequest {
+        let modelID = request.resolvedModelID ?? self.config.defaultModel?.id ?? ""
+        guard let upstream = ClawRouterRoute.upstreamModelID(for: self.config.model(withID: modelID)) else {
+            return request
+        }
+        return request.replacingModelID(upstream)
     }
 
     /// Forwards cancellation to every cached route.
@@ -315,6 +398,13 @@ public struct RoutingModelProvider: ModelProvider {
         if let model, let index = routed.models.firstIndex(where: { $0.id == model.id }) {
             routed.models.remove(at: index)
             routed.models.insert(model, at: 0)
+        }
+        // Native ClawRouter rows are requested by their upstream id; add wire rows under that id so the
+        // engine still finds the row's limits, reasoning flags and compat.
+        for row in routed.models {
+            if let prepared = ClawRouterRoute.requestModel(for: row), !routed.models.contains(where: { $0.id == prepared.id }) {
+                routed.models.append(prepared)
+            }
         }
         let provider = try ModelProviderFactory.makeRoutedProvider(providerID: self.id, config: routed)
         self.cache.store(provider, for: key)

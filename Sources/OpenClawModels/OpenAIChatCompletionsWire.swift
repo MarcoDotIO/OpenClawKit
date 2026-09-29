@@ -229,7 +229,7 @@ enum OpenAIChatCompletionsWire {
         }
         let supportsKey = compat?.supportsPromptCacheKey ?? (context.compat.endpoint == .openAIPublic)
         if supportsKey {
-            payload["prompt_cache_key"] = String(request.sessionKey.prefix(64))
+            payload["prompt_cache_key"] = request.promptCacheKey
             if cache.longRetention, compat?.supportsLongCacheRetention != false, context.compat.endpoint == .openAIPublic {
                 payload["prompt_cache_retention"] = "24h"
             }
@@ -671,16 +671,32 @@ enum OpenAIChatCompletionsWire {
 
     // MARK: - Stream
 
-    /// Applies one SSE `data:` payload; returns the chunks to emit and whether the stream ended.
-    static func handleStreamData(_ data: String, assembler: inout ProviderStreamAssembler) -> (chunks: [ModelStreamChunk], done: Bool) {
+    /// Outcome of one SSE `data:` payload.
+    struct StreamDataResult {
+        /// Chunks to emit.
+        var chunks: [ModelStreamChunk] = []
+        /// Whether the `[DONE]` sentinel ended the stream.
+        var done = false
+        /// Provider error carried inside the stream (top-level `error` payload or an error finish reason).
+        var failure: String?
+    }
+
+    /// Applies one SSE `data:` payload; returns the chunks to emit, whether the stream ended, and any
+    /// in-stream provider error (LiteLLM, vLLM and OpenRouter send `{"error":{...}}` mid-stream).
+    static func handleStreamData(_ data: String, assembler: inout ProviderStreamAssembler) -> StreamDataResult {
         let trimmed = data.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed == "[DONE]" {
-            return ([], true)
+            return StreamDataResult(done: true)
         }
         guard let object = ProviderWireJSON.object(from: trimmed) else {
-            return ([], false)
+            return StreamDataResult()
         }
         let root = AnyCodable(.object(object))
+        var result = StreamDataResult()
+        if let error = root[wireKey: "error"], !error.isNull {
+            result.failure = error.wireString("message") ?? error.stringValue ?? error.wireString("code") ?? "stream error"
+            return result
+        }
         var chunks: [ModelStreamChunk] = []
         if let model = root.wireString("model") {
             assembler.modelID = model
@@ -696,7 +712,9 @@ enum OpenAIChatCompletionsWire {
                 chunks.append(chunk)
             }
             for call in delta?[wireKey: "tool_calls"]?.arrayValue ?? [] {
-                let index = call.wireInt("index") ?? 0
+                // Some compatible servers (Gemini's OpenAI endpoint, some vLLM builds) omit `index` on
+                // parallel calls; resolve by index, then by id, so distinct calls never merge.
+                let index = assembler.resolveToolCallIndex(streamIndex: call.wireInt("index"), id: call.wireString("id"))
                 let function = call[wireKey: "function"]
                 let arguments = function?[wireKey: "arguments"].map { $0.stringValue ?? self.argumentsString($0) } ?? ""
                 chunks.append(
@@ -709,13 +727,18 @@ enum OpenAIChatCompletionsWire {
                 )
             }
             if let finish = choice.wireString("finish_reason") {
-                assembler.stopReason = ModelStopReason(providerValue: finish)
+                let reason = ModelStopReason(providerValue: finish)
+                assembler.stopReason = reason
+                if reason == .error || reason == .other("network_error") {
+                    result.failure = "provider finish_reason: \(finish)"
+                }
             }
         }
         if let usage = self.usage(root[wireKey: "usage"]) {
             chunks.append(assembler.setUsage(usage))
         }
-        return (chunks, false)
+        result.chunks = chunks
+        return result
     }
 }
 
@@ -763,17 +786,29 @@ struct OpenAIChatCompletionsEngine: Sendable {
             var assembler = ProviderStreamAssembler(providerID: self.settings.providerID, modelID: prepared.modelID)
             var parser = ServerSentEventParser()
             var finished = false
-            for try await line in lines {
-                guard let event = parser.consume(line) else { continue }
+            let providerID = self.settings.providerID
+            func apply(_ event: ServerSentEvent) throws -> Bool {
                 let result = OpenAIChatCompletionsWire.handleStreamData(event.data, assembler: &assembler)
                 result.chunks.forEach { continuation.yield($0) }
-                if result.done {
+                if let failure = result.failure {
+                    throw OpenClawCoreError.unavailable("\(providerID) stream failed: \(failure)")
+                }
+                return result.done
+            }
+            for try await line in lines {
+                guard let event = parser.consume(line) else { continue }
+                if try apply(event) {
                     finished = true
                     break
                 }
             }
             if !finished, let event = parser.finish() {
-                OpenAIChatCompletionsWire.handleStreamData(event.data, assembler: &assembler).chunks.forEach { continuation.yield($0) }
+                finished = try apply(event)
+            }
+            // Upstream `openai-completions-stream.ts`: a stream that ends with neither `[DONE]` nor a
+            // `finish_reason` was cut short (proxy close, upstream abort) and must not look complete.
+            if !finished, assembler.stopReason == nil {
+                throw OpenClawCoreError.unavailable("\(providerID) stream ended before a terminal event")
             }
             continuation.yield(.completed(response: assembler.response()))
         }

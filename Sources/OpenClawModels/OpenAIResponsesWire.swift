@@ -155,7 +155,7 @@ enum OpenAIResponsesWire {
             payload["store"] = false
             payload["include"] = ["reasoning.encrypted_content"]
             payload["text"] = ["verbosity": "low"]
-            payload["prompt_cache_key"] = String(request.sessionKey.prefix(64))
+            payload["prompt_cache_key"] = request.promptCacheKey
         } else if let store = request.policy.storeResponse {
             if store ? policy.allowsStore : policy.supportsStoreField {
                 payload["store"] = store
@@ -201,7 +201,7 @@ enum OpenAIResponsesWire {
             payload["reasoning"] = reasoning
         }
         if let cache = request.policy.promptCache, cache.enabled, !context.isChatGPTRoute {
-            payload["prompt_cache_key"] = String(request.sessionKey.prefix(64))
+            payload["prompt_cache_key"] = request.promptCacheKey
             if cache.longRetention, context.model?.compat?.supportsLongCacheRetention != false {
                 payload["prompt_cache_retention"] = "24h"
             }
@@ -484,6 +484,25 @@ enum OpenAIResponsesWire {
         var toolIndexByItemID: [String: Int] = [:]
         var sawEvent = false
         var failure: String?
+        /// Set by `response.completed` / `incomplete` / `failed` / `done`.
+        var terminalEvent: String?
+        /// Function-call tool indexes whose arguments have not been finalized yet.
+        var openToolIndexes: Set<Int> = []
+
+        /// Error for a stream that ended without a terminal event or with unfinished tool calls
+        /// (upstream `openai-responses-stream-internal.ts`); `nil` when the stream is complete.
+        func incompleteReason() -> String? {
+            guard self.sawEvent else { return nil }
+            guard let terminal = self.terminalEvent else {
+                return self.openToolIndexes.isEmpty
+                    ? "stream ended before a terminal response event"
+                    : "stream ended with unresolved tool calls"
+            }
+            if terminal == "response.incomplete", !self.openToolIndexes.isEmpty {
+                return "stream completed with unresolved tool calls"
+            }
+            return nil
+        }
     }
 
     static func handleStreamEvent(
@@ -517,6 +536,9 @@ enum OpenAIResponsesWire {
         case "response.output_item.added":
             if let item = payload[wireKey: "item"], item.wireString("type") == "function_call" {
                 let index = self.toolIndex(payload: payload, item: item, state: &state, assembler: assembler)
+                if item.wireString("status") != "completed" {
+                    state.openToolIndexes.insert(index)
+                }
                 chunks.append(
                     assembler.appendToolCall(
                         index: index,
@@ -531,10 +553,12 @@ enum OpenAIResponsesWire {
             chunks.append(assembler.appendToolCall(index: index, id: nil, name: nil, argumentsDelta: payload[wireKey: "delta"]?.stringValue ?? ""))
         case "response.function_call_arguments.done":
             let index = self.toolIndex(payload: payload, item: nil, state: &state, assembler: assembler)
+            state.openToolIndexes.remove(index)
             assembler.completeToolCall(index: index, id: nil, name: nil, argumentsJSON: payload[wireKey: "arguments"]?.stringValue)
         case "response.output_item.done":
             if let item = payload[wireKey: "item"], item.wireString("type") == "function_call" {
                 let index = self.toolIndex(payload: payload, item: item, state: &state, assembler: assembler)
+                state.openToolIndexes.remove(index)
                 assembler.completeToolCall(
                     index: index,
                     id: item.wireString("call_id"),
@@ -543,6 +567,7 @@ enum OpenAIResponsesWire {
                 )
             }
         case "response.completed", "response.incomplete", "response.failed", "response.done":
+            state.terminalEvent = type
             if let response = payload[wireKey: "response"] {
                 if let model = response.wireString("model") {
                     assembler.modelID = model
@@ -664,9 +689,20 @@ struct OpenAIResponsesEngine: Sendable {
             if let failure = state.failure {
                 throw OpenClawCoreError.unavailable("\(providerID) response failed: \(failure)")
             }
-            if !state.sawEvent, let data = rawBody.data(using: .utf8), let root = try? ProviderWireJSON.decode(data), root.dictionaryValue != nil {
-                // Servers that ignore `stream: true` answer with a plain JSON response.
+            if let incomplete = state.incompleteReason() {
+                throw OpenClawCoreError.unavailable("\(providerID) \(incomplete)")
+            }
+            if !state.sawEvent {
+                // Servers that ignore `stream: true` answer with a plain JSON response; an empty or
+                // unparseable body means the stream closed before any event arrived.
+                guard let data = rawBody.data(using: .utf8), let root = try? ProviderWireJSON.decode(data), root.dictionaryValue != nil else {
+                    throw OpenClawCoreError.unavailable("\(providerID) stream ended before a terminal response event")
+                }
                 let parsed = OpenAIResponsesWire.parseResponse(root, providerID: providerID, modelID: prepared.modelID)
+                if parsed.stopReason == .error {
+                    let message = root[wireKey: "error"]?.wireString("message") ?? "response failed"
+                    throw OpenClawCoreError.unavailable("\(providerID) response failed: \(message)")
+                }
                 if let chunk = assembler.appendReasoning(parsed.reasoningText ?? "") {
                     continuation.yield(chunk)
                 }
@@ -769,17 +805,17 @@ struct OpenAIResponsesEngine: Sendable {
         if chatGPT {
             headers["originator"] = headers["originator"] ?? "openclaw"
             headers["OpenAI-Beta"] = "responses=experimental"
-            headers["session_id"] = headers["session_id"] ?? request.sessionKey
-            headers["x-client-request-id"] = headers["x-client-request-id"] ?? request.sessionKey
+            headers["session_id"] = headers["session_id"] ?? request.promptCacheKey
+            headers["x-client-request-id"] = headers["x-client-request-id"] ?? request.promptCacheKey
         } else if let cache = request.policy.promptCache, cache.enabled {
             let compat = model?.compat
             if compat?.sendSessionIdHeader != false, policy.usesKnownNativeOpenAIRoute {
-                headers["session_id"] = headers["session_id"] ?? request.sessionKey
+                headers["session_id"] = headers["session_id"] ?? request.promptCacheKey
             }
             if compat?.sendSessionAffinityHeaders == true {
-                headers["session_id"] = headers["session_id"] ?? request.sessionKey
-                headers["x-client-request-id"] = headers["x-client-request-id"] ?? request.sessionKey
-                headers["x-session-affinity"] = headers["x-session-affinity"] ?? request.sessionKey
+                headers["session_id"] = headers["session_id"] ?? request.promptCacheKey
+                headers["x-client-request-id"] = headers["x-client-request-id"] ?? request.promptCacheKey
+                headers["x-session-affinity"] = headers["x-session-affinity"] ?? request.promptCacheKey
             }
         }
         ProviderRequestResolution.applyHeaders(headers, request: &urlRequest)

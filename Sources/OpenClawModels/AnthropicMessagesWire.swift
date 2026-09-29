@@ -14,7 +14,12 @@ enum AnthropicMessagesWire {
     static let defaultBetas = ["fine-grained-tool-streaming-2025-05-14", "interleaved-thinking-2025-05-14"]
     static let oauthBetas = ["claude-code-20250219", "oauth-2025-04-20"]
     static let retiredBetas: Set<String> = ["context-1m-2025-08-07"]
-    static let defaultThinkingBudgetTokens = 1024
+    /// Smallest thinking budget the API accepts; smaller fitted budgets turn thinking off.
+    static let minimumThinkingBudgetTokens = 1024
+    /// Output tokens reserved for the visible answer when a budget must shrink to fit `max_tokens`.
+    static let minimumOutputTokensWithThinking = 1024
+    /// Default budgets per thinking level (upstream `adjustMaxTokensForThinking`).
+    static let defaultThinkingBudgets: [String: Int] = ["minimal": 1024, "low": 2048, "medium": 8192, "high": 16384]
     static let emptyMessagesFallbackText = "(no content)"
 
     /// Resolves the Messages endpoint: base without trailing slashes, plus `/messages` when it ends in
@@ -41,6 +46,45 @@ enum AnthropicMessagesWire {
         var thinking: [String: Any]?
         var outputEffort: String?
         var thinkingEnabled: Bool
+        /// `max_tokens` adjusted to leave room for a thinking budget (budget-based models only).
+        var maxTokens: Int?
+    }
+
+    /// Port of upstream `adjustMaxTokensForThinking` (`simple-options.ts`): maps a thinking level to
+    /// its budget (minimal 1024, low 2048, medium 8192, high 16384; `xhigh`/`max` clamp to high,
+    /// `adaptive` to medium), honoring `params.thinkingBudgets` overrides, and fits
+    /// `max_tokens = min(base + budget, modelMax)`. When that does not exceed the budget, the budget
+    /// shrinks to leave 1024 output tokens.
+    /// - Returns: The adjusted `max_tokens` and thinking budget (below 1024 means thinking off).
+    static func thinkingBudget(
+        level: ThinkLevel?,
+        baseMaxTokens: Int?,
+        model: ModelDefinitionConfig?
+    ) -> (maxTokens: Int, budget: Int) {
+        let key: String
+        switch level {
+        case .minimal?:
+            key = "minimal"
+        case .low?:
+            key = "low"
+        case .high?, .xhigh?, .max?, .ultra?:
+            key = "high"
+        case .medium?, .adaptive?, .off?, nil:
+            key = "medium"
+        }
+        let override = model?.params?["thinkingBudgets"]?.dictionaryValue?[key]?.intValue
+        var budget = override.flatMap { $0 > 0 ? $0 : nil } ?? self.defaultThinkingBudgets[key] ?? self.minimumThinkingBudgetTokens
+        let modelMax = model.flatMap { $0.maxTokens > 0 ? $0.maxTokens : nil }
+        let maxTokens: Int
+        if let base = baseMaxTokens.flatMap({ $0 > 0 ? $0 : nil }) {
+            maxTokens = min(base + budget, modelMax ?? (base + budget))
+        } else {
+            maxTokens = modelMax ?? (budget + self.minimumOutputTokensWithThinking)
+        }
+        if maxTokens <= budget {
+            budget = max(0, maxTokens - self.minimumOutputTokensWithThinking)
+        }
+        return (maxTokens, budget)
     }
 
     struct BuildContext {
@@ -56,7 +100,12 @@ enum AnthropicMessagesWire {
 
     // MARK: - Request
 
-    static func thinkingPlan(request: ModelGenerationRequest, model: ModelDefinitionConfig?, identity: ClaudeModelIdentity) -> ThinkingPlan {
+    static func thinkingPlan(
+        request: ModelGenerationRequest,
+        model: ModelDefinitionConfig?,
+        identity: ClaudeModelIdentity,
+        baseMaxTokens: Int? = nil
+    ) -> ThinkingPlan {
         let level: ThinkLevel?
         if let requested = request.policy.thinkingLevel ?? ThinkLevel.normalize(request.metadata["thinkingLevel"]) {
             level = requested
@@ -98,10 +147,17 @@ enum AnthropicMessagesWire {
                 let effort = identity.effort(for: level, thinkingLevelMap: model?.thinkingLevelMap)
                 return ThinkingPlan(thinking: ["type": "adaptive", "display": "summarized"], outputEffort: effort, thinkingEnabled: true)
             }
+            let fitted = self.thinkingBudget(level: level, baseMaxTokens: baseMaxTokens, model: model)
+            guard fitted.budget >= self.minimumThinkingBudgetTokens else {
+                // Sub-minimum budgets resolve to thinking disabled so temperature and tool choice
+                // stay consistent (upstream `anthropic-transport-stream.ts`).
+                return ThinkingPlan(thinking: ["type": "disabled"], outputEffort: nil, thinkingEnabled: false, maxTokens: fitted.maxTokens)
+            }
             return ThinkingPlan(
-                thinking: ["type": "enabled", "budget_tokens": self.defaultThinkingBudgetTokens],
+                thinking: ["type": "enabled", "budget_tokens": fitted.budget],
                 outputEffort: nil,
-                thinkingEnabled: true
+                thinkingEnabled: true,
+                maxTokens: fitted.maxTokens
             )
         }
         if level == .off || forcedOff {
@@ -127,11 +183,8 @@ enum AnthropicMessagesWire {
 
     static func buildPayload(request: ModelGenerationRequest, context: BuildContext) -> [String: Any] {
         let identity = context.identity
-        let thinking = self.thinkingPlan(request: request, model: context.model, identity: identity)
-        var maxTokens = context.maxTokens
-        if let budget = thinking.thinking?["budget_tokens"] as? Int, maxTokens <= budget {
-            maxTokens = budget + 1024
-        }
+        let thinking = self.thinkingPlan(request: request, model: context.model, identity: identity, baseMaxTokens: context.maxTokens)
+        let maxTokens = thinking.maxTokens ?? context.maxTokens
         var payload: [String: Any] = [
             "model": context.modelID,
             "max_tokens": maxTokens,
@@ -491,6 +544,30 @@ enum AnthropicMessagesWire {
         var outputTokens = 0
         var sawUsage = false
         var failure: String?
+        var sawMessageStart = false
+        var sawMessageStop = false
+        var sawStopReason = false
+        var sawContentBlock = false
+        /// Content blocks started but not yet stopped, with whether each is a `tool_use` block.
+        var openBlocks: [Int: Bool] = [:]
+
+        /// Error for a stream that ended before its terminal event (upstream
+        /// `anthropic-stream-reducer.ts`); `nil` when the stream is complete.
+        ///
+        /// Direct Anthropic always ends with `message_stop`. Compatible proxies may omit it, but a
+        /// started response still needs a `stop_reason`, and no route may end inside a tool call.
+        func incompleteReason(isDirect: Bool) -> String? {
+            if isDirect, !self.sawMessageStop {
+                return "stream ended before message_stop"
+            }
+            if self.openBlocks.values.contains(true) {
+                return "stream ended with an incomplete tool call"
+            }
+            if self.sawMessageStart || self.sawContentBlock, !self.sawMessageStop, !self.sawStopReason {
+                return "stream ended before a terminal event"
+            }
+            return nil
+        }
     }
 
     static func handleStreamEvent(
@@ -503,6 +580,7 @@ enum AnthropicMessagesWire {
         var chunks: [ModelStreamChunk] = []
         switch payload.wireString("type") ?? event.event ?? "" {
         case "message_start":
+            state.sawMessageStart = true
             let message = payload[wireKey: "message"]
             if let model = message?.wireString("model") {
                 assembler.modelID = model
@@ -513,6 +591,8 @@ enum AnthropicMessagesWire {
         case "content_block_start":
             let blockIndex = payload.wireInt("index") ?? 0
             let block = payload[wireKey: "content_block"]
+            state.sawContentBlock = true
+            state.openBlocks[blockIndex] = block?.wireString("type") == "tool_use"
             switch block?.wireString("type") {
             case "tool_use"?:
                 let toolIndex = assembler.nextToolCallIndex
@@ -561,8 +641,13 @@ enum AnthropicMessagesWire {
             default:
                 break
             }
+        case "content_block_stop":
+            state.openBlocks.removeValue(forKey: payload.wireInt("index") ?? 0)
+        case "message_stop":
+            state.sawMessageStop = true
         case "message_delta":
             if let reason = payload[wireKey: "delta"]?.wireString("stop_reason") {
+                state.sawStopReason = true
                 assembler.stopReason = self.stopReason(reason)
             }
             if let usage = payload[wireKey: "usage"] {
@@ -644,6 +729,9 @@ struct AnthropicMessagesEngine: Sendable {
             if let failure = state.failure {
                 throw OpenClawCoreError.unavailable("\(providerID) stream failed: \(failure)")
             }
+            if let incomplete = state.incompleteReason(isDirect: prepared.isDirect) {
+                throw OpenClawCoreError.unavailable("\(providerID) \(incomplete)")
+            }
             continuation.yield(.completed(response: assembler.response()))
         }
     }
@@ -651,6 +739,8 @@ struct AnthropicMessagesEngine: Sendable {
     struct Prepared {
         var urlRequest: URLRequest
         var modelID: String
+        /// Whether the request targets first-party Anthropic (which always ends streams with `message_stop`).
+        var isDirect = false
     }
 
     func prepare(_ request: ModelGenerationRequest, stream: Bool) throws -> Prepared {
@@ -663,8 +753,10 @@ struct AnthropicMessagesEngine: Sendable {
         try ProviderRequestValidation.validate(request, providerID: settings.providerID, model: model)
         let request = MediaInputPreparation.apply(request, limits: model?.mediaInput?.image)
         let baseURLString = settings.resolvedBaseURLString(for: request, defaultBaseURL: AnthropicMessagesWire.defaultBaseURL)
-        let credential = try self.credential(for: request)
+        let resolvedCredential = try self.credential(for: request)
+        let credential = resolvedCredential?.value
         let usesOAuth = settings.authMode == .oauthToken || settings.authMode == .bearerToken
+            || resolvedCredential?.isAccessToken == true
             || (credential?.hasPrefix("sk-ant-oat") ?? false)
         let isDirect = ProviderRuntimeIdentity.canonicalProviderID(settings.providerID) == "anthropic"
             && [.default, .anthropicPublic].contains(ModelProviderEndpointClass.resolve(baseURL: baseURLString))
@@ -749,10 +841,14 @@ struct AnthropicMessagesEngine: Sendable {
             urlRequest.setValue(beta, forHTTPHeaderField: "anthropic-beta")
         }
         urlRequest.httpBody = try ProviderWireJSON.encode(payload)
-        return Prepared(urlRequest: urlRequest, modelID: modelID)
+        return Prepared(urlRequest: urlRequest, modelID: modelID, isDirect: isDirect)
     }
 
-    private func credential(for request: ModelGenerationRequest) throws -> String? {
+    /// Credential for the configured auth mode, and whether it is an access token (sent as Bearer).
+    ///
+    /// `.none` (a config without `auth`) falls back to request-time credentials: an auth-profile API
+    /// key is sent as `x-api-key`, an auth-profile access token as `Authorization: Bearer`.
+    private func credential(for request: ModelGenerationRequest) throws -> (value: String, isAccessToken: Bool)? {
         let settings = self.settings
         switch settings.authMode {
         case .awsSDK:
@@ -760,9 +856,12 @@ struct AnthropicMessagesEngine: Sendable {
                 "\(settings.providerID) does not support aws-sdk auth mode for Anthropic-messages requests"
             )
         case .none:
-            return nil
+            if let key = ModelGenerationRequest.normalized(settings.apiKey) ?? request.resolvedAPIKey {
+                return (key, false)
+            }
+            return request.resolvedAccessToken.map { ($0, true) }
         default:
-            return try settings.bearerCredential(for: request)
+            return try settings.bearerCredential(for: request).map { ($0, false) }
         }
     }
 

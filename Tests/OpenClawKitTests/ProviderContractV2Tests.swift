@@ -357,6 +357,8 @@ struct ProviderContractV2Tests {
         let transport = ContractV2StubTransport(body: """
         data: {"type":"response.output_text.delta","delta":"ok"}
 
+        data: {"type":"response.completed","response":{"status":"completed"}}
+
         """)
         let config = ModelProviderConfig(
             enabled: true,
@@ -472,6 +474,9 @@ struct ProviderContractV2Tests {
 
         event: content_block_delta
         data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\\"city\\":\\"Oslo\\"}"}}
+
+        event: content_block_stop
+        data: {"type":"content_block_stop","index":2}
 
         event: message_delta
         data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":20}}
@@ -636,7 +641,9 @@ struct ProviderContractV2Tests {
         let url = try #require(await transport.lastRequest()?.url?.absoluteString)
         #expect(url.contains(":streamGenerateContent"))
         #expect(url.contains("alt=sse"))
-        #expect(url.contains("key=gem"))
+        // The API key travels in `x-goog-api-key`, never in the URL (upstream parity; keeps keys out of logs).
+        #expect(!url.contains("key=gem"))
+        #expect(await transport.lastRequest()?.value(forHTTPHeaderField: "x-goog-api-key") == "gem")
     }
 
     @Test
