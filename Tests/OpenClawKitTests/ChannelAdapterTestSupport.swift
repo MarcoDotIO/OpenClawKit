@@ -91,6 +91,30 @@ actor ScriptedChannelHTTP: TelegramHTTPTransport, DiscordHTTPTransport, SlackHTT
     }
 }
 
+/// One-shot gate: ``wait()`` suspends until ``open()``.
+actor ChannelTestGate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private(set) var waitCount = 0
+
+    func wait() async {
+        self.waitCount += 1
+        guard !self.isOpen else { return }
+        await withCheckedContinuation { continuation in
+            self.waiters.append(continuation)
+        }
+    }
+
+    func open() {
+        self.isOpen = true
+        let pending = self.waiters
+        self.waiters.removeAll()
+        for waiter in pending {
+            waiter.resume()
+        }
+    }
+}
+
 /// Collects inbound messages and join events.
 actor ChannelEventCollector {
     private(set) var messages: [InboundMessage] = []

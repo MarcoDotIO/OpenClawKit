@@ -46,6 +46,12 @@ public struct ChannelHTTPHandlerResponse: Sendable, Equatable {
 ///
 /// Peers are admitted by bearer token, so ``ChannelsConfig/messagingPolicy(for:accountID:)``
 /// evaluates `a2a` with `dmPolicy: allowlist` over the configured peer names.
+///
+/// - Important: The inbound handler must await the whole turn (for example
+///   `try? await engine.process(inbound)`), not just enqueue it. When the handler returns and the
+///   task is still pending (the turn threw, was blocked or suppressed, or sent nothing), the task
+///   is failed so later replies in the same context cannot complete it (upstream `inbound.ts`
+///   fails tasks whose dispatch produced no delivery).
 public actor A2AChannelAdapter: InboundChannelAdapter, ReceiptingChannelAdapter, ChannelConfigurationReporting {
     /// Maximum request body size.
     public static let maxRequestBodyBytes = 1_024 * 1_024
@@ -391,6 +397,12 @@ public actor A2AChannelAdapter: InboundChannelAdapter, ReceiptingChannelAdapter,
             ]
         )
         await inboundHandler(inbound)
+        // A reply completes the task before the handler returns. A task that is still pending
+        // produced no reply; leaving it queued would let the next reply in this context complete
+        // it instead of its own task.
+        if let task = await self.taskStore.get(taskID), !task.status.state.isTerminal {
+            await self.taskStore.fail(taskID, reason: "A2A turn ended without a reply")
+        }
     }
 
     // MARK: Helpers

@@ -164,6 +164,10 @@ public actor DiscordChannelAdapter: InboundChannelAdapter, ReceiptingChannelAdap
     private var channelGuilds: [String: String] = [:]
     private var recentMessageIDs = ChannelRecentIDs(capacity: 512)
     private var health = ChannelTransportHealth()
+    /// Last queued inbound delivery per channel (per-conversation sequencing, upstream
+    /// `extensions/discord/src/monitor/listeners.ts`).
+    private var inboundTails: [String: (id: Int, task: Task<Void, Never>)] = [:]
+    private var nextInboundID = 0
 
     /// Creates a Discord channel adapter.
     /// - Parameters:
@@ -266,11 +270,15 @@ public actor DiscordChannelAdapter: InboundChannelAdapter, ReceiptingChannelAdap
         self.health = ChannelTransportHealth(state: .healthy)
     }
 
-    /// Stops the adapter (gateway, polling and presence).
+    /// Stops the adapter (gateway, polling and presence) and drops queued inbound deliveries.
     public func stop() async {
         self.started = false
         self.pollTask?.cancel()
         self.pollTask = nil
+        for tail in self.inboundTails.values {
+            tail.task.cancel()
+        }
+        self.inboundTails.removeAll()
         if let presenceClient = self.presenceClient {
             await presenceClient.stop()
         }
@@ -596,7 +604,29 @@ public actor DiscordChannelAdapter: InboundChannelAdapter, ReceiptingChannelAdap
             legacyRoutingAccountID: message.author.id
         )
         if let inboundHandler {
-            await inboundHandler(inbound)
+            self.enqueueInbound(inbound, channelID: channelID, handler: inboundHandler)
+        }
+    }
+
+    /// Runs the inbound handler off the gateway receive path, serially per channel: a slow agent
+    /// turn delays only later messages of its own channel, never heartbeats or other channels.
+    private func enqueueInbound(_ inbound: InboundMessage, channelID: String, handler: @escaping InboundMessageHandler) {
+        let previous = self.inboundTails[channelID]?.task
+        self.nextInboundID &+= 1
+        let id = self.nextInboundID
+        let task = Task { [weak self] in
+            await previous?.value
+            if !Task.isCancelled {
+                await handler(inbound)
+            }
+            await self?.finishInbound(channelID: channelID, id: id)
+        }
+        self.inboundTails[channelID] = (id, task)
+    }
+
+    private func finishInbound(channelID: String, id: Int) {
+        if self.inboundTails[channelID]?.id == id {
+            self.inboundTails[channelID] = nil
         }
     }
 

@@ -102,6 +102,11 @@ public struct DiscordPresence: Sendable, Equatable {
 /// Handler for gateway dispatch events: event name (`MESSAGE_CREATE`, ...) and the raw frame JSON.
 public typealias DiscordGatewayDispatchHandler = @Sendable (_ event: String, _ frame: Data) async -> Void
 
+private struct DiscordGatewayDispatch: Sendable {
+    let type: String
+    let frame: Data
+}
+
 private struct DiscordGatewayFrame: Decodable {
     let op: Int
     let s: Int?
@@ -111,6 +116,10 @@ private struct DiscordGatewayFrame: Decodable {
 
 /// Discord gateway client: HELLO, IDENTIFY with intents, heartbeats with ACK tracking,
 /// dispatch forwarding, and RESUME/reconnect on `op 7`, `op 9` and dropped sockets with backoff.
+///
+/// Dispatch events are handed to the handler in order from a separate task, so a slow handler
+/// never stalls the receive loop: heartbeat ACKs, reconnect requests and later events keep
+/// flowing while an agent turn runs.
 ///
 /// Terminal close codes (4004 authentication failed, 4010-4014 invalid shard/version/intents)
 /// stop reconnecting and are reported through ``lastError()``.
@@ -128,7 +137,8 @@ public actor DiscordGatewayClient {
     private var socket: (any ChannelWebSocketConnection)?
     private var runTask: Task<Void, Never>?
     private var heartbeatTask: Task<Void, Never>?
-    private var handler: DiscordGatewayDispatchHandler?
+    private var dispatchTask: Task<Void, Never>?
+    private var dispatchContinuation: AsyncStream<DiscordGatewayDispatch>.Continuation?
     private var sequence: Int?
     private var sessionID: String?
     private var resumeURL: URL?
@@ -172,7 +182,13 @@ public actor DiscordGatewayClient {
         guard !self.token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw OpenClawCoreError.invalidConfiguration("Discord gateway token is required")
         }
-        self.handler = handler
+        let (dispatches, continuation) = AsyncStream<DiscordGatewayDispatch>.makeStream()
+        self.dispatchContinuation = continuation
+        self.dispatchTask = Task {
+            for await dispatch in dispatches {
+                await handler(dispatch.type, dispatch.frame)
+            }
+        }
         self.running = true
         self.error = nil
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
@@ -194,6 +210,9 @@ public actor DiscordGatewayClient {
         self.runTask = nil
         self.heartbeatTask?.cancel()
         self.heartbeatTask = nil
+        self.finishDispatch()
+        self.dispatchTask?.cancel()
+        self.dispatchTask = nil
         await self.socket?.close()
         self.socket = nil
         self.sequence = nil
@@ -231,10 +250,13 @@ public actor DiscordGatewayClient {
                 try await self.runConnection()
                 attempt = 0
             } catch {
-                self.error = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+                self.error = ChannelErrorText.describe(error)
                 if self.readyContinuation != nil {
                     // The first connection failed before READY: fail start() instead of retrying forever.
                     self.running = false
+                    self.heartbeatTask?.cancel()
+                    self.heartbeatTask = nil
+                    self.finishDispatch()
                     await self.socket?.close()
                     self.socket = nil
                     self.failReady(error)
@@ -245,6 +267,9 @@ public actor DiscordGatewayClient {
             if let code = await self.socket?.closeCode(), Self.terminalCloseCodes.contains(code) {
                 self.error = "Discord gateway closed with terminal code \(code)"
                 self.running = false
+                self.heartbeatTask?.cancel()
+                self.heartbeatTask = nil
+                self.finishDispatch()
                 self.failReady(OpenClawCoreError.unavailable(self.error ?? "Discord gateway closed"))
                 return
             }
@@ -283,7 +308,7 @@ public actor DiscordGatewayClient {
             }
             switch frame.op {
             case 0:
-                await self.handleDispatch(frame, raw: raw)
+                self.handleDispatch(frame, raw: raw)
             case 1:
                 try await socket.send(text: Self.text(["op": 1, "d": self.sequenceJSON]))
             case 7:
@@ -315,8 +340,12 @@ public actor DiscordGatewayClient {
         try await socket.send(text: Self.text(["op": 2, "d": data]))
     }
 
-    private func handleDispatch(_ frame: DiscordGatewayFrame, raw: String) async {
+    /// Session bookkeeping runs inline; the handler runs on the dispatch task.
+    private func handleDispatch(_ frame: DiscordGatewayFrame, raw: String) {
         guard let type = frame.t else { return }
+        if type == "RESUMED" {
+            self.error = nil
+        }
         if type == "READY" {
             let payload = frame.d?.dictionaryValue
             self.sessionID = payload?["session_id"]?.stringValue
@@ -331,9 +360,7 @@ public actor DiscordGatewayClient {
             self.readyContinuation?.resume()
             self.readyContinuation = nil
         }
-        if let handler {
-            await handler(type, Data(raw.utf8))
-        }
+        self.dispatchContinuation?.yield(DiscordGatewayDispatch(type: type, frame: Data(raw.utf8)))
     }
 
     private func startHeartbeat(on socket: any ChannelWebSocketConnection) {
@@ -367,6 +394,12 @@ public actor DiscordGatewayClient {
 
     private var sequenceJSON: Any {
         self.sequence.map { $0 as Any } ?? NSNull()
+    }
+
+    /// Ends the dispatch stream; events already queued are still delivered unless the task is cancelled.
+    private func finishDispatch() {
+        self.dispatchContinuation?.finish()
+        self.dispatchContinuation = nil
     }
 
     private func failReady(_ error: Error) {

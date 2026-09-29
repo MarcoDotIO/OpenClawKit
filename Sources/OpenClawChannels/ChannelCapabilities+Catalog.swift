@@ -232,9 +232,10 @@ enum ChannelCatalogTraitsTable {
             nativeTransportAvailable: true,
             nativeTransportKind: "twilio"
         ),
+        // No outbound chunking: a reply completes one task whole (upstream `deliveryMode: direct`).
+        // The 64 KiB `A2A_MESSAGE_MAX_BYTES` is an inbound text cap (`A2AProtocol.extractText`).
         "a2a": ChannelCatalogTraits(
             capabilities: ChannelCapabilities(chatTypes: [.direct]),
-            chunking: ChannelTextChunkingDefaults(defaultLimit: 65_536, unit: .bytes, platformLimit: 65_536),
             nativeTransportAvailable: true,
             nativeTransportKind: "a2a-jsonrpc"
         ),

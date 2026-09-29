@@ -395,4 +395,50 @@ struct ChannelAutoReplyAccessTests {
         let unsupported = ChannelJoinEvent(channel: .signal, peerID: "g")
         #expect(try await harness.engine.handleJoin(unsupported) == nil)
     }
+
+    @Test
+    func a2aRepliesCompleteTheirTaskWholeThroughTheEngine() async throws {
+        let reply = String(repeating: "0123456789", count: 15_000)
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("openclaw-autoreply-a2a", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let a2a = A2AChannelConfig(enabled: true, replyTimeoutMs: 10_000, peers: ["alice": A2APeerConfig(token: "alice-token")])
+        let registry = ChannelRegistry(sendRetryPolicy: ChannelSendRetryPolicy(maxAttempts: 1), sendThrottlePolicy: ChannelSendThrottlePolicy())
+        let adapter = A2AChannelAdapter(config: a2a)
+        await registry.register(adapter)
+        try await adapter.start()
+        let runtime = EmbeddedAgentRuntime()
+        await runtime.registerModelProvider(CountingProvider(text: reply))
+        try await runtime.setDefaultModelProviderID("fixed")
+        var channels = ChannelsConfig()
+        channels.a2a = a2a
+        let engine = AutoReplyEngine(
+            config: OpenClawConfig(channels: channels, models: ModelsConfig(defaultProviderID: "fixed")),
+            sessionStore: SessionStore(fileURL: root.appendingPathComponent("sessions.json")),
+            channelRegistry: registry,
+            runtime: runtime
+        )
+        await adapter.setInboundHandler { inbound in
+            _ = try? await engine.process(inbound)
+        }
+        let request: [String: Any] = [
+            "jsonrpc": "2.0", "id": "1", "method": "SendMessage",
+            "params": ["message": ["role": "ROLE_USER", "parts": [["text": "write the report"]], "messageId": "m-1", "contextId": "ctx-report"]],
+        ]
+        let response = await adapter.handleHTTP(
+            method: "POST",
+            path: "/a2a/v1",
+            headers: ["Authorization": "Bearer alice-token"],
+            body: try JSONSerialization.data(withJSONObject: request)
+        )
+        await adapter.stop()
+        let task = try #require((jsonObject(response.bodyText)["result"] as? [String: Any])?["task"] as? [String: Any])
+        #expect((task["status"] as? [String: Any])?["state"] as? String == "TASK_STATE_COMPLETED")
+        let artifacts = try #require(task["artifacts"] as? [[String: Any]])
+        let text = (artifacts.first?["parts"] as? [[String: Any]])?.first?["text"] as? String
+        #expect(text?.count == reply.count)
+        #expect(text == reply)
+    }
 }

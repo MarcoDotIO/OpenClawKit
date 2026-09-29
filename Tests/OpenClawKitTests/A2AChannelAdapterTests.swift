@@ -226,7 +226,10 @@ struct A2AChannelAdapterTests {
     @Test
     func slashMessagesAreRejectedAndReturnImmediatelyYieldsWorkingTask() async throws {
         let adapter = A2AChannelAdapter(config: Self.config())
-        await adapter.setInboundHandler { _ in }
+        // The turn is still running while the task is polled (a returning handler fails the task).
+        let gate = ChannelTestGate()
+        await adapter.setInboundHandler { _ in await gate.wait() }
+        defer { Task { await gate.open() } }
         try await adapter.start()
         let slash = await adapter.handleHTTP(method: "POST", path: "/a2a/v1", headers: Self.alice, body: Self.rpc("SendMessage", params: Self.send("/reset")))
         let slashTask = (jsonObject(slash.bodyText)["result"] as? [String: Any])?["task"] as? [String: Any]
@@ -247,6 +250,45 @@ struct A2AChannelAdapterTests {
         let foreign = await adapter.handleHTTP(method: "POST", path: "/a2a/v1", headers: Self.bob, body: Self.rpc("GetTask", params: ["id": taskID]))
         #expect(jsonObject(foreign.bodyText)["error"].flatMap { ($0 as? [String: Any])?["code"] as? Int } == -32_001)
         await adapter.stop()
+    }
+
+    @Test
+    func turnsThatEndWithoutAReplyFailSoLaterRepliesCompleteTheirOwnTask() async throws {
+        let adapter = A2AChannelAdapter(config: Self.config())
+        await adapter.setInboundHandler { message in
+            // The first turn fails (for example a provider 429 swallowed by `try?`) and sends nothing.
+            guard message.text != "first" else { return }
+            try? await adapter.send(OutboundMessage(channel: .a2a, peerID: message.peerID, text: "reply to \(message.text)"))
+        }
+        try await adapter.start()
+        func task(_ response: ChannelHTTPHandlerResponse) -> [String: Any]? {
+            (jsonObject(response.bodyText)["result"] as? [String: Any])?["task"] as? [String: Any]
+        }
+        func post(_ text: String) async -> ChannelHTTPHandlerResponse {
+            let body = Self.rpc("SendMessage", params: Self.send(text, context: "ctx-9"))
+            return await adapter.handleHTTP(method: "POST", path: "/a2a/v1", headers: Self.alice, body: body)
+        }
+        let first = await post("first")
+        let second = await post("second")
+        await adapter.stop()
+
+        let firstTask = try #require(task(first))
+        #expect((firstTask["status"] as? [String: Any])?["state"] as? String == "TASK_STATE_FAILED")
+        #expect((firstTask["artifacts"] as? [Any])?.isEmpty ?? true)
+        let secondTask = try #require(task(second))
+        #expect((secondTask["status"] as? [String: Any])?["state"] as? String == "TASK_STATE_COMPLETED")
+        let artifacts = try #require(secondTask["artifacts"] as? [[String: Any]])
+        #expect((artifacts.first?["parts"] as? [[String: Any]])?.first?["text"] as? String == "reply to second")
+    }
+
+    @Test
+    func repliesHaveNoOutboundChunkingDefaults() {
+        // The auto-reply engine only chunks channels with chunking defaults or a configured limit
+        // (see `ChannelAutoReplyAccessTests.a2aRepliesCompleteTheirTaskWholeThroughTheEngine`).
+        #expect(ChannelID.a2a.metadata.textChunking == nil)
+        var channels = ChannelsConfig()
+        channels.a2a = Self.config()
+        #expect(channels.messagingPolicy(for: "a2a").textChunkLimit == nil)
     }
 
     @Test
