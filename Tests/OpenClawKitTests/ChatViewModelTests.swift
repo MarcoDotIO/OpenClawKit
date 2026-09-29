@@ -13840,8 +13840,7 @@ struct ChatViewModelTests {
         try await waitUntil("streaming cleared") { await MainActor.run { vm.streamingAssistantText == nil } }
     }
 
-    @Test(.disabled("Needs the 2026.9.6 ChatMarkdownPreprocessor inbound-context marker (markdown port)"))
-    func `strips inbound metadata from history messages`() async throws {
+    @Test func `strips inbound metadata from history messages`() async throws {
         let history = historyPayloadWithoutRunState(
             messages: [
                 AnyCodable(json: [
@@ -13903,6 +13902,19 @@ struct ChatViewModelTests {
         #expect(messages.last?.historyMarker?.kind == "compaction")
         #expect(messages.last?.historyMarker?.tokensBefore == 20000)
         #expect(messages.last?.historyMarker?.tokensAfter == 8000)
+
+        let rows = await MainActor.run { ChatTranscriptRow.build(from: vm.messages) }
+        #expect(rows.count == 2)
+        guard let first = rows.first, case let .systemNotice(notice) = first else {
+            Issue.record("Expected a restart notice")
+            return
+        }
+        #expect(notice.body == "Gateway restarted cleanly.")
+        guard let last = rows.last, case let .historyDivider(divider) = last else {
+            Issue.record("Expected a compaction divider")
+            return
+        }
+        #expect(divider.metric == "saved 12k tokens")
     }
 
     @Test func `abort requests do not clear pending until aborted event`() async throws {

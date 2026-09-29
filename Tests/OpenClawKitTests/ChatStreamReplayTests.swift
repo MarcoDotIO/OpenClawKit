@@ -397,6 +397,14 @@ struct ChatStreamReplayTests {
         let marker = await MainActor.run { harness.vm.messages.last?.historyMarker }
         #expect(marker?.kind == "reset")
         #expect(marker?.id == "live-reset")
+
+        let rows = await MainActor.run { ChatTranscriptRow.build(from: harness.vm.messages) }
+        guard let last = rows.last, case let .historyDivider(divider) = last else {
+            Issue.record("Expected the live reset marker to produce a divider")
+            return
+        }
+        #expect(divider.label == "Session reset")
+        #expect(divider.description == "The earlier conversation was cleared.")
     }
 
     @Test func `clean streaming run converges losslessly to durable rows`() async throws {
