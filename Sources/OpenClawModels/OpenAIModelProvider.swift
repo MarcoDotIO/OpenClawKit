@@ -9,10 +9,13 @@ import OpenClawCore
 
 /// OpenAI-backed model provider using the Chat Completions API.
 ///
-/// Simple text requests use OpenAIKit on Apple platforms. Requests with attachments, transcripts,
-/// tools, response formats, reasoning controls or streaming use the contract-v2 Chat Completions
-/// engine (see ``ProviderServiceOpenAIModelProvider``) and send `OpenAI-Organization` /
-/// `OpenAI-Project` from request metadata.
+/// Every request uses the contract-v2 Chat Completions engine (see
+/// ``ProviderServiceOpenAIModelProvider``) and sends `OpenAI-Organization` / `OpenAI-Project` from
+/// request metadata, then provider metadata. OpenAIKit 3.0.0 is not used: it resolves endpoint
+/// paths against the host root (`https://api.openai.com/chat/completions`, a 404).
+///
+/// Providers built by ``ModelProviderFactory`` keep the canonical config's `headers`,
+/// `organizationID` and `metadata`.
 public struct OpenAIModelProvider: ModelProvider {
     /// Canonical provider identifier.
     public static let providerID = "openai"
@@ -28,7 +31,7 @@ public struct OpenAIModelProvider: ModelProvider {
     /// - Parameters:
     ///   - id: Provider identifier.
     ///   - configuration: OpenAI provider settings.
-    ///   - httpClient: HTTP client used for API calls.
+    ///   - httpClient: HTTP client used for API calls (buffered; streams replay the buffered body).
     public init(
         id: String = OpenAIModelProvider.providerID,
         configuration: OpenAIModelConfig,
@@ -38,6 +41,7 @@ public struct OpenAIModelProvider: ModelProvider {
             id: id,
             configuration: configuration,
             legacyTransport: httpClient,
+            usesOpenAIKit: false,
             clientFactory: { providerID, resolved in
                 try OpenAIKitClientFactory.makeChatClient(providerID: providerID, resolved: resolved)
             }
@@ -46,7 +50,7 @@ public struct OpenAIModelProvider: ModelProvider {
 
     /// Creates an OpenAI model provider with an explicit transport and runtime context.
     ///
-    /// Every request then goes through `transport` (OpenAIKit is not used).
+    /// Every request goes through `transport`.
     /// - Parameters:
     ///   - id: Provider identifier.
     ///   - configuration: OpenAI provider settings.
@@ -82,6 +86,9 @@ public struct OpenAIModelProvider: ModelProvider {
         self.configuration = configuration
         self.clientFactory = clientFactory
         self.usesOpenAIKit = usesOpenAIKit
+        // OpenAIModelConfig has no headers or metadata; keep the canonical config's (factory-built providers).
+        let providerConfig = runtime.providerConfig
+        let configuredMetadata = providerConfig?.metadata ?? [:]
         let service = ProviderServiceConfig(
             enabled: configuration.enabled,
             apiStyle: .openAICompletions,
@@ -90,7 +97,10 @@ public struct OpenAIModelProvider: ModelProvider {
             fastMode: configuration.fastMode,
             apiKey: configuration.apiKey,
             baseURL: configuration.baseURL,
-            chatCompletionsPath: "chat/completions"
+            chatCompletionsPath: "chat/completions",
+            organizationID: providerConfig?.organizationID,
+            headers: providerConfig?.headers ?? [:],
+            metadata: configuredMetadata
         )
         self.engine = OpenAIChatCompletionsEngine(
             settings: ProviderEndpointSettings(providerID: id, service: service, api: .openAICompletions, runtime: runtime),
@@ -104,12 +114,16 @@ public struct OpenAIModelProvider: ModelProvider {
                 var headers: [String: String] = [:]
                 if let organization = ProviderRequestResolution.metadataValue(
                     request.metadata,
-                    [:],
+                    configuredMetadata,
                     keys: ["openai.organizationID", "openai.organizationId"]
                 ) {
                     headers["OpenAI-Organization"] = organization
                 }
-                if let project = ProviderRequestResolution.metadataValue(request.metadata, [:], keys: ["openai.projectID", "openai.projectId"]) {
+                if let project = ProviderRequestResolution.metadataValue(
+                    request.metadata,
+                    configuredMetadata,
+                    keys: ["openai.projectID", "openai.projectId"]
+                ) {
                     headers["OpenAI-Project"] = project
                 }
                 return headers

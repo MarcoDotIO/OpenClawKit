@@ -465,7 +465,7 @@ enum AnthropicMessagesWire {
         }
         let stopReason = self.stopReason(root.wireString("stop_reason"))
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty, toolCalls.isEmpty, stopReason != .refusal {
+        if trimmed.isEmpty, toolCalls.isEmpty, stopReason != .refusal, stopReason?.permitsEmptyOutput != true {
             throw OpenClawCoreError.unavailable("\(providerID) response did not include text content")
         }
         return ModelGenerationResponse(

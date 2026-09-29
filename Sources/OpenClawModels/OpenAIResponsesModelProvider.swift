@@ -20,8 +20,9 @@ import OpenClawProtocol
 ///   always streams, sends `store: false`, `instructions`, `include: ["reasoning.encrypted_content"]`
 ///   and the `chatgpt-account-id` / `originator` headers.
 /// - Azure (`azure-openai-responses`) adds `api-version` and authenticates API keys with `api-key`.
-/// - Simple text requests (no transcript, tools, response format, reasoning or tier overrides) use
-///   OpenAIKit on Apple platforms.
+/// - Every request goes through `transport`. OpenAIKit 3.0.0 is not used: it resolves endpoint
+///   paths against the host root (`https://api.openai.com/responses`, a 404), and its response
+///   model has no `output` items, so it cannot read Responses text.
 public struct OpenAIResponsesModelProvider: ModelProvider {
     /// Provider identifier.
     public let id: String
@@ -29,6 +30,8 @@ public struct OpenAIResponsesModelProvider: ModelProvider {
     private let configuration: ProviderServiceConfig
     private let engine: OpenAIResponsesEngine
     private let responsesClientFactory: OpenAIKitResponsesClientFactory
+    /// Whether simple text requests may use the injected OpenAIKit client (internal test hook).
+    private let usesOpenAIKit: Bool
 
     /// Creates a Responses provider.
     /// - Parameters:
@@ -48,6 +51,7 @@ public struct OpenAIResponsesModelProvider: ModelProvider {
             configuration: configuration,
             transport: transport,
             runtime: runtime,
+            usesOpenAIKit: false,
             responsesClientFactory: { providerID, resolved in
                 try OpenAIKitClientFactory.makeResponsesClient(providerID: providerID, resolved: resolved)
             }
@@ -59,10 +63,12 @@ public struct OpenAIResponsesModelProvider: ModelProvider {
         configuration: ProviderServiceConfig,
         transport: any OpenAICompatibleHTTPTransport,
         runtime: ModelProviderRuntimeContext = .empty,
+        usesOpenAIKit: Bool = true,
         responsesClientFactory: @escaping OpenAIKitResponsesClientFactory
     ) {
         self.id = id
         self.configuration = configuration
+        self.usesOpenAIKit = usesOpenAIKit
         let api = runtime.api ?? .openAIResponses
         self.engine = OpenAIResponsesEngine(
             settings: ProviderEndpointSettings(providerID: id, service: configuration, api: api, runtime: runtime),
@@ -89,33 +95,10 @@ public struct OpenAIResponsesModelProvider: ModelProvider {
         }
 
         #if canImport(OpenAIKit)
-        let resolved = try OpenAIKitClientFactory.resolve(
-            providerID: self.id,
-            configuration: self.configuration,
-            request: request
-        )
-        if self.canUseOpenAIKitResponses(request: request, resolved: resolved) {
-            do {
-                let client = try self.responsesClientFactory(self.id, resolved)
-                let response = try await client.createResponse(
-                    parameters: ResponseCreateParameters(
-                        model: resolved.modelID,
-                        input: request.prompt,
-                        instructions: ModelGenerationRequest.normalized(request.systemPrompt)
-                    )
-                )
-                let text = response.outputText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                guard !text.isEmpty else {
-                    throw OpenClawCoreError.unavailable("\(self.id) response did not include text output")
-                }
-                return ModelGenerationResponse(
-                    text: text,
-                    providerID: self.id,
-                    modelID: response.model ?? resolved.modelID,
-                    stopReason: response.status == "incomplete" ? .length : .stop
-                )
-            } catch {
-                throw OpenAIKitErrorNormalizer.normalize(error, providerID: self.id)
+        if self.usesOpenAIKit {
+            let resolved = try OpenAIKitClientFactory.resolve(providerID: self.id, configuration: self.configuration, request: request)
+            if self.canUseOpenAIKitResponses(request: request, resolved: resolved) {
+                return try await self.generateViaOpenAIKit(request: request, resolved: resolved)
             }
         }
         #endif
@@ -131,6 +114,34 @@ public struct OpenAIResponsesModelProvider: ModelProvider {
     }
 
     #if canImport(OpenAIKit)
+    private func generateViaOpenAIKit(
+        request: ModelGenerationRequest,
+        resolved: OpenAIKitResolvedRequest
+    ) async throws -> ModelGenerationResponse {
+        do {
+            let client = try self.responsesClientFactory(self.id, resolved)
+            let response = try await client.createResponse(
+                parameters: ResponseCreateParameters(
+                    model: resolved.modelID,
+                    input: request.prompt,
+                    instructions: ModelGenerationRequest.normalized(request.systemPrompt)
+                )
+            )
+            let text = response.outputText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !text.isEmpty else {
+                throw OpenClawCoreError.unavailable("\(self.id) response did not include text output")
+            }
+            return ModelGenerationResponse(
+                text: text,
+                providerID: self.id,
+                modelID: response.model ?? resolved.modelID,
+                stopReason: response.status == "incomplete" ? .length : .stop
+            )
+        } catch {
+            throw OpenAIKitErrorNormalizer.normalize(error, providerID: self.id)
+        }
+    }
+
     private func canUseOpenAIKitResponses(
         request: ModelGenerationRequest,
         resolved: OpenAIKitResolvedRequest

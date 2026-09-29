@@ -96,6 +96,15 @@ struct OpenAIChatCompletionsCompat: Sendable, Equatable {
     }
 }
 
+extension ModelStopReason {
+    /// Whether a response may carry neither text nor tool calls: the output limit was reached (for
+    /// example by reasoning tokens alone) or a safety filter removed the output. Such responses are
+    /// returned with their usage and stop reason instead of failing, matching the streaming path.
+    var permitsEmptyOutput: Bool {
+        self == .length || self == .contentFilter
+    }
+}
+
 /// OpenAI Chat Completions request/response mapping for contract v2 (upstream
 /// `openai-completions-params.ts`, `openai-completions-messages.ts`, `openai-completions-stream.ts`).
 enum OpenAIChatCompletionsWire {
@@ -614,7 +623,9 @@ enum OpenAIChatCompletionsWire {
             stopReason = .refusal
             text = message?.wireString("refusal") ?? ""
         }
-        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, toolCalls.isEmpty, stopReason != .refusal {
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, toolCalls.isEmpty, stopReason != .refusal,
+           stopReason?.permitsEmptyOutput != true
+        {
             throw OpenClawCoreError.unavailable("\(providerID) response did not include message content")
         }
         return ModelGenerationResponse(
