@@ -200,6 +200,12 @@ struct ChatMessageVisibleTextTests {
         #expect(decodedSystemRow.historyMarker == systemRow.historyMarker)
     }
 
+    @Test func `legacy trace mapping sets both independent display options`() {
+        #expect(OpenClawChatDisplayOptions.assistantTrace(true) == [.reasoning, .toolActivity])
+        #expect(OpenClawChatDisplayOptions.assistantTrace(false).isEmpty)
+        #expect(OpenClawChatDisplayOptions.reasoning != .toolActivity)
+    }
+
     @Test func `has visible text ignores tool blank and thinking only messages`() {
         let toolOnly = OpenClawChatMessage(
             role: "assistant",
