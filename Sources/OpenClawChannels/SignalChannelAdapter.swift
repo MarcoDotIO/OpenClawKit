@@ -369,8 +369,9 @@ public actor SignalChannelAdapter: InboundChannelAdapter, ReceiptingChannelAdapt
                 throw ChannelSendError.rejected(status: 413, detail: "Signal attachments exceed the \(budget)-byte budget")
             }
             remaining -= attachment.data.count
-            let name = (attachment.fileName ?? "attachment").map { ",;#".contains($0) ? "_" : $0 }
-            results.append("data:\(attachment.mimeType);filename=\(String(name));base64,\(attachment.data.base64EncodedString())")
+            let baseName: String = attachment.fileName ?? "attachment"
+            let name = String(baseName.map { (character: Character) -> Character in ",;#".contains(character) ? "_" : character })
+            results.append("data:\(attachment.mimeType);filename=\(name);base64,\(attachment.data.base64EncodedString())")
         }
         return results
     }

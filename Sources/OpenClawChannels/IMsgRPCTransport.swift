@@ -353,9 +353,20 @@ public actor IMsgRPCTransport: IMessageInboundTransport {
             attachmentParams["file"] = AnyCodable(file.path)
             _ = try await client.request("send.attachment", params: attachmentParams, timeoutMs: IMsgRPCClient.sendTimeoutMs)
         }
-        let object = result.dictionaryValue
-        return object?["guid"]?.stringValue ?? object?["message_id"]?.stringValue ?? object?["messageId"]?.stringValue
-            ?? object?["id"]?.int64Value.map(String.init)
+        return Self.messageID(from: result)
+    }
+
+    private static func messageID(from result: AnyCodable) -> String? {
+        guard let object = result.dictionaryValue else { return nil }
+        for key in ["guid", "message_id", "messageId"] {
+            if let value = object[key]?.stringValue {
+                return value
+            }
+        }
+        if let rowID = object["id"]?.int64Value {
+            return String(rowID)
+        }
+        return nil
     }
 
     /// Subscribes to inbound messages.
