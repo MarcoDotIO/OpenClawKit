@@ -22,6 +22,126 @@ public struct SessionRoute: Codable, Sendable, Equatable {
     }
 }
 
+/// Per-profile discovery state of a shared session (upstream `SessionProfileInvolvement`, set by
+/// `sessions.setInvolvement`): whether that person hid the session from their own list. Never
+/// participation, attribution or sharing authority.
+public struct SessionProfileInvolvement: Codable, Sendable, Equatable {
+    /// Whether the profile hid the session.
+    public var hidden: Bool
+    /// Last change (ms).
+    public var updatedAt: Int64
+
+    /// Creates an involvement record.
+    /// - Parameters:
+    ///   - hidden: Whether the profile hid the session.
+    ///   - updatedAt: Last change (ms).
+    public init(hidden: Bool, updatedAt: Int64) {
+        self.hidden = hidden
+        self.updatedAt = updatedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case hidden
+        case updatedAt
+    }
+
+    /// Decodes an involvement record (a missing `updatedAt` decodes as `0`).
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.hidden = try container.decodeIfPresent(Bool.self, forKey: .hidden) ?? false
+        if let value = try? container.decodeIfPresent(Int64.self, forKey: .updatedAt) {
+            self.updatedAt = value
+        } else if let value = try? container.decodeIfPresent(Double.self, forKey: .updatedAt), value.isFinite,
+                  let exact = Int64(exactly: value.rounded(.towardZero)) {
+            self.updatedAt = exact
+        } else {
+            self.updatedAt = 0
+        }
+    }
+}
+
+/// Collaboration mode of a session (upstream `SessionVisibility`, set by `sessions.visibility.set`).
+/// A record without one behaves as ``shared``.
+public enum SessionVisibility: String, Codable, Sendable, CaseIterable {
+    /// Everyone with access can collaborate (the default).
+    case shared
+    /// Members can read but not send.
+    case readOnly = "read-only"
+    /// Members can suggest; the owner decides.
+    case suggest
+    /// Only the owner sees the session.
+    case draft
+
+    /// Parses a visibility value (case-insensitive); unknown values yield `nil`.
+    /// - Parameter raw: Raw value.
+    /// - Returns: The visibility, or `nil`.
+    public static func normalize(_ raw: String?) -> SessionVisibility? {
+        guard let raw else { return nil }
+        return SessionVisibility(rawValue: raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+    }
+}
+
+/// Explicit member of a shared session (upstream `SessionMember`, managed by
+/// `sessions.members.add`/`remove`).
+public struct SessionMember: Codable, Sendable, Equatable {
+    /// Member identity id.
+    public var identityID: String
+    /// Identity that added the member (`nil` when unknown).
+    public var addedBy: String?
+    /// When the member was added (ms).
+    public var addedAt: Int64
+
+    /// Creates a member.
+    /// - Parameters:
+    ///   - identityID: Member identity id.
+    ///   - addedBy: Identity that added the member.
+    ///   - addedAt: When the member was added (ms).
+    public init(identityID: String, addedBy: String? = nil, addedAt: Int64) {
+        self.identityID = identityID
+        self.addedBy = addedBy
+        self.addedAt = addedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case identityID = "identityId"
+        case addedBy
+        case addedAt
+    }
+
+    /// Decodes a member (a missing or malformed `addedAt` decodes as `0`).
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.identityID = try container.decode(String.self, forKey: .identityID)
+        self.addedBy = (try? container.decodeIfPresent(String.self, forKey: .addedBy)) ?? nil
+        if let value = (try? container.decodeIfPresent(Int64.self, forKey: .addedAt)) ?? nil {
+            self.addedAt = value
+        } else if let value = (try? container.decodeIfPresent(Double.self, forKey: .addedAt)) ?? nil, value.isFinite,
+                  let exact = Int64(exactly: value.rounded(.towardZero)) {
+            self.addedAt = exact
+        } else {
+            self.addedAt = 0
+        }
+    }
+
+    /// Decodes a member list, skipping entries that are not valid members.
+    fileprivate struct LossyList: Decodable {
+        let members: [SessionMember]
+
+        init(from decoder: Decoder) throws {
+            var container = try decoder.unkeyedContainer()
+            var members: [SessionMember] = []
+            while !container.isAtEnd {
+                if let member = try? container.decode(SessionMember.self) {
+                    members.append(member)
+                } else {
+                    _ = try? container.decode(AnyCodable.self)
+                }
+            }
+            self.members = members
+        }
+    }
+}
+
 /// Persisted session record.
 ///
 /// 2026.3.0 adds the upstream 2026.9.6 session controls (``permissionMode``, ``traceLevel``,
@@ -119,6 +239,23 @@ public struct SessionRecord: Codable, Sendable, Equatable {
     public var totalTokens: Int64?
     /// Creation time (ms).
     public var createdAtMs: Int64?
+    /// Actor that created the session node (upstream `createdActor`, wire shape
+    /// `{type, id?, source?, …}`); written once.
+    public var createdActor: [String: AnyCodable]?
+    /// Mutable owner assignment (upstream `owner`: `{actor, assignedBy?, assignedAt?}`, set by
+    /// `sessions.assignOwner`); `nil` means ``createdActor`` owns the session.
+    public var owner: [String: AnyCodable]?
+    /// Retained participant identities (upstream `participants`: `{identity, label?, avatarUrl?}`).
+    public var participants: [[String: AnyCodable]]?
+    /// Per-profile discovery state keyed by profile id (upstream `profileInvolvement.profiles`).
+    public var profileInvolvement: [String: SessionProfileInvolvement]?
+    /// Collaboration mode (upstream `visibility`); `nil` behaves as ``SessionVisibility/shared``.
+    public var visibility: SessionVisibility?
+    /// Explicit members (upstream session members: `{identityId, addedBy?, addedAt}`).
+    public var members: [SessionMember]?
+    /// Retained identity count including the owner (upstream `participantCount`), which can exceed
+    /// ``participants`` when the list is truncated.
+    public var participantCount: Int64?
 
     /// Compatibility alias for the canonical model override.
     public var model: String? {
@@ -305,6 +442,13 @@ public struct SessionRecord: Codable, Sendable, Equatable {
         case parentSessionID = "parentSessionId"
         case totalTokens
         case createdAtMs
+        case createdActor
+        case owner
+        case participants
+        case profileInvolvement
+        case visibility
+        case members
+        case participantCount
     }
 
     private enum LegacyCodingKeys: String, CodingKey {
@@ -366,6 +510,14 @@ public struct SessionRecord: Codable, Sendable, Equatable {
         self.parentSessionID = text(.parentSessionID)
         self.totalTokens = Self.decodeInt64(container, forKey: .totalTokens)
         self.createdAtMs = Self.decodeInt64(container, forKey: .createdAtMs)
+        // Session-sharing fields: tolerant decoding keeps records readable when a field is malformed.
+        self.createdActor = (try? container.decodeIfPresent([String: AnyCodable].self, forKey: .createdActor)) ?? nil
+        self.owner = (try? container.decodeIfPresent([String: AnyCodable].self, forKey: .owner)) ?? nil
+        self.participants = (try? container.decodeIfPresent([[String: AnyCodable]].self, forKey: .participants)) ?? nil
+        self.profileInvolvement = (try? container.decodeIfPresent([String: SessionProfileInvolvement].self, forKey: .profileInvolvement)) ?? nil
+        self.visibility = SessionVisibility.normalize(text(.visibility))
+        self.members = ((try? container.decodeIfPresent(SessionMember.LossyList.self, forKey: .members)) ?? nil)?.members
+        self.participantCount = Self.decodeInt64(container, forKey: .participantCount)
         if self.permissionMode == nil, self.execSecurity != nil || self.execAsk != nil {
             self.permissionMode = SessionPermissionMode.migratingLegacyExecPolicy(
                 security: self.execSecurity,
@@ -417,6 +569,13 @@ public struct SessionRecord: Codable, Sendable, Equatable {
         try container.encodeIfPresent(self.parentSessionID, forKey: .parentSessionID)
         try container.encodeIfPresent(self.totalTokens, forKey: .totalTokens)
         try container.encodeIfPresent(self.createdAtMs, forKey: .createdAtMs)
+        try container.encodeIfPresent(self.createdActor, forKey: .createdActor)
+        try container.encodeIfPresent(self.owner, forKey: .owner)
+        try container.encodeIfPresent(self.participants, forKey: .participants)
+        try container.encodeIfPresent(self.profileInvolvement, forKey: .profileInvolvement)
+        try container.encodeIfPresent(self.visibility, forKey: .visibility)
+        try container.encodeIfPresent(self.members, forKey: .members)
+        try container.encodeIfPresent(self.participantCount, forKey: .participantCount)
     }
 
     private static func decodeInt64(_ container: KeyedDecodingContainer<CodingKeys>, forKey key: CodingKeys) -> Int64? {

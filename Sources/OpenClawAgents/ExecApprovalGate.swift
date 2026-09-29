@@ -63,9 +63,11 @@ public enum ExecGateDecision: Sendable, Equatable {
         case policy
         /// Automatic reviewer denial (no human card).
         case reviewer
-        /// Human denial, expiry or cancellation.
+        /// Human denial, or an approval that expired or was cancelled before a decision (only an
+        /// explicit denial closes the command).
         case human
-        /// The same command was already denied in this session; it is never re-presented.
+        /// The same command was already explicitly denied (by a human or the reviewer) in this
+        /// session; it is never re-presented.
         case closed
     }
 
@@ -85,13 +87,18 @@ public enum ExecGateDecision: Sendable, Equatable {
 ///
 /// Rules:
 /// - `read-only` (exec mode `deny`) denies; `full` allows.
-/// - Allowlisted commands and active `allow-always` grants run without prompting.
+/// - Allowlisted commands and active `allow-always` grants run without prompting. The allowlist hook
+///   receives the command text exactly as it will run; multi-line commands skip the allowlist fast
+///   path. Grants are bound to the exact argv (see ``ApprovalBroker/execGrantKey(command:cwd:)``);
+///   a chain runs on grants only when every segment has its own grant, and substitutions,
+///   redirections, shells, wrappers and interpreters never run on a grant or offer `allow-always`.
 /// - `allowlist` mode (ask off) denies misses.
 /// - `guarded` (exec mode `ask`) asks a human through the ``ApprovalBroker``.
 /// - `workspace` (exec mode `auto`) asks the automatic reviewer: `allow` runs; `deny` is terminal for the
 ///   command and returns the reason to the agent without a human card; `ask` or a reviewer failure asks a
 ///   human; three consecutive reviewer denials in a session escalate the next command to a human.
-/// - A denied command is closed for the session: it is never re-presented or retried.
+/// - An explicitly denied command (human or reviewer) is closed for the session: it is never
+///   re-presented or retried. An approval that expires or is cancelled denies only that attempt.
 public actor ExecApprovalGate {
     /// Consecutive reviewer denials that escalate to a human.
     public static let reviewerEscalationThreshold = 3
@@ -108,7 +115,8 @@ public actor ExecApprovalGate {
     ///   - broker: Broker for human approvals and grants.
     ///   - reviewer: Automatic reviewer used in `workspace` mode (`nil` asks a human).
     ///   - approvalTimeoutMs: Human approval deadline.
-    ///   - allowlist: Allowlist fast path (for example ``ExecCommandAllowlist`` matching).
+    ///   - allowlist: Allowlist fast path, called with the raw command text (for example
+    ///     `ExecAllowlistEvaluator.allows(commandText:)`, which checks every chain segment).
     public init(
         broker: ApprovalBroker,
         reviewer: ExecAutoReviewer? = nil,
@@ -143,8 +151,7 @@ public actor ExecApprovalGate {
         toolCallID: String? = nil
     ) async -> ExecGateDecision {
         let mode = permissionMode?.execMode ?? configuredMode
-        let normalized = command.split(whereSeparator: \.isWhitespace).joined(separator: " ")
-        let closedKey = "\(sessionKey)\u{1F}\(normalized)"
+        let closedKey = "\(sessionKey)\u{1F}\(Self.normalizedCommandText(command))"
         switch mode {
         case .deny:
             return .deny(reason: "Exec is denied in this session (permission mode read-only).", source: .policy)
@@ -156,15 +163,17 @@ public actor ExecApprovalGate {
         if self.closedCommands.contains(closedKey) {
             return .deny(reason: "This command was already denied in this session; choose a different approach.", source: .closed)
         }
-        if self.allowlist(normalized) {
+        // The hook sees the text that will run. Newlines separate shell commands, so multi-line text
+        // never takes the fast path (hooks that do not split chains would match only the first line).
+        if !command.contains(where: \.isNewline), self.allowlist(command) {
             return .allow(source: .allowlist)
         }
-        let grantKey = ApprovalBroker.execGrantKey(command: normalized)
-        if await self.broker.hasGrant(kind: .exec, key: grantKey, agentID: agentID) {
+        if await self.coveredByGrants(command: command, cwd: cwd, agentID: agentID) {
             return .allow(source: .grant)
         }
         let request = HumanRequest(
-            command: normalized,
+            command: command,
+            cwd: cwd,
             closedKey: closedKey,
             sessionKey: sessionKey,
             agentID: agentID,
@@ -185,7 +194,7 @@ public actor ExecApprovalGate {
             let verdict: ExecReviewVerdict
             do {
                 verdict = try await reviewer(
-                    ExecReviewRequest(command: normalized, cwd: cwd, sessionKey: sessionKey, agentID: agentID, runID: runID)
+                    ExecReviewRequest(command: command, cwd: cwd, sessionKey: sessionKey, agentID: agentID, runID: runID)
                 )
             } catch {
                 verdict = .ask(reason: "Automatic review failed: \(error.localizedDescription)")
@@ -209,6 +218,32 @@ public actor ExecApprovalGate {
         }
     }
 
+    /// Command text with each line's whitespace runs collapsed (newlines are kept), used as the
+    /// closed-command identity.
+    /// - Parameter command: Command text.
+    /// - Returns: Normalized text.
+    static func normalizedCommandText(_ command: String) -> String {
+        command.split(whereSeparator: \.isNewline)
+            .map { $0.split(whereSeparator: \.isWhitespace).joined(separator: " ") }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+    }
+
+    /// Whether active grants cover the command: a simple command needs its own grant; a chain needs a
+    /// grant for every segment; anything the chain splitter refuses (substitution, redirection,
+    /// background jobs) never runs on a grant.
+    private func coveredByGrants(command: String, cwd: String?, agentID: String?) async -> Bool {
+        guard let segments = ExecShellWords.splitCommandChain(command), !segments.isEmpty else { return false }
+        for segment in segments {
+            guard let key = ApprovalBroker.execGrantKey(command: segment, cwd: cwd),
+                  await self.broker.hasGrant(kind: .exec, key: key, agentID: agentID)
+            else {
+                return false
+            }
+        }
+        return true
+    }
+
     /// Clears closed commands and denial counters of a session (for example after `sessions.reset`).
     /// - Parameter sessionKey: Session key.
     public func reset(sessionKey: String) {
@@ -218,6 +253,7 @@ public actor ExecApprovalGate {
 
     private struct HumanRequest: Sendable {
         let command: String
+        let cwd: String?
         let closedKey: String
         let sessionKey: String
         let agentID: String?
@@ -226,21 +262,35 @@ public actor ExecApprovalGate {
     }
 
     private func askHuman(_ request: HumanRequest, warning: String?) async -> ExecGateDecision {
+        // Chains, shells, wrappers and interpreters get no grant key, so the card offers allow-once only.
+        let grantKey = ApprovalBroker.execGrantKey(command: request.command, cwd: request.cwd)
         let approval = await self.broker.requestAndWait(
-            presentation: .exec(commandText: request.command, warningText: warning, agentID: request.agentID),
+            presentation: .exec(
+                commandText: request.command,
+                warningText: warning,
+                agentID: request.agentID,
+                allowedDecisions: grantKey == nil ? [.allowOnce, .deny] : [.allowOnce, .allowAlways, .deny]
+            ),
             sessionKey: request.sessionKey,
             agentID: request.agentID,
             runID: request.runID,
             toolCallID: request.toolCallID,
-            grantKey: ApprovalBroker.execGrantKey(command: request.command),
+            grantKey: grantKey,
             timeoutMs: self.approvalTimeoutMs
         )
         if approval.isAllowed {
             self.consecutiveDenials[request.sessionKey] = 0
             return .allow(source: .human)
         }
-        self.closedCommands.insert(request.closedKey)
         let reason = approval.reason?.rawValue ?? approval.state.rawValue
+        guard approval.state == .denied else {
+            // Expiry and cancellation are not decisions: deny this attempt without closing the command.
+            return .deny(
+                reason: "The approval \(approval.state.rawValue) before a decision (\(reason)); ask the user before trying again.",
+                source: .human
+            )
+        }
+        self.closedCommands.insert(request.closedKey)
         return .deny(reason: "The command was not approved (\(approval.state.rawValue): \(reason)); do not retry it.", source: .human)
     }
 }

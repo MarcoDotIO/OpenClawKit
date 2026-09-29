@@ -90,7 +90,7 @@ public struct LLMTaskTool: AgentTool {
             "authProfileId": Self.property(type: "string", description: "Auth profile override."),
             "temperature": Self.property(type: "number", description: "Best-effort temperature override."),
             "maxTokens": Self.property(type: "integer", description: "Best-effort maxTokens override.", minimum: 1),
-            "timeoutMs": Self.property(type: "integer", description: "Timeout for the LLM run.", minimum: 1),
+            "timeoutMs": Self.property(type: "integer", description: "Timeout for the LLM run.", minimum: 1, maximum: Self.maxTimeoutMs),
         ] as [String: AnyCodable]),
         "required": AnyCodable(["prompt"]),
     ]
@@ -107,13 +107,19 @@ public struct LLMTaskTool: AgentTool {
         )
     }
 
-    private static func property(type: String?, description: String, minimum: Int? = nil) -> AnyCodable {
+    /// Longest `timeoutMs` a call may request (24 hours); larger values are clamped.
+    public static let maxTimeoutMs = 86_400_000
+
+    private static func property(type: String?, description: String, minimum: Int? = nil, maximum: Int? = nil) -> AnyCodable {
         var schema: [String: AnyCodable] = ["description": AnyCodable(description)]
         if let type {
             schema["type"] = AnyCodable(type)
         }
         if let minimum {
             schema["minimum"] = AnyCodable(minimum)
+        }
+        if let maximum {
+            schema["maximum"] = AnyCodable(maximum)
         }
         return AnyCodable(schema)
     }
@@ -157,7 +163,7 @@ public struct LLMTaskTool: AgentTool {
         _ request: ModelGenerationRequest,
         timeoutMs: Int
     ) async throws -> ModelGenerationResponse {
-        let timeoutNs = UInt64(timeoutMs) * 1_000_000
+        let timeoutNs = RuntimeTime.sleepNanoseconds(milliseconds: timeoutMs)
         return try await withThrowingTaskGroup(of: ModelGenerationResponse.self) { group in
             group.addTask {
                 try await self.modelRouter.generate(request)
@@ -234,7 +240,7 @@ private extension LLMTaskTool {
             self.temperature = try Self.double(arguments["temperature"], name: "temperature")
             self.maxTokens = try Self.int(arguments["maxTokens"], name: "maxTokens")
             let requestedTimeout = try Self.int(arguments["timeoutMs"], name: "timeoutMs")
-            self.timeoutMs = max(1, requestedTimeout ?? configuration.defaultTimeoutMs)
+            self.timeoutMs = min(LLMTaskTool.maxTimeoutMs, max(1, requestedTimeout ?? configuration.defaultTimeoutMs))
         }
 
         func makeRequest() -> ModelGenerationRequest {
@@ -355,7 +361,12 @@ private extension LLMTaskTool {
             case .int(let number):
                 return number
             case .double(let number):
-                return Int(number)
+                // Out-of-range or non-finite numbers (and anything above Int32.max on watchOS) are
+                // invalid instead of trapping in `Int(_:)`.
+                guard number.isFinite, let value = Int(exactly: number.rounded(.towardZero)) else {
+                    throw LLMTaskToolError.invalidArgument(name)
+                }
+                return value
             default:
                 throw LLMTaskToolError.invalidArgument(name)
             }

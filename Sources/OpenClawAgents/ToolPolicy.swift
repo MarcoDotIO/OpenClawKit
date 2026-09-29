@@ -16,6 +16,9 @@ import OpenClawProtocol
 ///   `allow` allows everything not denied.
 /// - Allowing `write` also allows `apply_patch`. `bundle-mcp` in an allow list admits MCP tools and
 ///   `group:plugins` admits plugin and MCP tools.
+/// - ``stages`` are further policies that must also allow the tool (upstream's policy pipeline:
+///   global `tools`, then `agents.entries.<id>.tools`). Each stage can only restrict: deny in any
+///   stage wins and allow lists intersect.
 public struct ToolPolicy: Codable, Sendable, Equatable {
     /// Built-in profile (`minimal`, `coding`, `messaging`, `full`).
     public var profile: ToolProfileID?
@@ -25,6 +28,8 @@ public struct ToolPolicy: Codable, Sendable, Equatable {
     public var alsoAllow: [String]?
     /// Deny list (always wins).
     public var deny: [String]?
+    /// Further policies a tool must also pass (intersection; `nil` = none).
+    public var stages: [ToolPolicy]?
 
     /// Policy that allows every tool.
     public static let allowAll = ToolPolicy()
@@ -47,6 +52,7 @@ public struct ToolPolicy: Codable, Sendable, Equatable {
         case allow
         case alsoAllow
         case deny
+        case stages
     }
 
     /// Decodes a policy, tolerating unknown keys and single-string lists.
@@ -65,11 +71,33 @@ public struct ToolPolicy: Codable, Sendable, Equatable {
         self.allow = list(.allow)
         self.alsoAllow = list(.alsoAllow)
         self.deny = list(.deny)
+        self.stages = (try? container.decodeIfPresent([ToolPolicy].self, forKey: .stages)) ?? nil
+    }
+
+    /// Encodes the policy (`stages` only when present).
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(self.profile, forKey: .profile)
+        try container.encodeIfPresent(self.allow, forKey: .allow)
+        try container.encodeIfPresent(self.alsoAllow, forKey: .alsoAllow)
+        try container.encodeIfPresent(self.deny, forKey: .deny)
+        try container.encodeIfPresent(self.stages, forKey: .stages)
     }
 
     /// Whether the policy restricts nothing.
     public var isUnrestricted: Bool {
         self.profile == nil && (self.allow ?? []).isEmpty && (self.deny ?? []).isEmpty
+            && (self.stages ?? []).allSatisfy(\.isUnrestricted)
+    }
+
+    /// Policy that allows a tool only when both this policy and `other` allow it.
+    /// - Parameter other: Additional restriction.
+    /// - Returns: The intersected policy (`self` when `other` restricts nothing).
+    public func intersecting(_ other: ToolPolicy) -> ToolPolicy {
+        guard !other.isUnrestricted else { return self }
+        var copy = self
+        copy.stages = (self.stages ?? []) + [other]
+        return copy
     }
 
     /// Returns whether a tool is allowed.
@@ -114,6 +142,7 @@ public struct ToolPolicyMatcher: Sendable {
     private let denyPlugins: Bool
     private let profileAllow: ToolAllowStage?
     private let configAllow: ToolAllowStage?
+    private let stages: [ToolPolicyMatcher]
 
     /// Compiles a policy.
     /// - Parameter policy: Policy to compile.
@@ -133,6 +162,7 @@ public struct ToolPolicyMatcher: Sendable {
         } else {
             self.configAllow = nil
         }
+        self.stages = (policy.stages ?? []).map(ToolPolicyMatcher.init(policy:))
     }
 
     /// Returns whether a tool is allowed.
@@ -170,7 +200,7 @@ public struct ToolPolicyMatcher: Sendable {
         if let stage = self.configAllow, !stage.allows(normalized, isMCP: isMCP, isPlugin: isPlugin) {
             return false
         }
-        return true
+        return self.stages.allSatisfy { $0.allows(name, source: source) }
     }
 }
 

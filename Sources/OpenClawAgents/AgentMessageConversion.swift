@@ -25,11 +25,68 @@ public enum AgentMessageConversion {
     /// Suffix wrapped around branch summaries replayed to the model.
     public static let branchSummarySuffix = "</summary>"
 
-    /// Converts transcript messages to model messages (custom roles become user turns).
+    /// Result text inserted for a replayed tool call that has no result (upstream `flushToolCalls`).
+    public static let missingToolResultText = "No result provided"
+    /// Text that replaces a failed or aborted assistant turn with visible text on replay (upstream
+    /// `FAILED_ASSISTANT_REPLAY_TEXT`).
+    public static let failedAssistantReplayText =
+        "[This turn failed before it completed. Do not redo its work without confirming with the user first.]"
+
+    /// Converts transcript messages to model messages (custom roles become user turns), repairing
+    /// tool-call pairing the way upstream `transformMessages` does, so an interrupted or damaged
+    /// transcript never makes providers reject the request:
+    /// - every assistant tool call is followed by a result: a missing one gets an `isError`
+    ///   "No result provided" result before the next non-result message (or at the end);
+    /// - tool results that answer no pending call (orphans, duplicates) are dropped;
+    /// - assistant turns that ended in `error`/`aborted` are dropped (with tool calls or no visible
+    ///   text) or replaced by a short "turn failed" marker.
     /// - Parameter messages: Transcript messages.
     /// - Returns: Model messages.
     public static func modelMessages(from messages: [AgentMessage]) -> [ModelMessage] {
-        messages.compactMap(Self.modelMessage(from:))
+        var result: [ModelMessage] = []
+        var pending: [AgentToolCallBlock] = []
+        var answered: Set<String> = []
+        func flushPendingCalls() {
+            for call in pending where !answered.contains(call.id) {
+                result.append(.toolResult(ModelToolResult(
+                    toolCallID: call.id,
+                    toolName: call.name,
+                    content: [.text(Self.missingToolResultText)],
+                    isError: true
+                )))
+            }
+            pending = []
+            answered = []
+        }
+        for message in messages {
+            switch message {
+            case .assistant(let assistant):
+                flushPendingCalls()
+                if assistant.stopReason == .error || assistant.stopReason == .aborted {
+                    let hasVisibleText = !assistant.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    if assistant.toolCalls.isEmpty, hasVisibleText {
+                        result.append(.assistant(content: [.text(Self.failedAssistantReplayText)]))
+                    }
+                    continue
+                }
+                guard let converted = Self.modelMessage(from: message) else { continue }
+                result.append(converted)
+                pending = assistant.toolCalls
+            case .toolResult(let toolResult):
+                guard pending.contains(where: { $0.id == toolResult.toolCallId }), answered.insert(toolResult.toolCallId).inserted,
+                      let converted = Self.modelMessage(from: message)
+                else {
+                    continue
+                }
+                result.append(converted)
+            default:
+                guard let converted = Self.modelMessage(from: message) else { continue }
+                flushPendingCalls()
+                result.append(converted)
+            }
+        }
+        flushPendingCalls()
+        return result
     }
 
     /// Converts one transcript message.

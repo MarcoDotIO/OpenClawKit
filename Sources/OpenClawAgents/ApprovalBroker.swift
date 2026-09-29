@@ -568,6 +568,13 @@ public actor ApprovalBroker {
         if let existing = self.approvals[approvalID] {
             return existing
         }
+        var presentation = presentation
+        var grantKey = grantKey
+        // Chains, shells, wrappers and interpreters never get a durable exec grant, whoever raised the request.
+        if presentation.kind == .exec, let command = presentation.commandText, !Self.allowsDurableExecGrant(command: command) {
+            presentation.allowedDecisions.removeAll { $0 == .allowAlways }
+            grantKey = nil
+        }
         let timeout = max(1, timeoutMs ?? Self.defaultTimeoutMs)
         let approval = AgentApproval(
             id: approvalID,
@@ -575,7 +582,7 @@ public actor ApprovalBroker {
             kind: presentation.kind,
             presentation: presentation,
             createdAtMs: now,
-            expiresAtMs: now + timeout,
+            expiresAtMs: RuntimeTime.deadline(now, plusMilliseconds: timeout),
             state: .pending,
             sessionKey: sessionKey,
             agentID: agentID,
@@ -584,8 +591,9 @@ public actor ApprovalBroker {
             grantKey: grantKey
         )
         self.approvals[approvalID] = approval
+        let sleepNs = RuntimeTime.sleepNanoseconds(milliseconds: timeout)
         self.expiryTasks[approvalID] = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(timeout) * 1_000_000)
+            try? await Task.sleep(nanoseconds: sleepNs)
             await self?.expire(approvalID)
         }
         self.publish(approval)
@@ -659,7 +667,9 @@ public actor ApprovalBroker {
         grantKey: String? = nil,
         timeoutMs: Int64? = nil
     ) -> AgentApproval {
-        if let grantKey, self.consumeGrant(kind: presentation.kind, key: grantKey, agentID: agentID) {
+        let grantEligible = presentation.kind != .exec
+            || presentation.commandText.map { Self.allowsDurableExecGrant(command: $0) } ?? true
+        if grantEligible, let grantKey, self.consumeGrant(kind: presentation.kind, key: grantKey, agentID: agentID) {
             let now = self.clock()
             return AgentApproval(
                 id: "grant:\(grantKey)",
@@ -714,8 +724,9 @@ public actor ApprovalBroker {
         return await withCheckedContinuation { continuation in
             self.waiters[id, default: [:]][token] = continuation
             if let timeoutMs {
+                let sleepNs = RuntimeTime.sleepNanoseconds(milliseconds: max(1, timeoutMs))
                 Task {
-                    try? await Task.sleep(nanoseconds: UInt64(max(1, timeoutMs)) * 1_000_000)
+                    try? await Task.sleep(nanoseconds: sleepNs)
                     self.expireWaiter(id, token: token)
                 }
             }
@@ -971,19 +982,65 @@ public actor ApprovalBroker {
 
     // MARK: - Grant keys
 
-    /// Grant key for an exec command: the executable plus its first non-flag argument.
+    /// Executables that never receive a durable `allow-always` exec grant: shells and command
+    /// wrappers whose arguments are themselves commands (upstream refuses to persist shell-wrapper
+    /// approvals). Interpreter-like targets are refused through
+    /// `ExecCommandResolution.isInterpreterLikePersistentGrantTarget`.
+    public static let execGrantRefusedExecutables: Set<String> = ExecCommandResolution.shellWrapperNames.union([
+        "env", "sudo", "doas", "su", "nohup", "time", "timeout", "nice", "ionice", "xargs", "command", "builtin",
+        "exec", "eval", "source", "watch", "ssh", "script", "stdbuf", "chroot", "flock", "caffeinate", "setsid",
+        "npx", "bunx", "pnpx", "busybox",
+    ])
+
+    /// Grant key for one exec command, or `nil` when the command may not get a durable grant.
     ///
-    /// `git status -s` and `git status` share the key `exec:git status`; `rm -rf /` keys as `exec:rm`.
-    /// - Parameter command: Command text.
-    /// - Returns: The grant key.
-    public static func execGrantKey(command: String) -> String {
-        let tokens = command.split(whereSeparator: \.isWhitespace).map(String.init)
-        guard let executable = tokens.first else { return "exec:" }
-        let name = URL(fileURLWithPath: executable).lastPathComponent
-        if tokens.count > 1, !tokens[1].hasPrefix("-") {
-            return "exec:\(name) \(tokens[1])"
+    /// A grant is bound to the exact argv, canonically shell-quoted (`exec:git status`,
+    /// `exec:rm 'a b'`), plus the canonical working directory when it is known
+    /// (`exec:make build # cwd=/repo`), so `allow-always` on `rm -f tmp.txt` never covers `rm -rf ~`
+    /// and a grant for `git status` never covers `git status && curl … | sh` or `/tmp/evil/git status`.
+    /// Returns `nil` (allow once only) for:
+    /// - command chains, substitutions, redirections, background jobs and multi-line text;
+    /// - shells, command wrappers (``execGrantRefusedExecutables``) and interpreter-like targets.
+    /// - Parameters:
+    ///   - command: Command text (one simple command).
+    ///   - cwd: Working directory the command runs in (`nil` when unknown).
+    /// - Returns: The grant key, or `nil`.
+    public static func execGrantKey(command: String, cwd: String? = nil) -> String? {
+        guard let segments = ExecShellWords.splitCommandChain(command), segments.count == 1,
+              let segment = segments.first, !segment.contains(where: \.isNewline),
+              let argv = ExecShellWords.split(segment), let first = argv.first
+        else {
+            return nil
         }
-        return "exec:\(name)"
+        let blockedByName = Self.execGrantRefusedExecutables.contains(ExecCommandToken.basenameLower(first))
+        let resolution = ExecCommandResolution(
+            rawExecutable: first,
+            resolvedPath: nil,
+            executableName: ExecCommandToken.basenameLower(first),
+            cwd: cwd,
+            argv: argv
+        )
+        guard !blockedByName, !ExecCommandResolution.isInterpreterLikePersistentGrantTarget(resolution) else {
+            return nil
+        }
+        let quoted = argv.map(Self.shellQuoted).joined(separator: " ")
+        guard let cwd else { return "exec:\(quoted)" }
+        return "exec:\(quoted) # cwd=\(Self.shellQuoted(ExecCommandResolution.canonicalApprovalCwd(cwd)))"
+    }
+
+    /// POSIX single-quote form of an argv token (bare when it has no shell-special characters).
+    static func shellQuoted(_ token: String) -> String {
+        let safe = !token.isEmpty && token.unicodeScalars.allSatisfy { scalar in
+            (scalar.isASCII && CharacterSet.alphanumerics.contains(scalar)) || "_@%+=:,./-".unicodeScalars.contains(scalar)
+        }
+        return safe ? token : "'" + token.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    /// Whether an exec command may receive a durable `allow-always` grant (see ``execGrantKey(command:cwd:)``).
+    /// - Parameter command: Command text.
+    /// - Returns: `true` when a grant key exists for the command.
+    public static func allowsDurableExecGrant(command: String) -> Bool {
+        Self.execGrantKey(command: command) != nil
     }
 
     /// Grant key for a plugin tool: `plugin:<pluginId>:<toolName>`.

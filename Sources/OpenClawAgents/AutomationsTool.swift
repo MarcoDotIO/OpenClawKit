@@ -74,7 +74,8 @@ public struct EmbeddedAgentAutomationExecutor: Sendable {
             thinkingLevel: payload?.thinking.flatMap { ThinkLevel.normalize($0) },
             workspaceRootPath: self.workspaceRootPath
         )
-        let timeoutMs = payload?.timeoutSeconds.map { Int($0 * 1_000) } ?? self.defaultTimeoutMs
+        // `timeoutSeconds` comes from a (possibly model-authored) job payload: clamp before converting.
+        let timeoutMs = RuntimeTime.clampedInt(payload?.timeoutSeconds.map { $0 * 1_000 }, to: 1...Int.max) ?? self.defaultTimeoutMs
         let result = try await self.runtime.run(request, timeoutMs: max(1, timeoutMs))
         return AutomationRunOutcome(status: .ok, summary: String(result.output.prefix(500)))
     }

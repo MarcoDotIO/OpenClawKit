@@ -212,7 +212,8 @@ public actor SubagentManager {
     private let configuration: SubagentConfiguration
     private var records: [String: SubagentRecord] = [:]
     private var order: [String] = []
-    private var yieldedParents: Set<String> = []
+    /// Per-run policy and agent of the run that yielded, reused by the wake run.
+    private var wakeContexts: [String: (toolPolicy: ToolPolicy?, agentID: String?)] = [:]
     private var depths: [String: Int] = [:]
 
     /// Creates a manager.
@@ -234,14 +235,26 @@ public actor SubagentManager {
     }
 
     /// Spawns a child run.
+    ///
+    /// The child inherits the parent's restrictions (upstream `subagent-spawn-session-patch`): its
+    /// session record copies the parent's permission mode, sandbox mode, tool overrides and spawned
+    /// workspace, and its run policy is the parent's effective policy (the parent run's per-run
+    /// policy, else the runtime policy, plus the parent session's read-only and override denies)
+    /// minus ``SubagentConfiguration/childToolDeny``. A read-only parent never gets a writable child.
     /// - Parameters:
     ///   - params: Spawn parameters.
     ///   - parentSessionKey: Requesting session.
     ///   - parentAgentID: Requesting agent.
+    ///   - parentRunID: Requesting run, whose per-run tool policy the child inherits.
     /// - Returns: The accepted child record.
     /// - Throws: ``SubagentError``.
     @discardableResult
-    public func spawn(_ params: SubagentSpawnParams, parentSessionKey: String, parentAgentID: String? = nil) async throws -> SubagentRecord {
+    public func spawn(
+        _ params: SubagentSpawnParams,
+        parentSessionKey: String,
+        parentAgentID: String? = nil,
+        parentRunID: String? = nil
+    ) async throws -> SubagentRecord {
         let parentDepth = await self.depth(of: parentSessionKey)
         guard parentDepth + 1 <= self.configuration.maxDepth else {
             throw SubagentError.limitReached("sub-agent spawn depth limit (\(self.configuration.maxDepth)) reached")
@@ -256,12 +269,19 @@ public actor SubagentManager {
         let taskName = params.taskName ?? "task-\(self.order.count + 1)"
         self.depths[childKey] = parentDepth + 1
 
+        let parentRecord = await self.runtime.sessionStore?.recordForKey(parentSessionKey)
         if let store = self.runtime.sessionStore {
             _ = await store.resolveOrCreate(sessionKey: childKey, defaultAgentID: agentID, route: nil)
             await store.update(forKey: childKey) { record in
                 record.spawnedBy = parentSessionKey
                 record.spawnDepth = parentDepth + 1
                 record.label = params.label ?? taskName
+                record.permissionMode = parentRecord?.permissionMode
+                record.sandboxMode = parentRecord?.sandboxMode
+                record.toolOverrides = parentRecord?.toolOverrides
+                if let workspace = parentRecord?.spawnedWorkspaceDir {
+                    record.spawnedWorkspaceDir = workspace
+                }
             }
         }
 
@@ -278,7 +298,7 @@ public actor SubagentManager {
             _ = try? await engine.prepareSubagentSpawn(parentSessionKey: parentSessionKey, childSessionKey: childKey, contextMode: context)
         }
 
-        let base = await self.runtime.currentToolsConfiguration().policy
+        let childPolicy = await self.childPolicy(parentSessionKey: parentSessionKey, parentRunID: parentRunID)
         let modelParts = params.model?.split(separator: "/", maxSplits: 1).map(String.init) ?? []
         var prompt = "[Subagent Task]\n\(params.task)"
         if let note {
@@ -291,7 +311,7 @@ public actor SubagentManager {
             modelID: modelParts.count == 2 ? modelParts[1] : params.model,
             thinkingLevel: params.thinking,
             agentID: agentID,
-            toolPolicy: base.denying(self.configuration.childToolDeny),
+            toolPolicy: childPolicy,
             extraSystemPrompt: "You are a sub-agent working on one delegated task for a parent session. "
                 + "Complete the task and reply with the result; the parent receives your final message.",
             spawnedBy: parentSessionKey
@@ -329,6 +349,19 @@ public actor SubagentManager {
             await self.complete(childKey: childKey, runID: runID, outcome: outcome, params: params)
         }
         return record
+    }
+
+    /// Run policy for a child: the parent's effective policy (its run's per-run policy, else the
+    /// runtime policy, plus the parent session's denies) minus the child deny list.
+    private func childPolicy(parentSessionKey: String, parentRunID: String?) async -> ToolPolicy {
+        let base = await self.runtime.currentToolsConfiguration().policy
+        var parentRunPolicy: ToolPolicy?
+        if let parentRunID, let context = await self.runtime.activeRunContext(runID: parentRunID) {
+            parentRunPolicy = context.toolPolicy
+        }
+        let parentRecord = await self.runtime.sessionStore?.recordForKey(parentSessionKey)
+        return AgentLoop.effectivePolicy(base: base, requestPolicy: parentRunPolicy, session: parentRecord)
+            .denying(self.configuration.childToolDeny)
     }
 
     /// Emits a typed sub-agent hook on the runtime's shared registry.
@@ -392,24 +425,26 @@ public actor SubagentManager {
         return killed
     }
 
-    /// Sends a message to a child (interrupting its current run).
+    /// Sends a message to a child (interrupting its current run). The new child run inherits the
+    /// parent's current restrictions like a spawn does.
     /// - Parameters:
     ///   - target: Target text.
     ///   - message: Message.
     ///   - parentSessionKey: Parent session.
+    ///   - parentRunID: Steering run, whose per-run tool policy the child inherits.
     /// - Returns: The new child run id.
     /// - Throws: ``SubagentError``.
-    public func steer(target: String, message: String, parentSessionKey: String) async throws -> String {
+    public func steer(target: String, message: String, parentSessionKey: String, parentRunID: String? = nil) async throws -> String {
         let matches = self.resolve(target: target, parentSessionKey: parentSessionKey)
         guard matches.count == 1, let record = matches.first else { throw SubagentError.targetNotFound(target) }
         if record.status == "running" {
             await self.runtime.abort(runID: record.runID)
         }
-        let base = await self.runtime.currentToolsConfiguration().policy
         let request = AgentRunRequest(
             sessionKey: record.childSessionKey,
             prompt: message,
-            toolPolicy: base.denying(self.configuration.childToolDeny),
+            agentID: SessionKey.agentID(from: record.childSessionKey, fallback: self.runtime.defaultAgentID),
+            toolPolicy: await self.childPolicy(parentSessionKey: parentSessionKey, parentRunID: parentRunID),
             spawnedBy: parentSessionKey
         )
         let runID = await self.runtime.start(request, streaming: true)
@@ -425,25 +460,42 @@ public actor SubagentManager {
         return runID
     }
 
+    /// Prompt of the run that wakes a yielded parent (the completions arrive as internal events).
+    static let wakePrompt = "[Subagent completion] Sub-agent results arrived; continue with them."
+
     /// Marks a parent as yielded: the next child completion wakes it with a new run. When
     /// completions already arrived while the parent was working, it wakes as soon as it is idle.
-    /// - Parameter parentSessionKey: Parent session.
-    public func markYielded(_ parentSessionKey: String) async {
-        if await !self.runtime.pendingInternalEvents(sessionKey: parentSessionKey).isEmpty {
-            self.scheduleWake(parentSessionKey, prompt: "[Subagent completion] Sub-agent results arrived; continue with them.")
-        } else {
-            self.yieldedParents.insert(parentSessionKey)
+    /// The wake run keeps the yielding run's per-run tool policy and agent.
+    /// - Parameters:
+    ///   - parentSessionKey: Parent session.
+    ///   - runID: The yielding run.
+    public func markYielded(_ parentSessionKey: String, runID: String? = nil) async {
+        if let runID, let context = await self.runtime.activeRunContext(runID: runID) {
+            self.wakeContexts[parentSessionKey] = context
+        }
+        // The runtime checks for queued completions and marks the yield in one actor turn; a
+        // completion enqueued in between claims the yield instead (see `complete`), so exactly one
+        // side schedules the wake.
+        if await self.runtime.markYieldedUnlessEventsPending(sessionKey: parentSessionKey) {
+            self.scheduleWake(parentSessionKey)
         }
     }
 
     /// Starts a parent run once the parent's current runs have finished.
-    private func scheduleWake(_ parentSessionKey: String, prompt: String) {
+    private func scheduleWake(_ parentSessionKey: String) {
         let runtime = self.runtime
+        let context = self.wakeContexts.removeValue(forKey: parentSessionKey)
         Task {
             for runID in await runtime.activeRunIDs(sessionKey: parentSessionKey) {
                 _ = await runtime.wait(runID: runID)
             }
-            _ = await runtime.start(AgentRunRequest(sessionKey: parentSessionKey, prompt: prompt), streaming: true)
+            let request = AgentRunRequest(
+                sessionKey: parentSessionKey,
+                prompt: Self.wakePrompt,
+                agentID: context?.agentID,
+                toolPolicy: context?.toolPolicy
+            )
+            _ = await runtime.start(request, streaming: true)
         }
     }
 
@@ -507,10 +559,9 @@ public actor SubagentManager {
         let announce = params?.expectsCompletionMessage ?? true
         if announce, status != "killed" {
             let event = Self.completionEvent(record: record, outcome: outcome)
-            if self.yieldedParents.remove(record.parentSessionKey) != nil {
-                self.scheduleWake(record.parentSessionKey, prompt: event)
-            } else {
-                await self.runtime.enqueueInternalEvent(event, sessionKey: record.parentSessionKey)
+            // Enqueue and claim a pending yield atomically; the woken run drains the event.
+            if await self.runtime.enqueueInternalEventClaimingYield(event, sessionKey: record.parentSessionKey) {
+                self.scheduleWake(record.parentSessionKey)
             }
         }
         if params?.deleteOnCompletion == true {
@@ -585,7 +636,7 @@ struct SessionsSpawnTool: AgentTool {
         }
         do {
             let params = try SubagentSpawnParams.parse(invocation.arguments)
-            let record = try await self.manager.spawn(params, parentSessionKey: parent, parentAgentID: invocation.agentID)
+            let record = try await self.manager.spawn(params, parentSessionKey: parent, parentAgentID: invocation.agentID, parentRunID: invocation.runID)
             var details: [String: AnyCodable] = [
                 "status": AnyCodable("accepted"),
                 "childSessionKey": AnyCodable(record.childSessionKey),
@@ -645,7 +696,7 @@ struct SubagentsTool: AgentTool {
                 guard let message = invocation.arguments["message"]?.stringValue, !message.isEmpty else {
                     return .error("steer requires a message")
                 }
-                let runID = try await self.manager.steer(target: target, message: message, parentSessionKey: parent)
+                let runID = try await self.manager.steer(target: target, message: message, parentSessionKey: parent, parentRunID: invocation.runID)
                 return .json(AnyCodable(["status": AnyCodable("steered"), "runId": AnyCodable(runID)]))
             default:
                 return .error("action must be list, kill or steer")
@@ -678,7 +729,7 @@ struct SessionsYieldTool: AgentTool {
 
     func invoke(_ invocation: AgentToolInvocation, update _: AgentToolUpdateHandler?) async throws -> AgentToolOutput {
         if let parent = invocation.sessionKey {
-            await self.manager.markYielded(parent)
+            await self.manager.markYielded(parent, runID: invocation.runID)
         }
         let message = invocation.arguments["message"]?.stringValue ?? "Waiting for sub-agent results."
         return AgentToolOutput(content: [.text(message)], details: AnyCodable(["status": AnyCodable("yielded")]), terminate: true)

@@ -361,6 +361,12 @@ public actor EmbeddedAgentRuntime {
         let sessionKey: String
         let startedAt: Int64
         let spawnedBy: String?
+        /// Per-run tool policy of the request (inherited by sub-agents and wake runs).
+        let toolPolicy: ToolPolicy?
+        /// Agent of the request.
+        let agentID: String?
+        /// Run timeout timer, cancelled when the run finishes.
+        var timeoutTask: Task<Void, Never>?
     }
 
     /// Optional gateway client for tools that need a remote gateway.
@@ -397,6 +403,8 @@ public actor EmbeddedAgentRuntime {
     private var completedOrder: [String] = []
     private var runWaiters: [String: [UUID: CheckedContinuation<AgentRunWaitResult?, Never>]] = [:]
     private var internalEventQueues: [String: [String]] = [:]
+    /// Sessions that yielded (`sessions_yield`) and wait for the next sub-agent completion.
+    private var yieldedSessions: Set<String> = []
     private var promptContributors: [@Sendable (AgentPromptContext) async -> String?] = []
     private static let completedRunLimit = 512
 
@@ -558,6 +566,30 @@ public actor EmbeddedAgentRuntime {
         self.internalEventQueues.removeValue(forKey: sessionKey) ?? []
     }
 
+    /// Marks a session as yielded unless internal events are already queued for it. The check and
+    /// the mark happen in one actor turn, so a completion racing the yield is never lost.
+    /// - Parameter sessionKey: Session key.
+    /// - Returns: `true` when events are queued (wake the session now instead of waiting).
+    func markYieldedUnlessEventsPending(sessionKey: String) -> Bool {
+        if !(self.internalEventQueues[sessionKey] ?? []).isEmpty {
+            self.yieldedSessions.remove(sessionKey)
+            return true
+        }
+        self.yieldedSessions.insert(sessionKey)
+        return false
+    }
+
+    /// Queues an internal event and claims the session's yield in the same actor turn.
+    /// - Parameters:
+    ///   - text: Event text.
+    ///   - sessionKey: Target session.
+    /// - Returns: `true` when the session was yielded (the caller wakes it; the event is delivered by
+    ///   the woken run).
+    func enqueueInternalEventClaimingYield(_ text: String, sessionKey: String) -> Bool {
+        self.internalEventQueues[sessionKey, default: []].append(text)
+        return self.yieldedSessions.remove(sessionKey) != nil
+    }
+
     private func promptSections(_ context: AgentPromptContext) async -> [String] {
         var sections: [String] = []
         for contributor in self.promptContributors {
@@ -716,18 +748,16 @@ public actor EmbeddedAgentRuntime {
     ///   - timeoutMs: Optional wait bound; elapsing returns status `timeout`.
     /// - Returns: The wait result, or `nil` for unknown runs.
     public func wait(runID: String, timeoutMs: Int? = nil) async -> AgentRunWaitResult? {
-        if let completed = self.completedRuns[runID] {
-            return completed
-        }
         guard let active = self.activeRuns[runID] else {
-            return nil
+            return self.completedRuns[runID]
         }
         let token = UUID()
         let finished: AgentRunWaitResult? = await withCheckedContinuation { continuation in
             self.runWaiters[runID, default: [:]][token] = continuation
             if let timeoutMs, timeoutMs > 0 {
+                let sleepNs = RuntimeTime.sleepNanoseconds(milliseconds: timeoutMs)
                 Task {
-                    try? await Task.sleep(nanoseconds: UInt64(timeoutMs) * 1_000_000)
+                    try? await Task.sleep(nanoseconds: sleepNs)
                     self.expireRunWaiter(runID, token: token)
                 }
             }
@@ -900,7 +930,7 @@ public actor EmbeddedAgentRuntime {
         }
         if wantsEnd {
             let started = SessionTranscriptClock.milliseconds(fromISO: header.timestamp)
-            let duration = started.map { Int(max(0, SessionTranscriptClock.nowMs() - $0)) }
+            let duration = started.map { RuntimeTime.elapsedMilliseconds(since: $0) }
             await hookRegistry.emitObserving(
                 .sessionEnd,
                 event: SessionLifecycleHookEvent(
@@ -1078,12 +1108,22 @@ public actor EmbeddedAgentRuntime {
         )
     }
 
+    /// Starts a run, or returns the task of the active run that already uses `request.runID`
+    /// (approvals, questions and waiters are keyed by run id, so two live runs never share one; a
+    /// duplicate start behaves like upstream's `in_flight` answer).
     private func launch(
         _ request: AgentRunRequest,
         timeoutMs: Int?,
         streaming: Bool,
         frameSink: (@Sendable (AgentEventFrame) -> Void)?
     ) -> Task<AgentRunResult, Error> {
+        if let existing = self.activeRuns[request.runID] {
+            return existing.task
+        }
+        // A reused id starts fresh: waiters must not see the previous run's result.
+        if self.completedRuns.removeValue(forKey: request.runID) != nil {
+            self.completedOrder.removeAll { $0 == request.runID }
+        }
         let control = AgentRunControl()
         let hub = self.eventHub
         let sequencer = AgentEventSequencer(runID: request.runID, sessionKey: request.sessionKey, spawnedBy: request.spawnedBy) { frame in
@@ -1170,31 +1210,47 @@ public actor EmbeddedAgentRuntime {
                 throw mapped
             }
         }
-        self.activeRuns[request.runID] = ActiveRun(
+        var active = ActiveRun(
             task: task,
             control: control,
             sessionKey: request.sessionKey,
             startedAt: startedAt,
-            spawnedBy: request.spawnedBy
+            spawnedBy: request.spawnedBy,
+            toolPolicy: request.toolPolicy,
+            agentID: request.agentID
         )
         if let timeoutMs {
-            let timeoutNs = UInt64(max(1, timeoutMs)) * 1_000_000
-            Task {
-                try? await Task.sleep(nanoseconds: timeoutNs)
+            let timeoutNs = RuntimeTime.sleepNanoseconds(milliseconds: max(1, timeoutMs))
+            active.timeoutTask = Task {
+                do {
+                    try await Task.sleep(nanoseconds: timeoutNs)
+                } catch {
+                    return
+                }
                 if self.markTimedOut(request.runID, control: control) {
                     task.cancel()
                 }
             }
         }
+        self.activeRuns[request.runID] = active
         Task {
             let outcome = await task.result
-            self.finishRun(request, startedAt: startedAt, outcome: outcome)
+            self.finishRun(request, control: control, startedAt: startedAt, outcome: outcome)
         }
         return task
     }
 
+    /// Per-run tool policy and agent of an active run (sub-agent spawns and wake runs inherit them).
+    /// - Parameter runID: Run identifier.
+    /// - Returns: The run's policy and agent, or `nil` when the run is not active.
+    func activeRunContext(runID: String) -> (toolPolicy: ToolPolicy?, agentID: String?)? {
+        guard let active = self.activeRuns[runID] else { return nil }
+        return (active.toolPolicy, active.agentID)
+    }
+
+    /// Marks a run timed out; a stale timer of an earlier run with the same id does nothing.
     private func markTimedOut(_ runID: String, control: AgentRunControl) -> Bool {
-        guard self.activeRuns[runID] != nil else { return false }
+        guard self.activeRuns[runID]?.control === control else { return false }
         control.mark(.timedOut)
         Task {
             await self.approvals.cancel(runID: runID)
@@ -1203,7 +1259,9 @@ public actor EmbeddedAgentRuntime {
         return true
     }
 
-    private func finishRun(_ request: AgentRunRequest, startedAt: Int64, outcome: Result<AgentRunResult, Error>) {
+    private func finishRun(_ request: AgentRunRequest, control: AgentRunControl, startedAt: Int64, outcome: Result<AgentRunResult, Error>) {
+        guard let active = self.activeRuns[request.runID], active.control === control else { return }
+        active.timeoutTask?.cancel()
         self.activeRuns[request.runID] = nil
         let endedAt = SessionTranscriptClock.nowMs()
         let result: AgentRunWaitResult

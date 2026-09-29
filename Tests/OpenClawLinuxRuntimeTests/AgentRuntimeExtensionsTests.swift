@@ -132,7 +132,8 @@ struct AgentRuntimeExtensionsTests {
 
     // MARK: - Sub-agents and ledger
 
-    @Test
+    // Bounded so a lost wake-up fails fast instead of hanging the suite.
+    @Test(.timeLimit(.minutes(1)))
     func spawnAnnouncesCompletionAndWakesTheYieldedParent() async throws {
         let provider = SessionRoutingProvider()
         let store = SessionStore(fileURL: FileManager.default.temporaryDirectory.appendingPathComponent("sub-\(UUID().uuidString)/sessions.json"))
@@ -184,7 +185,7 @@ struct AgentRuntimeExtensionsTests {
         }
     }
 
-    @Test
+    @Test(.timeLimit(.minutes(1)))
     func spawnParamsRejectUnsupportedOptionsAndKillWorks() async throws {
         #expect(throws: SubagentError.self) { try SubagentSpawnParams.parse(["task": AnyCodable("x"), "runtime": AnyCodable("acp")]) }
         #expect(throws: SubagentError.self) { try SubagentSpawnParams.parse(["task": AnyCodable("x"), "visible": AnyCodable(true)]) }

@@ -440,7 +440,13 @@ public actor JSONLSessionTranscriptStore: SessionTranscriptStore {
         }
         var linked = entry
         linked.parentID = session.leaf
-        try self.appendLine(Self.encodeLine(linked), sessionID: sessionID)
+        do {
+            try self.appendLine(Self.encodeLine(linked), sessionID: sessionID)
+        } catch {
+            // A failed write may have left a partial line; reload from disk next time.
+            self.cache[sessionID] = nil
+            throw error
+        }
         session.entries.append(linked)
         session.leaf = linked.id
         self.cache[sessionID] = session
@@ -464,7 +470,12 @@ public actor JSONLSessionTranscriptStore: SessionTranscriptStore {
             throw SessionTranscriptError.entryNotFound(entryID)
         }
         guard session.leaf != entryID else { return }
-        try self.appendLine(Self.encodeLine(LeafLine(id: entryID)), sessionID: sessionID)
+        do {
+            try self.appendLine(Self.encodeLine(LeafLine(id: entryID)), sessionID: sessionID)
+        } catch {
+            self.cache[sessionID] = nil
+            throw error
+        }
         session.leaf = entryID
         self.cache[sessionID] = session
     }
@@ -509,44 +520,66 @@ public actor JSONLSessionTranscriptStore: SessionTranscriptStore {
         guard FileManager.default.fileExists(atPath: url.path) else {
             return nil
         }
-        let text = try String(contentsOf: url, encoding: .utf8)
+        let data = try Data(contentsOf: url)
         var header: SessionTranscriptHeader?
         var entries: [SessionTranscriptEntry] = []
+        var knownIDs: Set<String> = []
         var leaf: String?
         let decoder = JSONDecoder()
-        for line in text.split(whereSeparator: \.isNewline) where !line.allSatisfy(\.isWhitespace) {
-            let data = Data(line.utf8)
-            guard let object = try? decoder.decode([String: AnyCodable].self, from: data),
+        // Split on the LF byte only: JSON leaves U+2028/U+2029/U+0085 unescaped inside strings, and a
+        // torn multi-byte character must only cost its own line (not the whole file's UTF-8 decode).
+        for slice in data.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: true) {
+            let line = Data(slice)
+            guard let object = try? decoder.decode([String: AnyCodable].self, from: line),
                   let type = object["type"]?.stringValue
             else {
                 continue
             }
             switch type {
             case "session":
-                header = header ?? (try? decoder.decode(SessionTranscriptHeader.self, from: data))
+                header = header ?? (try? decoder.decode(SessionTranscriptHeader.self, from: line))
             case "leaf":
                 leaf = object["id"]?.stringValue
             default:
-                if let entry = try? decoder.decode(SessionTranscriptEntry.self, from: data) {
-                    entries.append(entry)
-                    leaf = entry.id
+                guard var entry = try? decoder.decode(SessionTranscriptEntry.self, from: line) else { continue }
+                // A torn or unreadable line can swallow an entry. Relink a child of a missing entry to
+                // the previous readable entry so the active path does not stop at the gap.
+                if let parentID = entry.parentID, !knownIDs.contains(parentID) {
+                    entry.parentID = entries.last?.id
                 }
+                entries.append(entry)
+                knownIDs.insert(entry.id)
+                leaf = entry.id
             }
         }
         guard let header else {
             throw SessionTranscriptError.corrupt("missing session header in \(url.lastPathComponent)")
+        }
+        if let current = leaf, !knownIDs.contains(current) {
+            leaf = entries.last?.id
         }
         let session = Session(header: header, entries: entries, leaf: leaf)
         self.cache[sessionID] = session
         return session
     }
 
+    /// Appends one line. A previous torn write can leave the file without a trailing newline; the
+    /// new line then starts on a fresh line instead of being glued to the fragment.
     private func appendLine(_ line: String, sessionID: String) throws {
         let url = try self.fileURL(for: sessionID)
-        let handle = try FileHandle(forWritingTo: url)
+        let handle = try FileHandle(forUpdating: url)
         defer { try? handle.close() }
-        try handle.seekToEnd()
-        try handle.write(contentsOf: Data((line + "\n").utf8))
+        let end = try handle.seekToEnd()
+        var payload = Data((line + "\n").utf8)
+        if end > 0 {
+            try handle.seek(toOffset: end - 1)
+            let last = try handle.read(upToCount: 1)
+            if last?.first != UInt8(ascii: "\n") {
+                payload.insert(UInt8(ascii: "\n"), at: 0)
+            }
+            try handle.seekToEnd()
+        }
+        try handle.write(contentsOf: payload)
     }
 
     private func fileURL(for sessionID: String) throws -> URL {

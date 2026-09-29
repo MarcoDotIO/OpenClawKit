@@ -61,7 +61,12 @@ struct RuntimeIntegrationWiringTests {
         #expect(settings.providerConfigs["local-llm"]?.models.first?.id == "tiny")
 
         let writer = AgentRuntimeSettings(document: document, agentID: "Writer")
-        #expect(writer.tools.policy.deny == ["write"])
+        // A per-agent deny adds to the global deny (upstream stages); it never re-enables `exec`.
+        #expect(writer.tools.policy.deny == ["exec", "write"])
+        #expect(!writer.tools.policy.allows("exec"))
+        #expect(!writer.tools.policy.allows("write"))
+        #expect(writer.tools.policy.allows("read"))
+        #expect(writer.tools.policy.allows("web_search"))
         #expect(writer.subagents.maxConcurrent == 7)
         #expect(writer.fastModeDefault == .off)
 
