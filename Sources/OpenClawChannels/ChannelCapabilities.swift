@@ -226,10 +226,14 @@ public struct ChannelCapabilities: Codable, Sendable, Equatable, Hashable {
 }
 
 /// Unit used to measure a channel's text chunk limit.
+///
+/// Platform limits (Telegram, Twilio, LINE, Discord, Slack, ...) and upstream `chunk.ts` count
+/// UTF-16 code units (JavaScript string length), so ``utf16`` is the default everywhere.
 public enum ChannelTextChunkUnit: String, Codable, Sendable, Equatable, Hashable, CaseIterable {
-    /// Extended grapheme clusters (Swift `Character`s).
+    /// Extended grapheme clusters (Swift `Character`s). A non-BMP emoji is one `Character` but two
+    /// or more UTF-16 units, so limits measured this way can exceed UTF-16 platform limits.
     case chars
-    /// UTF-16 code units (JavaScript string length; iMessage and Teams limits).
+    /// UTF-16 code units (JavaScript string length; the default).
     case utf16
     /// UTF-8 bytes (Google Chat).
     case bytes
@@ -320,7 +324,7 @@ public struct ChannelFormatProfile: Codable, Sendable, Equatable, Hashable {
     public init(
         mechanism: Mechanism,
         chunkLimit: Int,
-        chunkUnit: ChannelTextChunkUnit = .chars,
+        chunkUnit: ChannelTextChunkUnit = .utf16,
         hardCap: Int? = nil,
         constructs: [ChannelFormatConstruct: ChannelFormatConstructSupport] = [:]
     ) {
@@ -378,7 +382,7 @@ public struct ChannelTextChunkingDefaults: Codable, Sendable, Equatable, Hashabl
     ///   - richMessagesLimit: Chunk limit with rich messages enabled.
     public init(
         defaultLimit: Int,
-        unit: ChannelTextChunkUnit = .chars,
+        unit: ChannelTextChunkUnit = .utf16,
         platformLimit: Int? = nil,
         maxLines: Int? = nil,
         richMessagesLimit: Int? = nil

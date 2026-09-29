@@ -213,10 +213,17 @@ public actor AutoReplyEngine {
         await self.channelRegistry.recordInbound(channel: message.channel)
         let policy = self.config.channels.messagingPolicy(for: message.channel.rawValue, accountID: message.accountID)
 
-        // 1. Ingress access policy.
+        // 1. Ingress access policy. Skill commands (`/skill`, `/<skill>`) need an authorized
+        // sender like control commands do (upstream treats every registered command as one).
         var commandAuthorized = true
+        let skillCommands = await self.skillCommandNames(for: message.text)
         if self.enforcesAccessPolicy(for: message.channel) {
-            let evaluation = await self.accessEvaluator.evaluateDetailed(message, config: policy, store: self.pairingStore)
+            let evaluation = await self.accessEvaluator.evaluateDetailed(
+                message,
+                config: policy,
+                store: self.pairingStore,
+                additionalCommands: skillCommands
+            )
             commandAuthorized = evaluation.commandAuthorized
             switch evaluation.decision {
             case .allow:
@@ -245,7 +252,7 @@ public actor AutoReplyEngine {
            (policy.groupConfig(for: message.peerID)?.requireMention ?? policy.requireMention ?? true) == false,
            message.wasMentioned != true,
            message.implicitMentionKinds.isEmpty,
-           !ChannelAccessPolicyEvaluator.isControlCommand(message.text)
+           !ChannelAccessPolicyEvaluator.isControlCommand(message.text, additionalCommands: skillCommands)
         {
             message.eventKind = .roomEvent
         }
@@ -320,7 +327,8 @@ public actor AutoReplyEngine {
             sessionKey: sessionKey,
             routingAccountID: routingContext.accountID,
             resolvedSession: resolvedSession,
-            fastMode: sessionRecord.fastMode
+            fastMode: sessionRecord.fastMode,
+            skillsAuthorized: commandAuthorized
         )
         typingTask?.cancel()
 
@@ -399,7 +407,7 @@ public actor AutoReplyEngine {
             await self.emitDiagnostic(
                 name: "access.pairing_reply_failed",
                 sessionKey: nil,
-                metadata: ["channel": message.channel.rawValue, "error": String(describing: error)]
+                metadata: ["channel": message.channel.rawValue, "error": ChannelErrorText.describe(error)]
             )
         }
         return .pairingChallenge(reply, code: code)
@@ -427,7 +435,8 @@ public actor AutoReplyEngine {
         sessionKey: String,
         routingAccountID: String?,
         resolvedSession: ResolvedSessionState,
-        fastMode: Bool?
+        fastMode: Bool?,
+        skillsAuthorized: Bool
     ) async throws -> String {
         let memoryContext = await self.conversationMemoryStore?.formattedContext(
             sessionKey: sessionKey,
@@ -448,7 +457,11 @@ public actor AutoReplyEngine {
             )
             try await store.save()
         }
-        let skillOutput = try await self.invokeSkillIfRequested(message.text)
+        // Skills run local processes with the sender's text: only for senders authorized to run
+        // commands, and never from ambient room events.
+        let skillOutput = skillsAuthorized && message.eventKind != .roomEvent
+            ? try await self.invokeSkillIfRequested(message.text)
+            : nil
         if let skillOutput {
             var metadata: [String: String] = [
                 "skillName": skillOutput.skillName,
@@ -601,7 +614,7 @@ public actor AutoReplyEngine {
                         "attempts": attempts,
                         "status": status,
                         "chunk": String(index + 1),
-                        "error": String(describing: error),
+                        "error": ChannelErrorText.describe(error),
                     ]
                 )
                 throw error
@@ -659,7 +672,7 @@ public actor AutoReplyEngine {
             await self.emitDiagnostic(
                 name: "ack.reaction.error",
                 sessionKey: sessionKey,
-                metadata: ["channel": message.channel.rawValue, "error": String(describing: error)]
+                metadata: ["channel": message.channel.rawValue, "error": ChannelErrorText.describe(error)]
             )
             return nil
         }
@@ -700,11 +713,11 @@ public actor AutoReplyEngine {
             await self.emitDiagnostic(
                 name: "typing.heartbeat.error",
                 sessionKey: sessionKey,
-                metadata: ["channel": message.channel.rawValue, "error": String(describing: error)]
+                metadata: ["channel": message.channel.rawValue, "error": ChannelErrorText.describe(error)]
             )
         }
         let startedAt = Date()
-        let intervalNs = UInt64(settings.keepaliveIntervalMs) * 1_000_000
+        let intervalNs = ChannelAsync.nanoseconds(milliseconds: settings.keepaliveIntervalMs)
         let initialFailures = consecutiveFailures
         return Task {
             var failures = initialFailures
@@ -737,7 +750,7 @@ public actor AutoReplyEngine {
                     await self.emitDiagnostic(
                         name: "typing.heartbeat.error",
                         sessionKey: sessionKey,
-                        metadata: ["channel": message.channel.rawValue, "error": String(describing: error)]
+                        metadata: ["channel": message.channel.rawValue, "error": ChannelErrorText.describe(error)]
                     )
                     if failures >= settings.maxConsecutiveFailures {
                         return
@@ -809,7 +822,7 @@ public actor AutoReplyEngine {
             Channel: \(snapshot.channelID.rawValue)
             Status: \(snapshot.status.rawValue)
             ConsecutiveFailures: \(snapshot.consecutiveFailures)
-            LastError: \(snapshot.lastError ?? "none")
+            LastError: \(snapshot.lastError.map(ChannelErrorText.redact) ?? "none")
             RetryPolicy: attempts=\(policy.maxAttempts), initialBackoffMs=\(policy.initialBackoffMs), maxBackoffMs=\(policy.maxBackoffMs)
             SessionKey: \(sessionKey)
             """
@@ -837,6 +850,27 @@ public actor AutoReplyEngine {
         default:
             return nil
         }
+    }
+
+    /// Registered skill commands (`/skill` plus `/<name>` for user-invocable skills) when `text`
+    /// starts with a slash; empty otherwise (skills are only loaded for slash messages).
+    private func skillCommandNames(for text: String) async -> Set<String> {
+        guard text.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/") else { return [] }
+        let workspaceRoot = self.config.agents.workspaceRoot.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !workspaceRoot.isEmpty else { return [] }
+        let registry = SkillRegistry(workspaceRoot: URL(fileURLWithPath: workspaceRoot, isDirectory: true))
+        let skills = ((try? await registry.loadSkills()) ?? []).filter(\.invocation.userInvocable)
+        guard !skills.isEmpty else { return [] }
+        var names: Set<String> = ["/skill"]
+        for skill in skills {
+            let lookup = skill.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                .replacingOccurrences(of: "[\\s_]+", with: "-", options: .regularExpression)
+            names.insert("/" + lookup)
+        }
+        for spec in SkillCommandNaming.commandSpecs(for: skills) {
+            names.insert("/" + spec.name.lowercased())
+        }
+        return names
     }
 
     private func invokeSkillIfRequested(_ messageText: String) async throws -> SkillInvocationResult? {

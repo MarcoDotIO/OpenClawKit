@@ -69,6 +69,15 @@ public enum ChannelWebhookSignature {
         self.hmacSHA256(key: Data(channelSecret.utf8), message: body).base64EncodedString()
     }
 
+    /// Meta (WhatsApp Cloud) `X-Hub-Signature-256`: `"sha256=" + hex(HMAC-SHA256(appSecret, raw body))`.
+    /// - Parameters:
+    ///   - appSecret: Meta app secret.
+    ///   - body: Raw request body.
+    /// - Returns: Signature string including the `sha256=` prefix.
+    public static func metaSignature(appSecret: String, body: Data) -> String {
+        "sha256=" + self.hmacSHA256(key: Data(appSecret.utf8), message: body).map { String(format: "%02x", $0) }.joined()
+    }
+
     /// Compares two secrets in constant time with respect to their contents.
     ///
     /// Both values are hashed with SHA-256 first (upstream `safeEqualSecret`), so the comparison

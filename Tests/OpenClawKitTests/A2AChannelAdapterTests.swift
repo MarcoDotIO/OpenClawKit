@@ -226,7 +226,10 @@ struct A2AChannelAdapterTests {
     @Test
     func slashMessagesAreRejectedAndReturnImmediatelyYieldsWorkingTask() async throws {
         let adapter = A2AChannelAdapter(config: Self.config())
-        await adapter.setInboundHandler { _ in }
+        // The turn is still running while the task is polled (a returning handler fails the task).
+        let gate = ChannelTestGate()
+        await adapter.setInboundHandler { _ in await gate.wait() }
+        defer { Task { await gate.open() } }
         try await adapter.start()
         let slash = await adapter.handleHTTP(method: "POST", path: "/a2a/v1", headers: Self.alice, body: Self.rpc("SendMessage", params: Self.send("/reset")))
         let slashTask = (jsonObject(slash.bodyText)["result"] as? [String: Any])?["task"] as? [String: Any]
@@ -247,6 +250,45 @@ struct A2AChannelAdapterTests {
         let foreign = await adapter.handleHTTP(method: "POST", path: "/a2a/v1", headers: Self.bob, body: Self.rpc("GetTask", params: ["id": taskID]))
         #expect(jsonObject(foreign.bodyText)["error"].flatMap { ($0 as? [String: Any])?["code"] as? Int } == -32_001)
         await adapter.stop()
+    }
+
+    @Test
+    func turnsThatEndWithoutAReplyFailSoLaterRepliesCompleteTheirOwnTask() async throws {
+        let adapter = A2AChannelAdapter(config: Self.config())
+        await adapter.setInboundHandler { message in
+            // The first turn fails (for example a provider 429 swallowed by `try?`) and sends nothing.
+            guard message.text != "first" else { return }
+            try? await adapter.send(OutboundMessage(channel: .a2a, peerID: message.peerID, text: "reply to \(message.text)"))
+        }
+        try await adapter.start()
+        func task(_ response: ChannelHTTPHandlerResponse) -> [String: Any]? {
+            (jsonObject(response.bodyText)["result"] as? [String: Any])?["task"] as? [String: Any]
+        }
+        func post(_ text: String) async -> ChannelHTTPHandlerResponse {
+            let body = Self.rpc("SendMessage", params: Self.send(text, context: "ctx-9"))
+            return await adapter.handleHTTP(method: "POST", path: "/a2a/v1", headers: Self.alice, body: body)
+        }
+        let first = await post("first")
+        let second = await post("second")
+        await adapter.stop()
+
+        let firstTask = try #require(task(first))
+        #expect((firstTask["status"] as? [String: Any])?["state"] as? String == "TASK_STATE_FAILED")
+        #expect((firstTask["artifacts"] as? [Any])?.isEmpty ?? true)
+        let secondTask = try #require(task(second))
+        #expect((secondTask["status"] as? [String: Any])?["state"] as? String == "TASK_STATE_COMPLETED")
+        let artifacts = try #require(secondTask["artifacts"] as? [[String: Any]])
+        #expect((artifacts.first?["parts"] as? [[String: Any]])?.first?["text"] as? String == "reply to second")
+    }
+
+    @Test
+    func repliesHaveNoOutboundChunkingDefaults() {
+        // The auto-reply engine only chunks channels with chunking defaults or a configured limit
+        // (see `ChannelAutoReplyAccessTests.a2aRepliesCompleteTheirTaskWholeThroughTheEngine`).
+        #expect(ChannelID.a2a.metadata.textChunking == nil)
+        var channels = ChannelsConfig()
+        channels.a2a = Self.config()
+        #expect(channels.messagingPolicy(for: "a2a").textChunkLimit == nil)
     }
 
     @Test
@@ -353,6 +395,68 @@ struct A2AChannelAdapterTests {
         #expect(await http.count("/err") == 1)
         #expect(await http.count("/redirect") == 1)
     }
+
+    // Darwin only: swift-corelibs-foundation traps in `URLProtocolClient.urlProtocol(_:wasRedirectedTo:
+    // redirectResponse:)`. Its URLSession does consult the session delegate's
+    // `willPerformHTTPRedirection` for `data(for:)` (checked against a loopback 307 with the Swift 6.2
+    // Linux image), which is what `ChannelNoRedirectHTTPTransport` relies on.
+    #if canImport(Darwin)
+    /// Serves `/a2a` as a 307 to `/attacker` and records every request (URLSession stub).
+    final class RedirectingProtocol: URLProtocol, @unchecked Sendable {
+        nonisolated(unsafe) static var requestedPaths: [String] = []
+        static let lock = NSLock()
+
+        override class func canInit(with _: URLRequest) -> Bool { true }
+        override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+        override func startLoading() {
+            let url = self.request.url!
+            Self.lock.withLock { Self.requestedPaths.append(url.path) }
+            if url.path == "/a2a" {
+                let target = URL(string: "https://attacker.example/attacker")!
+                let redirect = HTTPURLResponse(url: url, statusCode: 307, httpVersion: "HTTP/1.1", headerFields: ["Location": target.absoluteString])!
+                var next = self.request
+                next.url = target
+                self.client?.urlProtocol(self, wasRedirectedTo: next, redirectResponse: redirect)
+                self.client?.urlProtocol(self, didReceive: redirect, cacheStoragePolicy: .notAllowed)
+                self.client?.urlProtocolDidFinishLoading(self)
+                return
+            }
+            let ok = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
+            self.client?.urlProtocol(self, didReceive: ok, cacheStoragePolicy: .notAllowed)
+            let payload = #"{"jsonrpc":"2.0","id":"1","result":{"task":{"id":"evil","contextId":"ctx-oc-redir","#
+                + #""status":{"state":"TASK_STATE_COMPLETED"}}}}"#
+            self.client?.urlProtocol(self, didLoad: Data(payload.utf8))
+            self.client?.urlProtocolDidFinishLoading(self)
+        }
+
+        override func stopLoading() {}
+    }
+
+    @Test
+    func defaultTransportRefusesRedirectsThroughARealURLSession() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [RedirectingProtocol.self]
+        let client = A2AClient(
+            peers: ["redir": A2APeerConfig(token: "t", url: "https://peer.example/a2a", outboundToken: "secret")],
+            transport: ChannelNoRedirectHTTPTransport(configuration: configuration)
+        )
+        do {
+            _ = try await client.send(text: "secret task text", to: "redir")
+            Issue.record("expected the redirect to be refused")
+        } catch let error as ChannelSendError {
+            guard case .rejected(let status, _) = error else {
+                Issue.record("expected rejected, got \(error)")
+                return
+            }
+            #expect(status == 307)
+        }
+        let paths = RedirectingProtocol.lock.withLock { RedirectingProtocol.requestedPaths }
+        #expect(paths == ["/a2a"])
+        #expect(ChannelNoRedirectHTTPTransport.sameEndpoint(URL(string: "https://a.example/x")!, URL(string: "https://a.example:443/x")!))
+        #expect(!ChannelNoRedirectHTTPTransport.sameEndpoint(URL(string: "https://a.example/x")!, URL(string: "https://b.example/x")!))
+    }
+    #endif
 
     @Test
     func replyWithoutPendingTaskIsRejected() async throws {

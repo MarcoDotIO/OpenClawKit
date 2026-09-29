@@ -357,9 +357,9 @@ public actor MicrosoftTeamsChannelAdapter: InboundChannelAdapter, ReceiptingChan
         guard !text.isEmpty else {
             throw OpenClawCoreError.invalidConfiguration("Microsoft Teams outbound text is required")
         }
-        var parts: [ChannelSendReceipt.Part] = []
-        for (index, chunk) in ChannelTextChunker.chunk(text, limit: Self.textChunkLimit, unit: .utf16).enumerated() {
-            var activity: [String: Any] = ["type": "message", "text": chunk, "conversation": ["id": conversationID]]
+        let chunks = ChannelTextChunker.chunk(text, limit: Self.textChunkLimit, unit: .utf16)
+        let parts = try await ChannelMultipartDelivery(replyToID: message.replyToID).run(count: chunks.count) { index in
+            var activity: [String: Any] = ["type": "message", "text": chunks[index], "conversation": ["id": conversationID]]
             if let appID = self.config.botAppID?.channelTrimmedNonEmpty {
                 activity["from"] = ["id": appID]
             }
@@ -369,7 +369,7 @@ public actor MicrosoftTeamsChannelAdapter: InboundChannelAdapter, ReceiptingChan
             }
             let response = try await self.postActivity(activity, conversationID: conversationID, replyToID: replyTo)
             let id = (try? JSONDecoder().decode(TeamsResourceResponse.self, from: response.body))?.id ?? ""
-            parts.append(ChannelSendReceipt.Part(platformMessageID: id, kind: .text, index: index, replyToID: replyTo))
+            return [ChannelSendReceipt.Part(platformMessageID: id, kind: .text, index: index, replyToID: replyTo)]
         }
         return ChannelSendReceipt(parts: parts, replyToID: message.replyToID)
     }

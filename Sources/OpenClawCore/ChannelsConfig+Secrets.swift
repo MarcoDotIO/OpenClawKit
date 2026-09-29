@@ -153,6 +153,10 @@ public extension ChannelsConfig {
             copy.whatsappCloud.webhookVerifyTokenInput,
             path: "channels.whatsappCloud.webhookVerifyToken"
         )
+        copy.whatsappCloud.appSecretInput = try await resolved(
+            copy.whatsappCloud.appSecretInput,
+            path: "channels.whatsappCloud.appSecret"
+        )
         copy.slack.botTokenInput = try await resolved(copy.slack.botTokenInput, path: "channels.slack.botToken")
         copy.slack.appTokenInput = try await resolved(copy.slack.appTokenInput, path: "channels.slack.appToken")
         copy.slack.signingSecretInput = try await resolved(copy.slack.signingSecretInput, path: "channels.slack.signingSecret")

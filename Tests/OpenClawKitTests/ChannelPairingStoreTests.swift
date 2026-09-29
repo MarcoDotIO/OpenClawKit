@@ -25,6 +25,77 @@ struct ChannelPairingStoreTests {
         }
     }
 
+    /// Persistence whose first load waits for a gate and whose saves can be slowed per call.
+    actor SlowPersistence: ChannelPairingPersistence {
+        let gate = ChannelTestGate()
+        private(set) var loads = 0
+        private(set) var saved: [ChannelPairingSnapshot] = []
+        private var delays: [UInt64]
+        private var stored: ChannelPairingSnapshot?
+
+        init(saveDelaysNs: [UInt64] = [], initial: ChannelPairingSnapshot? = nil) {
+            self.delays = saveDelaysNs
+            self.stored = initial
+        }
+
+        func load() async throws -> ChannelPairingSnapshot? {
+            self.loads += 1
+            await self.gate.wait()
+            return self.stored
+        }
+
+        private(set) var started = 0
+
+        func save(_ snapshot: ChannelPairingSnapshot) async throws {
+            self.started += 1
+            let delay = self.delays.isEmpty ? 0 : self.delays.removeFirst()
+            if delay > 0 {
+                try? await Task.sleep(nanoseconds: delay)
+            }
+            self.saved.append(snapshot)
+            self.stored = snapshot
+        }
+
+        func current() -> ChannelPairingSnapshot? {
+            self.stored
+        }
+    }
+
+    @Test
+    func concurrentFirstAccessesShareOneLoadAndKeepEveryUpdate() async throws {
+        let persistence = SlowPersistence()
+        let store = ChannelPairingStore(persistence: persistence)
+        async let added = store.addApprovedSender(channel: .telegram, accountID: nil, senderID: "owner")
+        async let pending = store.upsert(channel: .telegram, accountID: nil, senderID: "stranger")
+        try await waitUntil("load started") { await persistence.gate.waitCount >= 1 }
+        await persistence.gate.open()
+        let (didAdd, request) = try await (added, pending)
+        #expect(didAdd)
+        #expect(request.created)
+        #expect(await persistence.loads == 1)
+        #expect(try await store.approvedSenders(channel: .telegram, accountID: nil) == ["owner"])
+        #expect(try await store.list(channel: .telegram).map(\.request.id) == ["stranger"])
+        let persisted = try #require(await persistence.current()?.channels["telegram"])
+        #expect(persisted.allowFrom["default"] == ["owner"])
+        #expect(persisted.requests.map(\.id) == ["stranger"])
+    }
+
+    @Test
+    func savesLandInMutationOrderEvenWhenAnEarlierWriteIsSlow() async throws {
+        let persistence = SlowPersistence(saveDelaysNs: [150_000_000, 0])
+        await persistence.gate.open()
+        let store = ChannelPairingStore(persistence: persistence)
+        _ = try await store.approvedSenders(channel: .telegram, accountID: nil)
+        let first = Task { try await store.addApprovedSender(channel: .telegram, accountID: nil, senderID: "a") }
+        try await waitUntil("slow first save in flight") { await persistence.started == 1 }
+        let second = Task { try await store.addApprovedSender(channel: .telegram, accountID: nil, senderID: "b") }
+        _ = try await (first.value, second.value)
+        // Without ordering, the slow first write ([a]) would land after the second ([a, b]).
+        let persisted = try #require(await persistence.current()?.channels["telegram"])
+        #expect(persisted.allowFrom["default"] == ["a", "b"])
+        #expect(await persistence.saved.count == 2)
+    }
+
     @Test
     func codesUseTheUpstreamAlphabetAndLength() async throws {
         let store = ChannelPairingStore()

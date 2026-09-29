@@ -207,6 +207,10 @@ public actor ChannelPairingStore {
     private let persistence: any ChannelPairingPersistence
     private let now: @Sendable () -> Date
     private var snapshot: ChannelPairingSnapshot?
+    /// Single in-flight first load shared by concurrent callers.
+    private var loadTask: Task<ChannelPairingSnapshot, Error>?
+    /// Last queued save; each save waits for the previous one so the newest snapshot lands last.
+    private var saveTail: Task<Void, Error>?
 
     /// Creates a pairing store.
     /// - Parameters:
@@ -454,18 +458,47 @@ public actor ChannelPairingStore {
         return entry
     }
 
+    /// Current state for a channel. The first load is shared by concurrent callers and never
+    /// overwrites a snapshot another caller already mutated (upstream runs each read-modify-write
+    /// in one SQLite transaction).
     private func state(for channel: ChannelID) async throws -> ChannelPairingChannelState {
         if self.snapshot == nil {
-            self.snapshot = try await self.persistence.load() ?? ChannelPairingSnapshot()
+            let task: Task<ChannelPairingSnapshot, Error>
+            if let loadTask {
+                task = loadTask
+            } else {
+                let persistence = self.persistence
+                task = Task { try await persistence.load() ?? ChannelPairingSnapshot() }
+                self.loadTask = task
+            }
+            do {
+                let loaded = try await task.value
+                if self.snapshot == nil {
+                    self.snapshot = loaded
+                }
+            } catch {
+                if self.loadTask == task {
+                    self.loadTask = nil
+                }
+                throw error
+            }
         }
         return self.snapshot?.channels[channel.rawValue] ?? ChannelPairingChannelState()
     }
 
+    /// Applies a channel state in memory, then persists the snapshot after every earlier save.
     private func store(_ state: ChannelPairingChannelState, for channel: ChannelID) async throws {
         var snapshot = self.snapshot ?? ChannelPairingSnapshot()
         snapshot.channels[channel.rawValue] = state
         self.snapshot = snapshot
-        try await self.persistence.save(snapshot)
+        let previous = self.saveTail
+        let persistence = self.persistence
+        let save = Task<Void, Error> {
+            _ = await previous?.result
+            try await persistence.save(snapshot)
+        }
+        self.saveTail = save
+        try await save.value
     }
 
     static func normalizeAccountID(_ raw: String?) -> String {

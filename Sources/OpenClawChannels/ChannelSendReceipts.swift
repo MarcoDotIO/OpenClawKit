@@ -126,18 +126,24 @@ public protocol ReceiptingChannelAdapter: ChannelAdapter {
 ///
 /// ``ChannelRegistry`` retries only ``notSent(underlying:retryAfterMs:)`` and
 /// ``rateLimited(retryAfterMs:)``. ``unknownOutcome(underlying:)`` is never retried blindly
-/// (that would duplicate messages after a timeout) unless the adapter conforms to
-/// ``UnknownSendReconciling``; ``rejected(status:detail:)`` is permanent.
+/// (that would duplicate messages after a timeout or an ambiguous HTTP 5xx) unless the adapter
+/// conforms to ``UnknownSendReconciling``; ``rejected(status:detail:)`` and
+/// ``partiallyDelivered(receipt:failure:)`` are permanent.
 public enum ChannelSendError: Error, LocalizedError, Sendable, Equatable {
-    /// The platform did not accept the message (connection refused, DNS failure, HTTP 5xx before
-    /// acceptance, ...); safe to retry.
+    /// The platform did not accept the message (connection refused, DNS failure, TLS failure
+    /// before the request was written, ...); safe to retry.
     case notSent(underlying: String, retryAfterMs: Int? = nil)
-    /// The request may or may not have been delivered (timeout or reset after the body was written).
+    /// The request may or may not have been delivered (timeout or reset after the body was
+    /// written, HTTP 5xx, an unreadable 2xx body).
     case unknownOutcome(underlying: String)
     /// Permanent rejection (4xx other than 429).
     case rejected(status: Int, detail: String)
     /// Rate limited (HTTP 429); retry after the given delay.
     case rateLimited(retryAfterMs: Int?)
+    /// A multi-part send (text chunks, batches, text then attachments) delivered the parts in
+    /// `receipt` before a later part failed with `failure`. Never retried: a retry would re-send
+    /// the delivered parts.
+    indirect case partiallyDelivered(receipt: ChannelSendReceipt, failure: ChannelSendError)
 
     /// Maximum honored Retry-After delay (upstream `TELEGRAM_OUTBOUND_RETRY_AFTER_CAP_MS`).
     public static let retryAfterCapMs = 60_000
@@ -146,7 +152,7 @@ public enum ChannelSendError: Error, LocalizedError, Sendable, Equatable {
     public var isRetryable: Bool {
         switch self {
         case .notSent, .rateLimited: true
-        case .unknownOutcome, .rejected: false
+        case .unknownOutcome, .rejected, .partiallyDelivered: false
         }
     }
 
@@ -155,9 +161,17 @@ public enum ChannelSendError: Error, LocalizedError, Sendable, Equatable {
         switch self {
         case .notSent(_, let retryAfterMs), .rateLimited(let retryAfterMs):
             retryAfterMs.map { min(max(0, $0), Self.retryAfterCapMs) }
-        case .unknownOutcome, .rejected:
+        case .unknownOutcome, .rejected, .partiallyDelivered:
             nil
         }
+    }
+
+    /// Parts delivered before a ``partiallyDelivered(receipt:failure:)`` failure.
+    public var deliveredReceipt: ChannelSendReceipt? {
+        if case .partiallyDelivered(let receipt, _) = self {
+            return receipt
+        }
+        return nil
     }
 
     /// Localized description.
@@ -171,14 +185,18 @@ public enum ChannelSendError: Error, LocalizedError, Sendable, Equatable {
             "Message rejected (\(status)): \(detail)"
         case .rateLimited(let retryAfterMs):
             "Rate limited" + (retryAfterMs.map { "; retry after \($0) ms" } ?? "")
+        case .partiallyDelivered(let receipt, let failure):
+            "Message partially delivered (\(receipt.parts.count) part(s) sent) before a later part failed: "
+                + (failure.errorDescription ?? "unknown error")
         }
     }
 
     /// Classifies an HTTP response from a channel API.
     ///
     /// 2xx returns `nil`. 429 becomes ``rateLimited(retryAfterMs:)`` with the `Retry-After`
-    /// header or a Telegram/Discord JSON `retry_after`; 5xx becomes ``notSent(underlying:retryAfterMs:)``;
-    /// other statuses become ``rejected(status:detail:)``.
+    /// header or a Telegram/Discord JSON `retry_after`; 5xx becomes ``unknownOutcome(underlying:)``
+    /// because the platform may already have processed the request (upstream treats HTTP 5xx as
+    /// ambiguous and never replays it); other statuses become ``rejected(status:detail:)``.
     /// - Parameters:
     ///   - statusCode: HTTP status.
     ///   - headers: Response headers (case-insensitive lookup).
@@ -196,7 +214,7 @@ public enum ChannelSendError: Error, LocalizedError, Sendable, Equatable {
                 ?? self.discordRetryAfterMs(body: body)
             return .rateLimited(retryAfterMs: retryAfter)
         case 500..<600:
-            return .notSent(underlying: detail, retryAfterMs: nil)
+            return .unknownOutcome(underlying: "HTTP \(statusCode): \(detail)")
         default:
             return .rejected(status: statusCode, detail: detail)
         }
@@ -205,9 +223,12 @@ public enum ChannelSendError: Error, LocalizedError, Sendable, Equatable {
     /// Classifies a transport error thrown while sending.
     ///
     /// Connection/DNS failures before the request was written are ``notSent(underlying:retryAfterMs:)``;
-    /// timeouts and dropped connections are ``unknownOutcome(underlying:)``.
-    /// `OpenClawCoreError.invalidConfiguration` is permanent; `.unavailable` is treated as not sent.
-    /// Other errors keep the pre-2026.3.0 behavior (retried as not sent).
+    /// timeouts and dropped connections are ``unknownOutcome(underlying:)``, and so is a
+    /// `DecodingError` (a response body that could not be read after the platform answered).
+    /// `OpenClawCoreError.invalidConfiguration` is permanent; `.unavailable` is treated as not sent
+    /// (adapters raise it before a request is written; adapters that can fail after writing throw
+    /// ``unknownOutcome(underlying:)`` themselves). Other errors keep the pre-2026.3.0 behavior
+    /// (retried as not sent).
     /// - Parameter error: Thrown error.
     /// - Returns: Classified error.
     public static func classify(_ error: Error) -> ChannelSendError {
@@ -225,6 +246,9 @@ public enum ChannelSendError: Error, LocalizedError, Sendable, Equatable {
         if error is CancellationError {
             return .unknownOutcome(underlying: "cancelled")
         }
+        if error is DecodingError {
+            return .unknownOutcome(underlying: "unreadable response: \(ChannelErrorText.describe(error))")
+        }
         if let urlError = error as? URLError {
             switch urlError.code {
             case .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed, .notConnectedToInternet,
@@ -234,7 +258,7 @@ public enum ChannelSendError: Error, LocalizedError, Sendable, Equatable {
                 return .unknownOutcome(underlying: urlError.localizedDescription)
             }
         }
-        return .notSent(underlying: String(describing: error), retryAfterMs: nil)
+        return .notSent(underlying: ChannelErrorText.describe(error), retryAfterMs: nil)
     }
 
     /// Parses an HTTP `Retry-After` header (delta seconds or HTTP date) into milliseconds.
@@ -245,14 +269,21 @@ public enum ChannelSendError: Error, LocalizedError, Sendable, Equatable {
     public static func parseRetryAfterHeader(_ value: String, now: Date = Date()) -> Int? {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         if let seconds = Double(trimmed), seconds.isFinite, seconds >= 0 {
-            return min(Int((seconds * 1_000).rounded(.up)), Self.retryAfterCapMs)
+            return self.cappedRetryAfterMs(seconds: seconds)
         }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
         formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
         guard let date = formatter.date(from: trimmed) else { return nil }
-        return min(max(0, Int((date.timeIntervalSince(now) * 1_000).rounded(.up))), Self.retryAfterCapMs)
+        return self.cappedRetryAfterMs(seconds: date.timeIntervalSince(now))
+    }
+
+    /// Converts remote-supplied seconds to milliseconds, clamping in the floating-point domain
+    /// before the `Int` conversion so huge values cannot trap (also on 32-bit `Int` watchOS).
+    static func cappedRetryAfterMs(seconds: Double) -> Int {
+        guard seconds.isFinite, seconds > 0 else { return 0 }
+        return Int(min(seconds * 1_000, Double(Self.retryAfterCapMs)).rounded(.up))
     }
 
     /// Reads Telegram's `{ok: false, error_code: 429, parameters: {retry_after: seconds}}`.
@@ -264,7 +295,7 @@ public enum ChannelSendError: Error, LocalizedError, Sendable, Equatable {
         else {
             return nil
         }
-        return min(Int((seconds * 1_000).rounded(.up)), Self.retryAfterCapMs)
+        return self.cappedRetryAfterMs(seconds: seconds)
     }
 
     /// Reads Discord's 429 JSON `retry_after` (seconds, possibly fractional).
@@ -276,7 +307,7 @@ public enum ChannelSendError: Error, LocalizedError, Sendable, Equatable {
         else {
             return nil
         }
-        return min(Int((seconds * 1_000).rounded(.up)), Self.retryAfterCapMs)
+        return self.cappedRetryAfterMs(seconds: seconds)
     }
 }
 

@@ -361,7 +361,9 @@ public actor TelegramChannelAdapter: InboundChannelAdapter, ReceiptingChannelAda
 
     /// Sends an outbound message and returns the Telegram `message_id` receipt.
     ///
-    /// Text is chunked at 4,000 characters; only the first chunk carries `reply_parameters`.
+    /// Text is chunked at 4,000 UTF-16 units; only the first chunk carries `reply_parameters`.
+    /// A failure after the first chunk was delivered throws
+    /// ``ChannelSendError/partiallyDelivered(receipt:failure:)`` (rate limits are retried per chunk).
     /// - Parameter message: Outbound payload.
     /// - Returns: Receipt with one part per chunk.
     public func sendReturningReceipt(_ message: OutboundMessage) async throws -> ChannelSendReceipt {
@@ -375,9 +377,9 @@ public actor TelegramChannelAdapter: InboundChannelAdapter, ReceiptingChannelAda
         guard !chunks.isEmpty else {
             throw OpenClawCoreError.invalidConfiguration("Telegram outbound text is required")
         }
-        var parts: [ChannelSendReceipt.Part] = []
-        for (index, chunk) in chunks.enumerated() {
-            var payload: [String: Any] = ["chat_id": chatID, "text": chunk]
+        let delivery = ChannelMultipartDelivery(threadID: message.threadID, replyToID: message.replyToID)
+        let parts = try await delivery.run(count: chunks.count) { index in
+            var payload: [String: Any] = ["chat_id": chatID, "text": chunks[index]]
             if let threadID {
                 payload["message_thread_id"] = threadID
             }
@@ -391,15 +393,15 @@ public actor TelegramChannelAdapter: InboundChannelAdapter, ReceiptingChannelAda
                 payload["disable_notification"] = true
             }
             let sent: TelegramSentMessage = try await self.callSend(token: token, method: "sendMessage", payload: payload)
-            parts.append(
+            return [
                 ChannelSendReceipt.Part(
                     platformMessageID: String(sent.messageID),
                     kind: .text,
                     index: index,
                     threadID: sent.messageThreadID.map(String.init) ?? message.threadID,
                     replyToID: index == 0 ? message.replyToID : nil
-                )
-            )
+                ),
+            ]
         }
         return ChannelSendReceipt(parts: parts, threadID: message.threadID, replyToID: message.replyToID)
     }
@@ -599,7 +601,7 @@ public actor TelegramChannelAdapter: InboundChannelAdapter, ReceiptingChannelAda
                 if error is CancellationError || Task.isCancelled { return }
                 self.health = ChannelTransportHealth(
                     state: .degraded,
-                    lastError: "Telegram getUpdates failed: \((error as? LocalizedError)?.errorDescription ?? String(describing: error))"
+                    lastError: "Telegram getUpdates failed: \(ChannelErrorText.describe(error))"
                 )
                 await ChannelAsync.sleep(milliseconds: self.backoffMs(failures: failures))
             }
@@ -639,7 +641,7 @@ public actor TelegramChannelAdapter: InboundChannelAdapter, ReceiptingChannelAda
             response = try await self.transport.data(for: request)
         } catch {
             throw TelegramPollFailure.transient(
-                "Telegram getUpdates failed: \((error as? LocalizedError)?.errorDescription ?? String(describing: error))"
+                "Telegram getUpdates failed: \(ChannelErrorText.describe(error))"
             )
         }
         let parsed = try? JSONDecoder().decode(TelegramAPIResponse<[TelegramUpdate]>.self, from: response.body)
@@ -805,7 +807,7 @@ public actor TelegramChannelAdapter: InboundChannelAdapter, ReceiptingChannelAda
             self.webhookCleared = true
         } catch {
             // Upstream continues to polling so getUpdates can confirm the webhook state.
-            await self.emitDiagnostic("telegram.webhook.clear_failed", ["error": String(describing: error)])
+            await self.emitDiagnostic("telegram.webhook.clear_failed", ["error": ChannelErrorText.describe(error)])
         }
     }
 

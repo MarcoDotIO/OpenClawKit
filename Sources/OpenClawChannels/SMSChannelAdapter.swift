@@ -59,6 +59,35 @@ public enum TwilioSMS {
         return self.looksLikePhoneNumber(phone) ? phone : nil
     }
 
+    /// Validates an inbound `MediaUrlN` before Twilio credentials are attached (upstream
+    /// `requireTwilioMediaUrl`): `https://api.twilio.com` with no port, userinfo, query or
+    /// fragment, and the path `/2010-04-01/Accounts/<accountSid>/Messages/<messageSid>/Media/ME<32 hex>`
+    /// bound to the configured account and the inbound message.
+    /// - Parameters:
+    ///   - raw: `MediaUrlN` value.
+    ///   - accountSid: Configured account SID.
+    ///   - messageSid: Inbound `MessageSid`.
+    /// - Returns: The URL, or `nil` when it must not be fetched.
+    public static func inboundMediaURL(_ raw: String, accountSid: String, messageSid: String) -> URL? {
+        guard let components = URLComponents(string: raw.trimmingCharacters(in: .whitespacesAndNewlines)),
+              components.scheme?.lowercased() == "https",
+              components.host?.lowercased() == self.apiHost,
+              components.port == nil, components.user == nil, components.password == nil,
+              components.query == nil, components.fragment == nil
+        else {
+            return nil
+        }
+        let segments = components.percentEncodedPath.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        guard segments.count == 8, segments[0].isEmpty, segments[1] == "2010-04-01", segments[2] == "Accounts",
+              segments[3] == accountSid, segments[4] == "Messages", segments[5] == messageSid, segments[6] == "Media",
+              segments[7].count == 34, segments[7].hasPrefix("ME"),
+              segments[7].dropFirst(2).allSatisfy(\.isHexDigit)
+        else {
+            return nil
+        }
+        return components.url
+    }
+
     /// Whether a public webhook URL is usable (absolute http(s), no credentials, valid host).
     /// - Parameter value: Candidate URL.
     /// - Returns: `true` when valid.
@@ -298,6 +327,9 @@ public actor SMSChannelAdapter: InboundChannelAdapter, ReceiptingChannelAdapter,
     }
 
     /// Sends plain-text chunks (and MMS media on the first chunk); returns the Twilio `sid`s.
+    ///
+    /// A failure after the first chunk was delivered throws
+    /// ``ChannelSendError/partiallyDelivered(receipt:failure:)`` (rate limits are retried per chunk).
     /// - Parameter message: Outbound payload.
     /// - Returns: Receipt.
     public func sendReturningReceipt(_ message: OutboundMessage) async throws -> ChannelSendReceipt {
@@ -331,16 +363,16 @@ public actor SMSChannelAdapter: InboundChannelAdapter, ReceiptingChannelAdapter,
             }
             chunks = [""]
         }
-        var parts: [ChannelSendReceipt.Part] = []
-        for (index, chunk) in chunks.enumerated() {
-            let sid = try await self.postMessage(to: to, body: chunk, mediaURLs: index == 0 ? mediaURLs : [])
-            parts.append(ChannelSendReceipt.Part(platformMessageID: sid, kind: index == 0 && !mediaURLs.isEmpty ? .media : .text, index: index))
+        let parts = try await ChannelMultipartDelivery().run(count: chunks.count) { index in
+            let sid = try await self.postMessage(to: to, body: chunks[index], mediaURLs: index == 0 ? mediaURLs : [])
+            return [ChannelSendReceipt.Part(platformMessageID: sid, kind: index == 0 && !mediaURLs.isEmpty ? .media : .text, index: index)]
         }
         return ChannelSendReceipt(parts: parts)
     }
 
     private func postMessage(to: String, body: String, mediaURLs: [String]) async throws -> String {
-        guard body.count <= TwilioSMS.messageBodyMaxLength else {
+        // Twilio counts the Body in UTF-16 code units (upstream `params.text.length`).
+        guard body.utf16.count <= TwilioSMS.messageBodyMaxLength else {
             throw ChannelSendError.rejected(status: 0, detail: "Twilio SMS/MMS Body supports at most \(TwilioSMS.messageBodyMaxLength) characters.")
         }
         var fields: [(String, String)] = [("To", to)]
@@ -430,7 +462,7 @@ public actor SMSChannelAdapter: InboundChannelAdapter, ReceiptingChannelAdapter,
         var attachments: [MediaAttachment] = []
         if mediaCount > 0 {
             if await self.mayDownloadMedia(from: sender) {
-                let result = await self.downloadMedia(form: form, count: mediaCount)
+                let result = await self.downloadMedia(form: form, count: mediaCount, messageSid: messageSid)
                 attachments = result.attachments
                 if result.unavailable > 0 {
                     notices.append("[\(result.unavailable) attachment(s) could not be included (limit 10 files / 5 MiB or unavailable)]")
@@ -470,13 +502,20 @@ public actor SMSChannelAdapter: InboundChannelAdapter, ReceiptingChannelAdapter,
         return allowFrom.contains("*") || allowFrom.contains(sender)
     }
 
-    private func downloadMedia(form: [String: String], count: Int) async -> (attachments: [MediaAttachment], unavailable: Int) {
+    private func downloadMedia(form: [String: String], count: Int, messageSid: String) async -> (attachments: [MediaAttachment], unavailable: Int) {
+        // Upstream `materializeSmsInboundMedia`: never send credentials for a callback that names
+        // another Twilio account.
+        guard let accountSid = self.config.accountSid?.channelTrimmedNonEmpty,
+              form["AccountSid"]?.channelTrimmedNonEmpty == accountSid
+        else {
+            return ([], count)
+        }
         var attachments: [MediaAttachment] = []
         var unavailable = max(0, count - TwilioSMS.maxInboundMedia)
         var totalBytes = 0
         for index in 0..<min(count, TwilioSMS.maxInboundMedia) {
             guard let raw = form["MediaUrl\(index)"]?.channelTrimmedNonEmpty,
-                  let url = URL(string: raw), url.scheme?.lowercased() == "https", url.host?.lowercased() == TwilioSMS.apiHost
+                  let url = TwilioSMS.inboundMediaURL(raw, accountSid: accountSid, messageSid: messageSid)
             else {
                 unavailable += 1
                 continue

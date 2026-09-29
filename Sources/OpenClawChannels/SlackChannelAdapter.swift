@@ -404,6 +404,9 @@ public actor SlackChannelAdapter: InboundChannelAdapter, ReceiptingChannelAdapte
     }
 
     /// Sends outbound text (chunked at 8,000 characters) and returns the `ts` receipt.
+    ///
+    /// A failure after the first chunk was delivered throws
+    /// ``ChannelSendError/partiallyDelivered(receipt:failure:)`` (rate limits are retried per chunk).
     /// - Parameter message: Outbound payload.
     /// - Returns: Receipt with one part per chunk.
     public func sendReturningReceipt(_ message: OutboundMessage) async throws -> ChannelSendReceipt {
@@ -417,9 +420,10 @@ public actor SlackChannelAdapter: InboundChannelAdapter, ReceiptingChannelAdapte
             throw OpenClawCoreError.invalidConfiguration("Slack outbound text is required")
         }
         let threadTS = self.threadTS(for: message, channel: channel)
-        var parts: [ChannelSendReceipt.Part] = []
-        for (index, chunk) in ChannelTextChunker.chunk(text, limit: Self.textChunkLimit).enumerated() {
-            var payload: [String: Any] = ["channel": channel, "text": chunk, "unfurl_links": self.config.unfurlLinks]
+        let chunks = ChannelTextChunker.chunk(text, limit: Self.textChunkLimit)
+        let delivery = ChannelMultipartDelivery(threadID: threadTS, replyToID: message.replyToID)
+        let parts = try await delivery.run(count: chunks.count) { index in
+            var payload: [String: Any] = ["channel": channel, "text": chunks[index], "unfurl_links": self.config.unfurlLinks]
             if let unfurlMedia = self.config.unfurlMedia {
                 payload["unfurl_media"] = unfurlMedia
             }
@@ -432,7 +436,7 @@ public actor SlackChannelAdapter: InboundChannelAdapter, ReceiptingChannelAdapte
                 if let iconEmoji = identity.iconEmoji { payload["icon_emoji"] = iconEmoji }
             }
             let response = try await self.call("chat.postMessage", token: token, payload: payload)
-            parts.append(ChannelSendReceipt.Part(platformMessageID: response.ts ?? "", kind: .text, index: index, threadID: threadTS))
+            return [ChannelSendReceipt.Part(platformMessageID: response.ts ?? "", kind: .text, index: index, threadID: threadTS)]
         }
         if let threadTS {
             self.botThreads.insert("\(channel):\(threadTS)")

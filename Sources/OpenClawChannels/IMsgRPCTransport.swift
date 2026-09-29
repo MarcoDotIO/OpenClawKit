@@ -347,13 +347,46 @@ public actor IMsgRPCTransport: IMessageInboundTransport {
             params["file"] = AnyCodable(first.path)
         }
         params.merge(target.rpcParams()) { _, new in new }
-        let result = try await client.request("send", params: params, timeoutMs: IMsgRPCClient.sendTimeoutMs)
-        for file in files.dropFirst() {
+        let result: AnyCodable
+        do {
+            result = try await client.request("send", params: params, timeoutMs: IMsgRPCClient.sendTimeoutMs)
+        } catch {
+            throw Self.normalizeSendError(error)
+        }
+        let messageID = Self.messageID(from: result)
+        for (offset, file) in files.dropFirst().enumerated() {
             var attachmentParams = target.rpcParams(attachment: true)
             attachmentParams["file"] = AnyCodable(file.path)
-            _ = try await client.request("send.attachment", params: attachmentParams, timeoutMs: IMsgRPCClient.sendTimeoutMs)
+            do {
+                _ = try await client.request("send.attachment", params: attachmentParams, timeoutMs: IMsgRPCClient.sendTimeoutMs)
+            } catch {
+                // The text (and first attachment) went out: a registry retry would send them again.
+                var delivered = [ChannelSendReceipt.Part(platformMessageID: messageID ?? "", kind: files.isEmpty ? .text : .media, index: 0)]
+                delivered += (0..<offset).map { ChannelSendReceipt.Part(platformMessageID: "", kind: .media, index: $0 + 1) }
+                throw ChannelSendError.partiallyDelivered(
+                    receipt: ChannelSendReceipt(parts: delivered),
+                    failure: ChannelSendError.classify(Self.normalizeSendError(error))
+                )
+            }
         }
-        return Self.messageID(from: result)
+        return messageID
+    }
+
+    /// Maps a failed `send`/`send.attachment` request (upstream `normalizeIMessageRpcSendError`).
+    ///
+    /// imsg marks requests it never started with `data.disposition == "not_started"` and
+    /// `data.retry_safe == true`; those are safe to retry. Any other imsg error may have been
+    /// raised after imsg handed the message to Messages (for example a bridge stall), so it is an
+    /// unknown outcome that the registry does not replay.
+    /// - Parameter error: Error thrown by ``IMsgRPCClient/request(_:params:timeoutMs:)``.
+    /// - Returns: The classified error.
+    static func normalizeSendError(_ error: Error) -> Error {
+        guard let rpcError = error as? IMsgRPCError else { return error }
+        let data = rpcError.data?.dictionaryValue
+        if data?["disposition"]?.stringValue == "not_started", data?["retry_safe"]?.boolValue == true {
+            return ChannelSendError.notSent(underlying: rpcError.message)
+        }
+        return ChannelSendError.unknownOutcome(underlying: rpcError.message)
     }
 
     private static func messageID(from result: AnyCodable) -> String? {

@@ -206,7 +206,7 @@ public actor WebChatChannelAdapter: InboundChannelAdapter {
             return
         }
         let provided = (headerSecret ?? bodySecret ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard provided == configured else {
+        guard ChannelWebhookSignature.constantTimeEquals(provided, configured) else {
             throw OpenClawCoreError.unavailable("WebChat shared secret validation failed")
         }
     }

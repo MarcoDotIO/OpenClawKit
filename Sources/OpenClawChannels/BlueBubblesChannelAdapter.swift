@@ -155,8 +155,8 @@ public actor BlueBubblesChannelAdapter: InboundChannelAdapter {
             )
         )
         let response = try await self.transport.data(for: request)
-        guard (200..<300).contains(response.statusCode) else {
-            throw OpenClawCoreError.unavailable("BlueBubbles send failed with status \(response.statusCode)")
+        if let failure = ChannelHTTP.sendFailure(response, description: "BlueBubbles send failed with status \(response.statusCode)") {
+            throw failure
         }
     }
 
@@ -261,7 +261,7 @@ public actor BlueBubblesChannelAdapter: InboundChannelAdapter {
     private func assertWebhookPassword(_ providedPassword: String?) throws {
         let configured = try self.resolvePassword()
         let provided = providedPassword?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard provided == configured else {
+        guard ChannelWebhookSignature.constantTimeEquals(provided, configured) else {
             throw OpenClawCoreError.unavailable("BlueBubbles webhook authentication failed")
         }
     }

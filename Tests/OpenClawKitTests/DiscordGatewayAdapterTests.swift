@@ -103,7 +103,8 @@ struct DiscordGatewayAdapterTests {
         try await waitUntil("three messages") { await collector.messages.count == 3 }
         await adapter.stop()
 
-        let messages = await collector.messages
+        // Channels are delivered independently (per-channel queues), so order by message id.
+        let messages = await collector.messages.sorted { ($0.messageID ?? "") < ($1.messageID ?? "") }
         #expect(messages[0].chatType == .direct)
         #expect(messages[0].wasMentioned == nil)
         #expect(messages[0].senderName == "Ada")
@@ -134,6 +135,56 @@ struct DiscordGatewayAdapterTests {
         try await waitUntil("one message") { await collector.messages.count == 1 }
         await adapter.stop()
         #expect(await collector.messages.first?.peerID == "open")
+    }
+
+    @Test
+    func slowInboundHandlerDoesNotStallHeartbeatsOrOtherChannels() async throws {
+        let socket = FakeWebSocket(frames: [#"{"op":10,"d":{"heartbeat_interval":1000}}"#, Self.ready])
+        let http = await Self.transport()
+        let (adapter, connector) = Self.adapter(http, sockets: [socket]) { config in
+            config.mentionOnly = false
+        }
+        let gate = ChannelTestGate()
+        let collector = ChannelEventCollector()
+        await adapter.setInboundHandler { message in
+            await collector.append(message)
+            if message.peerID == "slow" {
+                // A long agent turn: blocks well past two heartbeat intervals.
+                await gate.wait()
+            }
+        }
+        try await adapter.start()
+        // Answer every heartbeat like the gateway does.
+        let acker = Task {
+            var acked = 0
+            while !Task.isCancelled {
+                let beats = await socket.sentFrames().filter { (jsonObject($0)["op"] as? Int) == 1 }.count
+                while acked < beats {
+                    await socket.feed(#"{"op":11}"#)
+                    acked += 1
+                }
+                try? await Task.sleep(nanoseconds: 20_000_000)
+            }
+        }
+        defer { acker.cancel() }
+
+        await socket.feed(Self.messageCreate(id: "1", content: "slow turn", channel: "slow"))
+        try await waitUntil("slow turn started") { await gate.waitCount == 1 }
+        await socket.feed(Self.messageCreate(id: "2", content: "other channel", channel: "fast"))
+        try await waitUntil("other channel delivered while the slow turn runs") {
+            await collector.messages.contains { $0.peerID == "fast" }
+        }
+        try await waitUntil("at least two heartbeats acknowledged", timeoutSeconds: 10) {
+            await socket.sentFrames().filter { (jsonObject($0)["op"] as? Int) == 1 }.count >= 2
+        }
+        // Give a missed ACK time to trip the zombie check (next beat after the first).
+        try await Task.sleep(nanoseconds: 1_100_000_000)
+        #expect(await socket.isClosed() == false)
+        #expect(await connector.connectCount() == 1)
+        #expect(await adapter.transportHealth().state == .healthy)
+
+        await gate.open()
+        await adapter.stop()
     }
 
     @Test

@@ -21,10 +21,18 @@ public actor A2AClient {
     /// Creates a client.
     /// - Parameters:
     ///   - peers: Peers keyed by name (resolve SecretRefs first).
-    ///   - transport: HTTP transport.
-    public init(peers: [String: A2APeerConfig], transport: any ChannelHTTPTransport = HTTPClient()) {
+    ///   - transport: HTTP transport. It must not follow redirects (a redirected task could reach an
+    ///     unintended agent; upstream `maxRedirects: 0`); the default ``defaultTransport()`` refuses them.
+    public init(peers: [String: A2APeerConfig], transport: any ChannelHTTPTransport = A2AClient.defaultTransport()) {
         self.peers = peers
         self.transport = transport
+    }
+
+    /// Default outbound transport: a ``ChannelNoRedirectHTTPTransport``, so a peer's 3xx reaches the
+    /// redirect check instead of being followed by `URLSession`.
+    /// - Returns: Redirect-refusing transport.
+    public static func defaultTransport() -> any ChannelHTTPTransport {
+        ChannelNoRedirectHTTPTransport()
     }
 
     /// Stable default context id for a peer.

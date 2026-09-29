@@ -511,7 +511,7 @@ public actor IMessageChannelAdapter: InboundChannelAdapter, ReceiptingChannelAda
 
     private func loadAttachments(_ attachments: [IMessagePayload.Attachment]) -> [MediaAttachment] {
         guard self.config.includeAttachments else { return [] }
-        let maxBytes = Int((self.config.policy.mediaMaxMb ?? 16) * 1_024 * 1_024)
+        let maxBytes = ChannelMediaLimits.maxBytes(megabytes: self.config.policy.mediaMaxMb, defaultMegabytes: 16)
         var total = 0
         var loaded: [MediaAttachment] = []
         for attachment in attachments where attachment.missing != true {

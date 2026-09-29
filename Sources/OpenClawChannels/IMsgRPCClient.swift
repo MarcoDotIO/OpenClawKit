@@ -89,6 +89,10 @@ public actor IMsgRPCClient {
         "The imsg private API bridge stopped responding. Run `imsg launch` to re-inject the dylib, "
             + "then probe the channel again to refresh capability detection."
 
+    /// Methods that deliver a message: once the request line was handed to imsg, a timeout or a
+    /// process exit means the message may already have been sent.
+    static let sendMethods: Set<String> = ["send", "send.attachment"]
+
     private struct Pending {
         let method: String
         let continuation: CheckedContinuation<AnyCodable, Error>
@@ -183,7 +187,7 @@ public actor IMsgRPCClient {
             return try await withCheckedThrowingContinuation { continuation in
                 let timeout: Task<Void, Never>? = timeoutMs > 0
                     ? Task { [weak self] in
-                        try? await Task.sleep(nanoseconds: UInt64(timeoutMs) * 1_000_000)
+                        try? await Task.sleep(nanoseconds: ChannelAsync.nanoseconds(milliseconds: timeoutMs))
                         guard !Task.isCancelled else { return }
                         await self?.expire(id)
                     }
@@ -194,7 +198,7 @@ public actor IMsgRPCClient {
                         try await pipe.write(line: line)
                     } catch {
                         // A stdin failure (EPIPE) is terminal: fail pending work immediately.
-                        await self?.failTransport(error)
+                        await self?.failTransport(error, unwrittenID: id)
                     }
                 }
             }
@@ -213,7 +217,15 @@ public actor IMsgRPCClient {
 
     private func expire(_ id: Int) {
         guard let entry = self.pending.removeValue(forKey: id) else { return }
-        entry.continuation.resume(throwing: OpenClawCoreError.unavailable("imsg rpc timeout (\(entry.method))"))
+        entry.continuation.resume(throwing: Self.pendingFailure(OpenClawCoreError.unavailable("imsg rpc timeout (\(entry.method))"), method: entry.method))
+    }
+
+    /// Error for a request that was handed to imsg and then timed out or lost its process: a
+    /// send may already have been delivered (upstream treats `imsg rpc timeout (send)` as possibly
+    /// delivered), so it must not be classified as safe to retry.
+    static func pendingFailure(_ error: Error, method: String) -> Error {
+        guard self.sendMethods.contains(method) else { return error }
+        return ChannelSendError.unknownOutcome(underlying: ChannelErrorText.describe(error))
     }
 
     private func handle(_ event: IMsgRPCPipeEvent) {
@@ -283,7 +295,12 @@ public actor IMsgRPCClient {
         return OpenClawCoreError.unavailable("imsg rpc closed")
     }
 
-    private func failTransport(_ error: Error) async {
+    private func failTransport(_ error: Error, unwrittenID: Int) async {
+        // The request whose write failed never reached imsg, so it stays safe to retry.
+        if let entry = self.pending.removeValue(forKey: unwrittenID) {
+            entry.timeout?.cancel()
+            entry.continuation.resume(throwing: OpenClawCoreError.unavailable("imsg rpc write failed: \(ChannelErrorText.describe(error))"))
+        }
         guard self.terminal == nil else { return }
         self.finish(error)
         await self.pipe.close()
@@ -296,7 +313,7 @@ public actor IMsgRPCClient {
         self.pending.removeAll()
         for entry in entries.values {
             entry.timeout?.cancel()
-            entry.continuation.resume(throwing: error)
+            entry.continuation.resume(throwing: Self.pendingFailure(error, method: entry.method))
         }
         self.notificationContinuation.finish()
     }

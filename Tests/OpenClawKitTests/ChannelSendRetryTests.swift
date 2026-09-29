@@ -155,7 +155,8 @@ struct ChannelSendRetryTests {
     @Test
     func classifiesHTTPResponsesAndRetryAfterHeaders() {
         #expect(ChannelSendError.classify(statusCode: 200) == nil)
-        #expect(ChannelSendError.classify(statusCode: 503)?.isRetryable == true)
+        // HTTP 5xx is ambiguous (the platform may have processed the request): never replayed.
+        #expect(ChannelSendError.classify(statusCode: 503)?.isRetryable == false)
         #expect(ChannelSendError.classify(statusCode: 403)?.isRetryable == false)
         let telegramBody = Data(#"{"ok":false,"error_code":429,"parameters":{"retry_after":3}}"#.utf8)
         #expect(ChannelSendError.classify(statusCode: 429, body: telegramBody) == .rateLimited(retryAfterMs: 3_000))

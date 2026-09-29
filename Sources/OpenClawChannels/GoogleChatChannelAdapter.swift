@@ -187,15 +187,15 @@ public actor GoogleChatChannelAdapter: InboundChannelAdapter, ReceiptingChannelA
         let target = try self.resolveTarget(from: message)
         let text = try self.resolveOutboundText(from: message)
         let chunks = ChannelTextChunker.chunk(text, for: .googlechat, policy: self.config.policy)
-        var parts: [ChannelSendReceipt.Part] = []
-        for (index, chunk) in chunks.enumerated() {
+        let parts = try await ChannelMultipartDelivery(threadID: target.threadName).run(count: chunks.count) { index in
+            let chunk = chunks[index]
             var name: String?
             if index == 0, let placeholder = self.typingPlaceholders.removeValue(forKey: message.peerID.trimmingCharacters(in: .whitespaces)) {
                 name = try await self.updateMessage(name: placeholder, text: chunk)
             } else {
                 name = try await self.postMessage(text: chunk, target: target)
             }
-            parts.append(ChannelSendReceipt.Part(platformMessageID: name ?? "", index: index, threadID: target.threadName))
+            return [ChannelSendReceipt.Part(platformMessageID: name ?? "", index: index, threadID: target.threadName)]
         }
         return ChannelSendReceipt(parts: parts.filter { !$0.platformMessageID.isEmpty }, threadID: target.threadName)
     }
@@ -242,6 +242,12 @@ public actor GoogleChatChannelAdapter: InboundChannelAdapter, ReceiptingChannelA
     }
 
     /// Handles inbound webhook event payload from Google Chat.
+    ///
+    /// - Note: The adapter checks only the legacy `verificationToken` (constant-time) when one is
+    ///   configured. It does not verify Google's `Authorization: Bearer` JWT (`audienceType` and
+    ///   `audience` are not enforced here): hosts must verify that token (issuer
+    ///   `chat@system.gserviceaccount.com`, audience = the configured project number or app URL)
+    ///   before calling this method, because the payload's sender is the access-policy boundary.
     /// - Parameter payload: Raw webhook JSON payload.
     public func handleWebhookEvent(_ payload: Data) async throws {
         guard self.started else {
@@ -252,7 +258,7 @@ public actor GoogleChatChannelAdapter: InboundChannelAdapter, ReceiptingChannelA
            !configuredToken.isEmpty
         {
             let inboundToken = event.token?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            guard inboundToken == configuredToken else {
+            guard ChannelWebhookSignature.constantTimeEquals(inboundToken, configuredToken) else {
                 return
             }
         }

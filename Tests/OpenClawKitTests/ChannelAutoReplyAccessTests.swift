@@ -78,12 +78,17 @@ struct ChannelAutoReplyAccessTests {
         channel: ChannelID = .telegram,
         channels: ChannelsConfig = ChannelsConfig(),
         output: String = "reply",
-        groupChat: AutoReplyGroupChatOptions = AutoReplyGroupChatOptions()
+        groupChat: AutoReplyGroupChatOptions = AutoReplyGroupChatOptions(),
+        workspaceRoot: URL? = nil
     ) async throws -> Harness {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("openclaw-autoreply-access", isDirectory: true)
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        var agents = AgentsConfig()
+        if let workspaceRoot {
+            agents = AgentsConfig(defaultAgentID: "main", workspaceRoot: workspaceRoot.path)
+        }
         let sessionStore = SessionStore(fileURL: root.appendingPathComponent("sessions.json"))
         let registry = ChannelRegistry(
             sendRetryPolicy: ChannelSendRetryPolicy(maxAttempts: 1),
@@ -97,7 +102,7 @@ struct ChannelAutoReplyAccessTests {
         try await runtime.setDefaultModelProviderID("fixed")
         let diagnostics = DiagnosticCollector()
         let engine = AutoReplyEngine(
-            config: OpenClawConfig(channels: channels, models: ModelsConfig(defaultProviderID: "fixed")),
+            config: OpenClawConfig(agents: agents, channels: channels, models: ModelsConfig(defaultProviderID: "fixed")),
             sessionStore: sessionStore,
             channelRegistry: registry,
             runtime: runtime,
@@ -271,6 +276,84 @@ struct ChannelAutoReplyAccessTests {
         #expect(await harness.provider.calls == 2)
     }
 
+    /// Workspace with a user-invocable `echo` skill whose script appends to `marker.txt`.
+    private func skillWorkspace() throws -> (root: URL, marker: URL) {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("openclaw-autoreply-skill-auth", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let skillRoot = root.appendingPathComponent("skills/echo", isDirectory: true)
+        try FileManager.default.createDirectory(at: skillRoot.appendingPathComponent("scripts"), withIntermediateDirectories: true)
+        let marker = root.appendingPathComponent("marker.txt")
+        try """
+        ---
+        name: echo
+        description: Echo helper
+        entrypoint: scripts/echo.sh
+        primaryEnv: sh
+        user-invocable: true
+        disable-model-invocation: false
+        ---
+
+        Echo the input.
+        """.write(to: skillRoot.appendingPathComponent("SKILL.md"), atomically: true, encoding: .utf8)
+        try """
+        #!/usr/bin/env sh
+        echo "ran" >> "\(marker.path)"
+        printf '{"ok":true}\n'
+        """.write(to: skillRoot.appendingPathComponent("scripts/echo.sh"), atomically: true, encoding: .utf8)
+        return (root, marker)
+    }
+
+    @Test
+    func skillCommandsFromUnauthorizedGroupSendersNeverRunSkills() async throws {
+        let workspace = try self.skillWorkspace()
+        defer { try? FileManager.default.removeItem(at: workspace.root) }
+        let harness = try await self.makeHarness(
+            channels: ChannelsConfig(telegram: TelegramChannelConfig(policy: ChannelMessagingPolicyConfig(groupPolicy: .open))),
+            workspaceRoot: workspace.root
+        )
+        defer { try? FileManager.default.removeItem(at: harness.root) }
+
+        let explicit = InboundMessage(channel: .telegram, peerID: "-100", text: "/skill echo hi", senderID: "666", chatType: .group, wasMentioned: false)
+        #expect(try await harness.engine.handle(explicit) == .blocked(reasonCode: "control_command_unauthorized"))
+        let direct = InboundMessage(channel: .telegram, peerID: "-100", text: "/echo@openclaw_bot hi", senderID: "666", chatType: .group, wasMentioned: false)
+        #expect(try await harness.engine.handle(direct) == .blocked(reasonCode: "control_command_unauthorized"))
+        let inferred = InboundMessage(channel: .telegram, peerID: "-100", text: "@bot run echo please", senderID: "666", chatType: .group, wasMentioned: true)
+        guard case .replied = try await harness.engine.handle(inferred) else {
+            Issue.record("expected the mentioned message to be answered")
+            return
+        }
+        #expect(FileManager.default.fileExists(atPath: workspace.marker.path) == false)
+    }
+
+    @Test
+    func allowlistedGroupSendersStillRunSkillsButRoomEventsNeverDo() async throws {
+        let workspace = try self.skillWorkspace()
+        defer { try? FileManager.default.removeItem(at: workspace.root) }
+        var policy = ChannelMessagingPolicyConfig(groupPolicy: .open, requireMention: false)
+        policy.groupAllowFrom = ["42"]
+        let harness = try await self.makeHarness(
+            channels: ChannelsConfig(telegram: TelegramChannelConfig(mentionOnly: false, policy: policy)),
+            groupChat: AutoReplyGroupChatOptions(unmentionedInbound: .roomEvent, visibleReplies: .messageTool),
+            workspaceRoot: workspace.root
+        )
+        defer { try? FileManager.default.removeItem(at: harness.root) }
+
+        let ambient = InboundMessage(channel: .telegram, peerID: "-100", text: "what does echo do?", senderID: "42", chatType: .group, wasMentioned: false)
+        guard case .observed = try await harness.engine.handle(ambient) else {
+            Issue.record("expected an ambient room event")
+            return
+        }
+        #expect(FileManager.default.fileExists(atPath: workspace.marker.path) == false)
+
+        let command = InboundMessage(channel: .telegram, peerID: "-100", text: "/echo hi", senderID: "42", chatType: .group, wasMentioned: false)
+        guard case .replied = try await harness.engine.handle(command) else {
+            Issue.record("expected the allowlisted skill command to be answered")
+            return
+        }
+        #expect(FileManager.default.fileExists(atPath: workspace.marker.path))
+    }
+
     @Test
     func ambientRoomEventsRunWithoutPosting() async throws {
         var policy = ChannelMessagingPolicyConfig(groupPolicy: .open, requireMention: false)
@@ -311,5 +394,51 @@ struct ChannelAutoReplyAccessTests {
 
         let unsupported = ChannelJoinEvent(channel: .signal, peerID: "g")
         #expect(try await harness.engine.handleJoin(unsupported) == nil)
+    }
+
+    @Test
+    func a2aRepliesCompleteTheirTaskWholeThroughTheEngine() async throws {
+        let reply = String(repeating: "0123456789", count: 15_000)
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("openclaw-autoreply-a2a", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let a2a = A2AChannelConfig(enabled: true, replyTimeoutMs: 10_000, peers: ["alice": A2APeerConfig(token: "alice-token")])
+        let registry = ChannelRegistry(sendRetryPolicy: ChannelSendRetryPolicy(maxAttempts: 1), sendThrottlePolicy: ChannelSendThrottlePolicy())
+        let adapter = A2AChannelAdapter(config: a2a)
+        await registry.register(adapter)
+        try await adapter.start()
+        let runtime = EmbeddedAgentRuntime()
+        await runtime.registerModelProvider(CountingProvider(text: reply))
+        try await runtime.setDefaultModelProviderID("fixed")
+        var channels = ChannelsConfig()
+        channels.a2a = a2a
+        let engine = AutoReplyEngine(
+            config: OpenClawConfig(channels: channels, models: ModelsConfig(defaultProviderID: "fixed")),
+            sessionStore: SessionStore(fileURL: root.appendingPathComponent("sessions.json")),
+            channelRegistry: registry,
+            runtime: runtime
+        )
+        await adapter.setInboundHandler { inbound in
+            _ = try? await engine.process(inbound)
+        }
+        let request: [String: Any] = [
+            "jsonrpc": "2.0", "id": "1", "method": "SendMessage",
+            "params": ["message": ["role": "ROLE_USER", "parts": [["text": "write the report"]], "messageId": "m-1", "contextId": "ctx-report"]],
+        ]
+        let response = await adapter.handleHTTP(
+            method: "POST",
+            path: "/a2a/v1",
+            headers: ["Authorization": "Bearer alice-token"],
+            body: try JSONSerialization.data(withJSONObject: request)
+        )
+        await adapter.stop()
+        let task = try #require((jsonObject(response.bodyText)["result"] as? [String: Any])?["task"] as? [String: Any])
+        #expect((task["status"] as? [String: Any])?["state"] as? String == "TASK_STATE_COMPLETED")
+        let artifacts = try #require(task["artifacts"] as? [[String: Any]])
+        let text = (artifacts.first?["parts"] as? [[String: Any]])?.first?["text"] as? String
+        #expect(text?.count == reply.count)
+        #expect(text == reply)
     }
 }

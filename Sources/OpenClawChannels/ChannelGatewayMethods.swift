@@ -106,6 +106,8 @@ public struct ChannelGatewayHandlers: Sendable {
 
     /// Maximum `statusIssues` entries (upstream schema `maxItems`).
     public static let maxStatusIssues = 50
+    /// Upper bound for the `channels.status` probe timeout (`timeoutMs` is caller-supplied).
+    public static let maxProbeTimeoutMs = 120_000
 
     let context: ChannelGatewayContext
 
@@ -124,6 +126,7 @@ public struct ChannelGatewayHandlers: Sendable {
     ///   - channelFilter: Optional channel filter.
     /// - Returns: Status report.
     public func statusReport(probe: Bool = false, timeoutMs: Int = 10_000, channelFilter: ChannelID? = nil) async -> ChannelsStatusReport {
+        let timeoutMs = min(max(1, timeoutMs), Self.maxProbeTimeoutMs)
         let config = await self.context.channelsConfig()
         let registered = Set(await self.context.registry.adapterIDs())
         let entries = OpenClawChannelMetadataCatalog.orderedEntries.filter { entry in
@@ -166,7 +169,7 @@ public struct ChannelGatewayHandlers: Sendable {
                 configured: credentialsConfigured,
                 running: runtime.running,
                 connected: runtime.running && health.status != .offline,
-                lastError: health.lastError ?? runtime.lastError,
+                lastError: (health.lastError ?? runtime.lastError).map(ChannelErrorText.redact),
                 healthState: healthState
             )
             snapshot.lastInboundAt = runtime.lastInboundAt.map(Self.epochMs)
@@ -210,7 +213,7 @@ public struct ChannelGatewayHandlers: Sendable {
             if let reporter = await self.context.registry.adapter(for: entry.id) as? any ChannelTransportHealthReporting {
                 let transport = await reporter.transportHealth()
                 if transport.state == .degraded || transport.state == .blocked, let message = transport.lastError {
-                    issues.append(ChannelStatusIssue(channel: id, kind: .runtime, message: message))
+                    issues.append(ChannelStatusIssue(channel: id, kind: .runtime, message: ChannelErrorText.redact(message)))
                 }
             }
         }
@@ -240,7 +243,7 @@ public struct ChannelGatewayHandlers: Sendable {
         }
         let probe = params["probe"]?.boolValue ?? false
         let timeoutMs = params["timeoutMs"]?.intValue ?? 10_000
-        let report = await self.statusReport(probe: probe, timeoutMs: max(1, timeoutMs), channelFilter: filter)
+        let report = await self.statusReport(probe: probe, timeoutMs: min(max(1, timeoutMs), Self.maxProbeTimeoutMs), channelFilter: filter)
         return try AnyCodable(encoding: report)
     }
 
@@ -269,7 +272,7 @@ public struct ChannelGatewayHandlers: Sendable {
                     channel: channel.rawValue,
                     accountID: accountID,
                     kind: .runtime,
-                    message: (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+                    message: ChannelErrorText.describe(error)
                 )
                 payload["statusIssues"] = try AnyCodable(encoding: [issue])
             }
@@ -546,7 +549,7 @@ public struct ChannelGatewayHandlers: Sendable {
             )
         }
         if registered, health.status == .offline, health.consecutiveFailures > 0, let lastError = health.lastError {
-            issues.append(ChannelStatusIssue(channel: id, kind: .runtime, message: lastError))
+            issues.append(ChannelStatusIssue(channel: id, kind: .runtime, message: ChannelErrorText.redact(lastError)))
         }
         return issues
     }
