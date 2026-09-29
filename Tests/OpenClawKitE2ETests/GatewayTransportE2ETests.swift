@@ -270,7 +270,12 @@ struct GatewayTransportE2ETests {
         )
 
         try await client.connect(to: GatewayEndpoint(url: URL(string: "ws://127.0.0.1:18789")!))
-        try await Task.sleep(nanoseconds: 220_000_000)
+        // Wait for the third socket (stale tick -> reconnect -> connect failure -> another attempt)
+        // instead of a fixed 220 ms, which slower CI runners can overrun.
+        let deadline = Date().addingTimeInterval(10)
+        while counter.get() <= 2, Date() < deadline {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
         #expect(counter.get() > 2)
         await client.disconnect()
     }
