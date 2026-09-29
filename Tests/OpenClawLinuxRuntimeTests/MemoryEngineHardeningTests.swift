@@ -106,22 +106,31 @@ struct MemoryEngineHardeningTests {
         let engine = MemoryEngine(workspaceRoot: root)
         let registry = AgentToolRegistry(tools: [MemorySearchTool(engine: engine), MemoryGetTool(engine: engine)])
 
-        for lines in [AnyCodable(1e19), AnyCodable(Int.max), AnyCodable(3_000_000_000.0)] {
+        // Integers beyond ±(2^53 - 1) cannot be exact JSON numbers; the registry's schema validation
+        // rejects them as invalid arguments (no trap), and in-range but huge values reach the tool and
+        // are clamped.
+        let maxSafe = AnyCodable(9_007_199_254_740_991)
+        for lines in [AnyCodable(3_000_000_000.0), maxSafe] {
             let excerpt = try await registry.invoke(AgentToolCall(name: "memory_get", arguments: ["path": AnyCodable("memory/log.md"), "lines": lines]))
             #expect(!excerpt.isError)
             #expect(excerpt.value.dictionaryValue?["lines"]?.intValue == 30)
         }
-        let far = try await registry.invoke(AgentToolCall(name: "memory_get", arguments: ["path": AnyCodable("memory/log.md"), "from": AnyCodable(1e300)]))
+        let far = try await registry.invoke(AgentToolCall(name: "memory_get", arguments: ["path": AnyCodable("memory/log.md"), "from": maxSafe]))
         #expect(!far.isError)
         #expect(far.value.dictionaryValue?["lines"]?.intValue == 0)
-        let infinite = try await registry.invoke(
-            AgentToolCall(name: "memory_get", arguments: ["path": AnyCodable("memory/log.md"), "lines": AnyCodable(Double.infinity)])
-        )
-        #expect(infinite.isError)
+        for unsafe in [AnyCodable(1e19), AnyCodable(Int.max), AnyCodable(1e300), AnyCodable(Double.infinity)] {
+            let rejected = try await registry.invoke(
+                AgentToolCall(name: "memory_get", arguments: ["path": AnyCodable("memory/log.md"), "lines": unsafe])
+            )
+            #expect(rejected.isError)
+        }
 
-        for maxResults in [AnyCodable(Int.max), AnyCodable(1e19)] {
-            let found = try await registry.invoke(AgentToolCall(name: "memory_search", arguments: ["query": AnyCodable("falcon"), "maxResults": maxResults]))
-            #expect(!found.isError)
+        let found = try await registry.invoke(AgentToolCall(name: "memory_search", arguments: ["query": AnyCodable("falcon"), "maxResults": maxSafe]))
+        #expect(!found.isError)
+        for unsafe in [AnyCodable(Int.max), AnyCodable(1e19)] {
+            let rejected = try await registry.invoke(AgentToolCall(name: "memory_search", arguments: ["query": AnyCodable("falcon"), "maxResults": unsafe]))
+            #expect(rejected.isError)
+            #expect(rejected.output.text.contains("must be an integer between"))
         }
         #expect(await engine.read(path: "memory/log.md", from: 5, lines: Int.max).lines == 26)
         #expect(try await engine.search(query: "falcon", maxResults: Int.max, minScore: 0).hits.isEmpty == false)
