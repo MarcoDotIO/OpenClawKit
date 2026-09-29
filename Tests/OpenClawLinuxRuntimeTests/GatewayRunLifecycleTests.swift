@@ -139,6 +139,25 @@ struct GatewayRunLifecycleTests {
         #expect(GatewayTimeouts.nanoseconds(milliseconds: -1) == 0)
     }
 
+    actor TimeoutRecorder {
+        var values: [Int?] = []
+        func record(_ value: Int?) { self.values.append(value) }
+    }
+
+    @Test
+    func browserRequestTimeoutsReachHostHandlersClamped() async throws {
+        let recorder = TimeoutRecorder()
+        let (server, _) = Harness.bareServer("lifecycle-browser-timeout", handlers: GatewayServerHandlers(browserRequest: { params in
+            await recorder.record(params.timeoutMs)
+            return GatewayBrowserResponse(status: 200)
+        }))
+        for timeout in [AnyCodable(Int.max), AnyCodable(-5), AnyCodable(2_500)] {
+            let response = await Harness.call(server, "browser.request", ["method": AnyCodable("GET"), "path": AnyCodable("/tabs"), "timeoutMs": timeout])
+            #expect(response.ok, "\(String(describing: response.error))")
+        }
+        #expect(await recorder.values == [Int(GatewayTimeouts.maxTimeoutMs), 0, 2_500])
+    }
+
     // MARK: - Pagination cursors
 
     @Test

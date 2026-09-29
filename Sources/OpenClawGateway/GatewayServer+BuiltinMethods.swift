@@ -597,7 +597,8 @@ extension GatewayServer {
             path: path,
             query: params.query,
             body: params.body,
-            timeoutMs: params.timeoutMs,
+            // Host handlers receive a bounded timeout (no ms-to-ns overflow downstream).
+            timeoutMs: GatewayTimeouts.clamped(params.timeoutMs),
             workspaceRoot: nil,
             spawnedWorkspaceRoot: nil
         )
