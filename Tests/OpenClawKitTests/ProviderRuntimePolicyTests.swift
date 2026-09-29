@@ -439,9 +439,48 @@ struct ProviderRuntimePolicyTests {
 
         let budget = plan("claude-3-7-sonnet-latest", .high)
         #expect(budget.thinking?["type"] as? String == "enabled")
-        #expect(budget.thinking?["budget_tokens"] as? Int == 1_024)
+        #expect(budget.thinking?["budget_tokens"] as? Int == 16_384)
         #expect(plan("claude-sonnet-5", .off).thinking?["type"] as? String == "disabled")
         #expect(plan("claude-sonnet-5", nil).thinking == nil)
+    }
+
+    /// Budget-based Claude models map the thinking level to upstream budgets and fit `max_tokens`
+    /// (`adjustMaxTokensForThinking`).
+    @Test
+    func anthropicBudgetThinkingFollowsLevelAndFitsMaxTokens() {
+        func plan(_ level: ThinkLevel, base: Int?, modelMax: Int = 0, params: [String: AnyCodable]? = nil) -> AnthropicMessagesWire.ThinkingPlan {
+            AnthropicMessagesWire.thinkingPlan(
+                request: ModelGenerationRequest(sessionKey: "s", prompt: "", policy: ModelGenerationPolicy(thinkingLevel: level)),
+                model: ModelDefinitionConfig(id: "claude-sonnet-4-5", reasoning: true, maxTokens: modelMax, params: params),
+                identity: ClaudeModelIdentity(modelID: "claude-sonnet-4-5"),
+                baseMaxTokens: base
+            )
+        }
+        #expect(plan(.minimal, base: 8_192).thinking?["budget_tokens"] as? Int == 1_024)
+        #expect(plan(.low, base: 8_192).thinking?["budget_tokens"] as? Int == 2_048)
+        #expect(plan(.medium, base: 8_192).thinking?["budget_tokens"] as? Int == 8_192)
+        #expect(plan(.xhigh, base: 8_192).thinking?["budget_tokens"] as? Int == 16_384)
+        #expect(plan(.max, base: 8_192).thinking?["budget_tokens"] as? Int == 16_384)
+
+        // max_tokens grows by the budget, capped by the model limit.
+        #expect(plan(.high, base: 8_192).maxTokens == 24_576)
+        let capped = plan(.high, base: 8_192, modelMax: 20_000)
+        #expect(capped.maxTokens == 20_000)
+        #expect(capped.thinking?["budget_tokens"] as? Int == 16_384)
+
+        // A model cap at or below the budget shrinks the budget to leave 1024 output tokens.
+        let shrunk = plan(.high, base: 4_096, modelMax: 8_000)
+        #expect(shrunk.maxTokens == 8_000)
+        #expect(shrunk.thinking?["budget_tokens"] as? Int == 6_976)
+
+        // A budget that cannot reach the 1024 minimum turns thinking off.
+        let off = plan(.high, base: 1_500, modelMax: 1_500)
+        #expect(off.thinkingEnabled == false)
+        #expect(off.thinking?["type"] as? String == "disabled")
+
+        // params.thinkingBudgets overrides the per-level default.
+        let custom = plan(.low, base: 8_192, params: ["thinkingBudgets": AnyCodable(["low": AnyCodable(4_000)])])
+        #expect(custom.thinking?["budget_tokens"] as? Int == 4_000)
     }
 
     @Test

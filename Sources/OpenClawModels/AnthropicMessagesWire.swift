@@ -14,7 +14,12 @@ enum AnthropicMessagesWire {
     static let defaultBetas = ["fine-grained-tool-streaming-2025-05-14", "interleaved-thinking-2025-05-14"]
     static let oauthBetas = ["claude-code-20250219", "oauth-2025-04-20"]
     static let retiredBetas: Set<String> = ["context-1m-2025-08-07"]
-    static let defaultThinkingBudgetTokens = 1024
+    /// Smallest thinking budget the API accepts; smaller fitted budgets turn thinking off.
+    static let minimumThinkingBudgetTokens = 1024
+    /// Output tokens reserved for the visible answer when a budget must shrink to fit `max_tokens`.
+    static let minimumOutputTokensWithThinking = 1024
+    /// Default budgets per thinking level (upstream `adjustMaxTokensForThinking`).
+    static let defaultThinkingBudgets: [String: Int] = ["minimal": 1024, "low": 2048, "medium": 8192, "high": 16384]
     static let emptyMessagesFallbackText = "(no content)"
 
     /// Resolves the Messages endpoint: base without trailing slashes, plus `/messages` when it ends in
@@ -41,6 +46,45 @@ enum AnthropicMessagesWire {
         var thinking: [String: Any]?
         var outputEffort: String?
         var thinkingEnabled: Bool
+        /// `max_tokens` adjusted to leave room for a thinking budget (budget-based models only).
+        var maxTokens: Int?
+    }
+
+    /// Port of upstream `adjustMaxTokensForThinking` (`simple-options.ts`): maps a thinking level to
+    /// its budget (minimal 1024, low 2048, medium 8192, high 16384; `xhigh`/`max` clamp to high,
+    /// `adaptive` to medium), honoring `params.thinkingBudgets` overrides, and fits
+    /// `max_tokens = min(base + budget, modelMax)`. When that does not exceed the budget, the budget
+    /// shrinks to leave 1024 output tokens.
+    /// - Returns: The adjusted `max_tokens` and thinking budget (below 1024 means thinking off).
+    static func thinkingBudget(
+        level: ThinkLevel?,
+        baseMaxTokens: Int?,
+        model: ModelDefinitionConfig?
+    ) -> (maxTokens: Int, budget: Int) {
+        let key: String
+        switch level {
+        case .minimal?:
+            key = "minimal"
+        case .low?:
+            key = "low"
+        case .high?, .xhigh?, .max?, .ultra?:
+            key = "high"
+        case .medium?, .adaptive?, .off?, nil:
+            key = "medium"
+        }
+        let override = model?.params?["thinkingBudgets"]?.dictionaryValue?[key]?.intValue
+        var budget = override.flatMap { $0 > 0 ? $0 : nil } ?? self.defaultThinkingBudgets[key] ?? self.minimumThinkingBudgetTokens
+        let modelMax = model.flatMap { $0.maxTokens > 0 ? $0.maxTokens : nil }
+        let maxTokens: Int
+        if let base = baseMaxTokens.flatMap({ $0 > 0 ? $0 : nil }) {
+            maxTokens = min(base + budget, modelMax ?? (base + budget))
+        } else {
+            maxTokens = modelMax ?? (budget + self.minimumOutputTokensWithThinking)
+        }
+        if maxTokens <= budget {
+            budget = max(0, maxTokens - self.minimumOutputTokensWithThinking)
+        }
+        return (maxTokens, budget)
     }
 
     struct BuildContext {
@@ -56,7 +100,12 @@ enum AnthropicMessagesWire {
 
     // MARK: - Request
 
-    static func thinkingPlan(request: ModelGenerationRequest, model: ModelDefinitionConfig?, identity: ClaudeModelIdentity) -> ThinkingPlan {
+    static func thinkingPlan(
+        request: ModelGenerationRequest,
+        model: ModelDefinitionConfig?,
+        identity: ClaudeModelIdentity,
+        baseMaxTokens: Int? = nil
+    ) -> ThinkingPlan {
         let level: ThinkLevel?
         if let requested = request.policy.thinkingLevel ?? ThinkLevel.normalize(request.metadata["thinkingLevel"]) {
             level = requested
@@ -98,10 +147,17 @@ enum AnthropicMessagesWire {
                 let effort = identity.effort(for: level, thinkingLevelMap: model?.thinkingLevelMap)
                 return ThinkingPlan(thinking: ["type": "adaptive", "display": "summarized"], outputEffort: effort, thinkingEnabled: true)
             }
+            let fitted = self.thinkingBudget(level: level, baseMaxTokens: baseMaxTokens, model: model)
+            guard fitted.budget >= self.minimumThinkingBudgetTokens else {
+                // Sub-minimum budgets resolve to thinking disabled so temperature and tool choice
+                // stay consistent (upstream `anthropic-transport-stream.ts`).
+                return ThinkingPlan(thinking: ["type": "disabled"], outputEffort: nil, thinkingEnabled: false, maxTokens: fitted.maxTokens)
+            }
             return ThinkingPlan(
-                thinking: ["type": "enabled", "budget_tokens": self.defaultThinkingBudgetTokens],
+                thinking: ["type": "enabled", "budget_tokens": fitted.budget],
                 outputEffort: nil,
-                thinkingEnabled: true
+                thinkingEnabled: true,
+                maxTokens: fitted.maxTokens
             )
         }
         if level == .off || forcedOff {
@@ -127,11 +183,8 @@ enum AnthropicMessagesWire {
 
     static func buildPayload(request: ModelGenerationRequest, context: BuildContext) -> [String: Any] {
         let identity = context.identity
-        let thinking = self.thinkingPlan(request: request, model: context.model, identity: identity)
-        var maxTokens = context.maxTokens
-        if let budget = thinking.thinking?["budget_tokens"] as? Int, maxTokens <= budget {
-            maxTokens = budget + 1024
-        }
+        let thinking = self.thinkingPlan(request: request, model: context.model, identity: identity, baseMaxTokens: context.maxTokens)
+        let maxTokens = thinking.maxTokens ?? context.maxTokens
         var payload: [String: Any] = [
             "model": context.modelID,
             "max_tokens": maxTokens,
