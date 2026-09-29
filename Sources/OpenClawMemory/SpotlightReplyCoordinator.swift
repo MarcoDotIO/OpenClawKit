@@ -1,7 +1,7 @@
 #if canImport(CoreSpotlight) && !os(tvOS) && !os(watchOS)
 import Foundation
 
-/// Routes replies from one shared, unicast reply stream (for example `SpotlightSearchTool.searchResults`)
+/// Routes replies from one shared, unicast reply stream (for example the structured search replies of the FoundationModels Spotlight tool)
 /// to one invocation at a time.
 ///
 /// A single long-lived pump task consumes the stream for the lifetime of the tool instance: cancelling a
