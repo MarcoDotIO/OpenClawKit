@@ -484,6 +484,9 @@ enum OpenAIResponsesWire {
         var toolIndexByItemID: [String: Int] = [:]
         var sawEvent = false
         var failure: String?
+        /// Structured error code of a `response.failed` / `error` event (for example
+        /// `subscription_sharing_usage_limit_exceeded`).
+        var failureCode: String?
         /// Set by `response.completed` / `incomplete` / `failed` / `done`.
         var terminalEvent: String?
         /// Function-call tool indexes whose arguments have not been finalized yet.
@@ -582,10 +585,12 @@ enum OpenAIResponsesWire {
                 }
                 if type == "response.failed" {
                     state.failure = response[wireKey: "error"]?.wireString("message") ?? "response failed"
+                    state.failureCode = response[wireKey: "error"]?.wireString("code")
                 }
             }
         case "error":
             state.failure = payload.wireString("message") ?? payload[wireKey: "error"]?.wireString("message") ?? "stream error"
+            state.failureCode = payload.wireString("code") ?? payload[wireKey: "error"]?.wireString("code")
         default:
             break
         }

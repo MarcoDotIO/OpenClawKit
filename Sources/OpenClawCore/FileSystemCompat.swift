@@ -1,4 +1,9 @@
 import Foundation
+#if canImport(Glibc)
+import Glibc
+#elseif canImport(Darwin)
+import Darwin
+#endif
 
 /// Minimal filesystem helpers used by OpenClawKit core subsystems.
 public enum OpenClawFileSystem {
@@ -31,6 +36,50 @@ public enum OpenClawFileSystem {
     ///   - url: Destination file URL.
     public static func writeData(_ data: Data, to url: URL) throws {
         try data.write(to: url, options: [.atomic])
+    }
+
+    /// Writes file contents atomically with owner-only permissions: the bytes go to a temporary file
+    /// created with `0600` (so they are never readable by others, not even briefly) that then
+    /// replaces `url`.
+    /// - Parameters:
+    ///   - data: Bytes to persist.
+    ///   - url: Destination file URL.
+    public static func writePrivateData(_ data: Data, to url: URL) throws {
+        #if os(Windows)
+        try self.writeData(data, to: url)
+        #else
+        let temporary = url.deletingLastPathComponent()
+            .appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString).tmp")
+        let descriptor = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
+        guard descriptor >= 0 else {
+            throw OpenClawCoreError.unavailable("Could not create \(temporary.lastPathComponent) (errno \(errno))")
+        }
+        var committed = false
+        defer {
+            if !committed {
+                _ = unlink(temporary.path)
+            }
+        }
+        let written = data.withUnsafeBytes { raw -> Bool in
+            var offset = 0
+            while offset < raw.count {
+                let count = write(descriptor, raw.baseAddress!.advanced(by: offset), raw.count - offset)
+                if count < 0, errno == EINTR { continue }
+                guard count > 0 else { return false }
+                offset += count
+            }
+            return true
+        }
+        let synced = fsync(descriptor) == 0
+        _ = close(descriptor)
+        guard written, synced else {
+            throw OpenClawCoreError.unavailable("Could not write \(url.lastPathComponent)")
+        }
+        guard rename(temporary.path, url.path) == 0 else {
+            throw OpenClawCoreError.unavailable("Could not replace \(url.lastPathComponent) (errno \(errno))")
+        }
+        committed = true
+        #endif
     }
 
     /// Ensures a private directory exists: missing directories (and missing intermediates) are created

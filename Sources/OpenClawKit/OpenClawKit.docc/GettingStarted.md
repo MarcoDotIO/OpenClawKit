@@ -7,7 +7,7 @@ unless you already know you need lower-level modules.
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/MarcoDotIO/OpenClawKit.git", from: "2026.3.0")
+    .package(url: "https://github.com/MarcoDotIO/OpenClawKit.git", from: "2026.3.1")
 ]
 ```
 

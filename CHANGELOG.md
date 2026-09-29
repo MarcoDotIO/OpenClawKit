@@ -2,6 +2,75 @@
 
 ## Unreleased
 
+## 2026.3.1 - 2026-09-29
+
+OpenClawKit 2026.3.1 adds [Sign in with ChatGPT](https://developers.openai.com/siwc)
+(SIWC): people sign in with their ChatGPT account and run eligible inference on
+their ChatGPT plan instead of an API key. The release is additive; there are no
+breaking changes, and the upstream parity target stays OpenClaw `2026.9.6`
+(upstream has no SIWC client, so this is an SDK-native feature).
+
+### Added
+
+- `SignInWithChatGPTSession` (`OpenClawCore`, Apple platforms and Linux): the
+  open-source "ChatGPT plan usage" flow. The first sign-in of an account
+  registers with `client_id=dynamic_agent_client` and `agent_name_hint`, later
+  sign-ins reuse the issued `oaiapp_…` client id with `id_token_hint` and
+  `login_hint`, and `consent: .forceReconsent` / `.consent` re-enable plan usage.
+  Every authorization sends PKCE `S256`, `state`, `nonce`,
+  `resource=https://api.openai.com/v1` and a persisted `ext_agent_host_id`.
+- `SignInWithChatGPTLoopbackListener`: a one-shot `127.0.0.1` callback server
+  on `/auth/callback` (port 1455, or an ephemeral port when busy) that ignores
+  callbacks with the wrong `state`; not built for tvOS and watchOS.
+- RS256 ID-token validation (`SignInWithChatGPTIDTokenValidator`, JWKS cache
+  with key-rotation refresh): signature, `iss`, `aud`, `azp`, `exp`, `iat`,
+  `nbf`, `nonce` and `sub`; keys under 2048 bits are rejected. Verification
+  uses Security.framework on Apple platforms and swift-crypto's `_CryptoExtras`
+  on Linux (a new Linux-only dependency of `OpenClawCore`).
+- Token lifecycle: code exchange, refresh five minutes before expiry (never
+  before `earliest_refresh_at`), one refresh per account at a time with rotated
+  refresh tokens replaced together with the access token, and a forced refresh
+  when inference returns `401`. Rejected refresh tokens clear the tokens and
+  throw `reauthenticationRequired` while keeping the account's client id.
+- Accounts: `SignInWithChatGPTAccountStore` keeps multiple accounts (separate
+  registrations, never mixed), the active account, the one-time plan-welcome
+  flag and the documented credential record (`client_id`, `access_token`,
+  `refresh_token`, `id_token`, `expires_in`, ISO 8601 `saved_at`,
+  `ext_agent_host_id`) in any `CredentialStore`. Sign-out revokes the refresh
+  token with retries and keeps the client id and host id; credential records can
+  be exported and imported (for example to a self-hosted VM).
+- `SignInWithChatGPTHostIdentifier`: `urn:uuid:`, RFC 9278 JWK-thumbprint and
+  `did:key:` host ids, including `init(deviceIdentity:)` from the gateway device
+  key.
+- `ChatGPTPlanModelProvider` (`OpenClawModels`): Responses inference on the
+  plan with `store: false`, `stream: true`, `instructions`, developer-role
+  system messages, namespaced function tools, `tool_choice` mapping, and no
+  unsupported fields (`temperature`, `top_p`, `max_output_tokens`, …);
+  `listModels()` returns the `visibility == "list"` models in server order.
+- `ChatGPTPlanError`: typed plan errors for the `subscription_sharing_*` and
+  `chatpass_v2_*` codes and direct-admission responses, with a `recovery`
+  (`manageUsage`, `signInAgain`, `retryLater`, `changeRequest`) and
+  `Retry-After`.
+- Apple presenters: `SignInWithChatGPTWebAuthenticationBrowser`
+  (`ASWebAuthenticationSession` on iOS, macOS and visionOS) and
+  `SignInWithChatGPTExternalBrowser.systemDefault` on macOS.
+- `OpenClawChatUI`: `SignInWithChatGPTButton` ("Continue with ChatGPT" /
+  "Sign in with ChatGPT", black or white, host-supplied logo),
+  `ChatGPTPlanWelcomeView`, `ChatGPTPlanUsageIndicator`,
+  `ChatGPTPlanUsageLimitView`, the `chatGPTPlanWelcomeSheet` and
+  `chatGPTPlanUsageLimitSheet` modifiers, and the `SignInWithChatGPTModel`
+  observable.
+- DocC article "Sign in with ChatGPT".
+
+### Changed
+
+- `FileCredentialStore` now writes through `OpenClawFileSystem.writePrivateData`:
+  the file is created with `0600` before any secret is written and atomically
+  renamed into place (previously it was written, then `chmod`ed), and a missing
+  parent directory is created with `0700`.
+- The Responses stream parser records the error code of `response.failed` and
+  `error` events.
+
 ## 2026.3.0 - 2026-09-29
 
 OpenClawKit 2026.3.0 brings the SDK to feasible parity with upstream OpenClaw

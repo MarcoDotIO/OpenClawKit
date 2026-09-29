@@ -82,6 +82,9 @@ private struct CredentialFilePayload: Codable, Sendable {
 }
 
 /// File-backed credential store for non-Apple or fallback environments.
+///
+/// The file is written atomically with owner-only (`0600`) permissions; a missing parent directory is
+/// created with `0700`.
 public actor FileCredentialStore: CredentialStore {
     private let fileURL: URL
     private let encoder: JSONEncoder
@@ -130,12 +133,10 @@ public actor FileCredentialStore: CredentialStore {
 
     private func persist(_ payload: CredentialFilePayload) throws {
         let directory = self.fileURL.deletingLastPathComponent()
-        try OpenClawFileSystem.ensureDirectory(directory)
+        try OpenClawFileSystem.ensurePrivateDirectory(directory)
         let data = try self.encoder.encode(payload)
-        try OpenClawFileSystem.writeData(data, to: self.fileURL)
-        #if !os(Windows)
-        try? FileManager().setAttributes([.posixPermissions: 0o600], ofItemAtPath: self.fileURL.path)
-        #endif
+        // Created as 0600 before any secret is written, then atomically renamed into place.
+        try OpenClawFileSystem.writePrivateData(data, to: self.fileURL)
     }
 
     private static func normalizedKey(_ key: String) throws -> String {

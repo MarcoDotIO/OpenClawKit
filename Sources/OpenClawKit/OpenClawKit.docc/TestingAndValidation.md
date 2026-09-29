@@ -77,6 +77,11 @@ test process environment. A full provider pass is about 48 billed calls, well un
 $0.01 at catalog prices. Anthropic keys that are not scoped to a workspace also need
 `ANTHROPIC_WORKSPACE_ID`, which is sent as the `anthropic-workspace-id` header.
 
+Sign in with ChatGPT has no live suite: signing in needs a person in a browser. Its
+offline suites (`SignInWithChatGPTAuthorizationTests`, `SignInWithChatGPTSessionTests`,
+`ChatGPTPlanModelProviderTests`) run on macOS and Linux against a scripted authorization
+server, fixed RS256 fixtures and a real loopback round trip.
+
 ## CI and Docs Publishing
 
 The CI workflow runs SwiftLint, the upstream drift checks, the Linux Swift 6.2 build and

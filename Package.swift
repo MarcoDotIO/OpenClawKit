@@ -28,6 +28,8 @@ var targets: [Target] = [
         dependencies: [
             "OpenClawProtocol",
             .product(name: "Crypto", package: "swift-crypto"),
+            // RS256 verification of Sign in with ChatGPT ID tokens on Linux (Apple platforms use Security).
+            .product(name: "_CryptoExtras", package: "swift-crypto", condition: .when(platforms: [.linux])),
         ],
         swiftSettings: [
             .enableUpcomingFeature("StrictConcurrency"),
