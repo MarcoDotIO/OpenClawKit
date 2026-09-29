@@ -363,16 +363,23 @@ public struct GatewayAgentWaitResult: Codable, Sendable, Equatable {
 /// Lenient decoding helpers for SDK-owned compat payloads.
 enum GatewayCompatDecoding {
     /// Decodes an epoch-millisecond value that may arrive as an integer or a floating-point number.
+    ///
+    /// Fractions truncate toward zero; values outside `Int64` (including 2^63, which
+    /// `Double(Int64.max)` rounds up to) answer `nil` instead of trapping.
     static func int64<Key: CodingKey>(_ container: KeyedDecodingContainer<Key>, _ key: Key) -> Int64? {
         if let value = try? container.decodeIfPresent(Int64.self, forKey: key) {
             return value
         }
-        if let value = try? container.decodeIfPresent(Double.self, forKey: key), value.isFinite,
-           value >= Double(Int64.min), value <= Double(Int64.max)
-        {
-            return Int64(value)
+        if let value = try? container.decodeIfPresent(Double.self, forKey: key) {
+            return Self.int64(exactly: value)
         }
         return nil
+    }
+
+    /// Converts a wire number to `Int64` without trapping (truncating fractions; `nil` when out of range).
+    static func int64(exactly value: Double) -> Int64? {
+        guard value.isFinite else { return nil }
+        return Int64(exactly: value.rounded(.towardZero))
     }
 
     /// Decodes a string, tolerating a type mismatch (returns `nil`).
