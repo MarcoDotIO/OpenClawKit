@@ -19,6 +19,10 @@ enum ConfigMigrationRules {
                   apply: Self.normalizeLegacyBrowserConfig),
             // Channels.
             .init(id: "channels.webchat-remove", summary: "Remove retired WebChat channel config", apply: Self.removeChannelsWebchat),
+            .init(id: "legacy-group-routing->channel-groups", summary: "Move legacy routing group chat settings to channel groups and messages",
+                  apply: Self.migrateLegacyGroupRouting),
+            .init(id: "feishu.accounts.botName->name", summary: "Move legacy Feishu account botName to name",
+                  apply: Self.migrateFeishuAccountBotName),
             .init(id: "thread-bindings.ttlHours->idleHours", summary: "Rename threadBindings.ttlHours",
                   apply: Self.migrateThreadBindingTTL),
             // Audio.
@@ -259,6 +263,129 @@ enum ConfigMigrationRules {
         guard let channels = root.object("channels"), channels.has("webchat") else { return }
         channels.remove("webchat")
         changes.append("Removed retired channels.webchat config (WebChat is retired).")
+    }
+
+    // MARK: legacy-group-routing->channel-groups
+
+    static func migrateLegacyGroupRouting(_ root: MigrationObject, _ changes: inout [String]) {
+        Self.migrateRoutingAllowFrom(root, &changes)
+        Self.migrateRoutingGroupChat(root, &changes)
+        Self.migrateTelegramRequireMention(root, &changes)
+    }
+
+    private static func removeEmptyObject(_ owner: MigrationObject, _ key: String) {
+        if owner.object(key)?.isEmpty == true {
+            owner.remove(key)
+        }
+    }
+
+    /// Upstream `resolveCompatibleDefaultGroupEntry` + `migrateChannelDefaultRequireMention`.
+    private static func migrateDefaultGroupRequireMention(
+        _ section: MigrationObject,
+        channelID: String,
+        legacyPath: String,
+        requireMention: MigrationValue,
+        _ changes: inout [String]
+    ) {
+        if section.has("groups"), section.object("groups") == nil {
+            changes.append("Removed \(legacyPath) (channels.\(channelID).groups has an incompatible shape; fix remaining issues manually).")
+            return
+        }
+        let groups = section.object("groups") ?? MigrationObject()
+        if groups.has("*"), groups.object("*") == nil {
+            changes.append("Removed \(legacyPath) (channels.\(channelID).groups has an incompatible shape; fix remaining issues manually).")
+            return
+        }
+        let entry = groups.object("*") ?? MigrationObject()
+        guard !entry.isSet("requireMention") else {
+            changes.append("Removed \(legacyPath) (channels.\(channelID).groups.\"*\" already set).")
+            return
+        }
+        entry["requireMention"] = requireMention
+        groups["*"] = .object(entry)
+        section["groups"] = .object(groups)
+        changes.append("Moved \(legacyPath) → channels.\(channelID).groups.\"*\".requireMention.")
+    }
+
+    private static func migrateRoutingAllowFrom(_ root: MigrationObject, _ changes: inout [String]) {
+        guard let routing = root.object("routing"), let allowFrom = routing["allowFrom"] else { return }
+        if let whatsapp = root.object("channels")?.object("whatsapp") {
+            if whatsapp.isSet("allowFrom") {
+                changes.append("Removed routing.allowFrom (channels.whatsapp.allowFrom already set).")
+            } else {
+                whatsapp["allowFrom"] = allowFrom
+                changes.append("Moved routing.allowFrom → channels.whatsapp.allowFrom.")
+            }
+        } else {
+            changes.append("Removed routing.allowFrom (channels.whatsapp not configured).")
+        }
+        routing.remove("allowFrom")
+        Self.removeEmptyObject(root, "routing")
+    }
+
+    private static func migrateRoutingGroupChat(_ root: MigrationObject, _ changes: inout [String]) {
+        guard let routing = root.object("routing"), let groupChat = routing.object("groupChat") else { return }
+        if let requireMention = groupChat["requireMention"] {
+            var matchedChannel = false
+            if let channels = root.object("channels") {
+                for channelID in ["whatsapp", "telegram", "imessage"] {
+                    guard let section = channels.object(channelID) else { continue }
+                    matchedChannel = true
+                    Self.migrateDefaultGroupRequireMention(
+                        section,
+                        channelID: channelID,
+                        legacyPath: "routing.groupChat.requireMention",
+                        requireMention: requireMention,
+                        &changes
+                    )
+                }
+            }
+            if !matchedChannel {
+                changes.append("Removed routing.groupChat.requireMention (no configured WhatsApp, Telegram, or iMessage channel found).")
+            }
+            groupChat.remove("requireMention")
+        }
+        for field in ["historyLimit", "mentionPatterns"] {
+            guard let value = groupChat[field] else { continue }
+            let messagesGroup = root.ensureObject("messages").ensureObject("groupChat")
+            if messagesGroup.isSet(field) {
+                changes.append("Removed routing.groupChat.\(field) (messages.groupChat.\(field) already set).")
+            } else {
+                messagesGroup[field] = value
+                changes.append("Moved routing.groupChat.\(field) → messages.groupChat.\(field).")
+            }
+            groupChat.remove(field)
+        }
+        Self.removeEmptyObject(routing, "groupChat")
+        Self.removeEmptyObject(root, "routing")
+    }
+
+    private static func migrateTelegramRequireMention(_ root: MigrationObject, _ changes: inout [String]) {
+        guard let telegram = root.object("channels")?.object("telegram"), let requireMention = telegram["requireMention"] else { return }
+        Self.migrateDefaultGroupRequireMention(
+            telegram,
+            channelID: "telegram",
+            legacyPath: "channels.telegram.requireMention",
+            requireMention: requireMention,
+            &changes
+        )
+        telegram.remove("requireMention")
+    }
+
+    static func migrateFeishuAccountBotName(_ root: MigrationObject, _ changes: inout [String]) {
+        guard let accounts = root.object("channels")?.object("feishu")?.object("accounts") else { return }
+        for (accountID, value) in accounts.entries {
+            guard let account = value.object, account.has("botName") else { continue }
+            let legacyPath = "channels.feishu.accounts.\(accountID).botName"
+            let currentPath = "channels.feishu.accounts.\(accountID).name"
+            if account.isSet("name") {
+                changes.append("Removed \(legacyPath) (\(currentPath) already set).")
+            } else {
+                account["name"] = account["botName"]
+                changes.append("Moved \(legacyPath) → \(currentPath).")
+            }
+            account.remove("botName")
+        }
     }
 
     static func migrateThreadBindingTTL(_ root: MigrationObject, _ changes: inout [String]) {

@@ -1032,10 +1032,22 @@ extension ConfigMigrationRules {
         ConfigDecodeIssue(path: path, message: message, kind: kind)
     }
 
+    /// Legacy upstream `routing.*` keys that doctor cannot migrate (`routing.allowFrom` and
+    /// `routing.groupChat` migrate through `legacy-group-routing->channel-groups`).
+    static let unmigratableRoutingKeys = ["queue", "bindings", "agents", "defaultAgentId", "transcribeAudio"]
+
     static var unported: [ConfigUnportedMigration] {
         [
-            .init(id: "legacy.pre-multi-agent-root", summary: "routing/agent/identity root keys have no migration path") { root in
-                ["routing", "agent", "identity"].filter(root.has).map {
+            .init(id: "legacy.pre-multi-agent-root", summary: "leftover routing keys and agent/identity root keys have no migration path") { root in
+                let routingIssues = Self.unmigratableRoutingKeys.filter { root.object("routing")?.has($0) == true }.map {
+                    Self.issue(
+                        "routing.\($0)",
+                        "routing.\($0) is a pre-multi-agent key without a migration path; "
+                            + "fix it by hand against the current configuration reference.",
+                        .invalidValue
+                    )
+                }
+                return routingIssues + ["agent", "identity"].filter(root.has).map {
                     Self.issue(
                         $0,
                         "Top-level \($0) is a pre-multi-agent key without a migration path; "

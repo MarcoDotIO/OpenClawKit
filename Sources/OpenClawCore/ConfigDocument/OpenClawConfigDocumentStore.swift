@@ -591,8 +591,12 @@ public enum OpenClawVersionComparison {
 
 extension OpenClawConfigDocument {
     /// SDK-native key paths that upstream's strict schema rejects; stores strip them before writing.
+    ///
+    /// Only the SDK-shaped `routing` keys are listed: legacy upstream `routing.*` data (for example
+    /// `routing.queue`) is never deleted, and `routing` itself is dropped only once it is empty.
     public static let sdkOnlyKeyPaths: [[String]] = [
-        ["routing"], ["runtime"],
+        ["routing", "sessionKeyFormat"], ["routing", "includeChannelID"], ["routing", "includeAccountID"],
+        ["routing", "includePeerID"], ["routing", "defaultSessionKey"], ["runtime"],
         ["agents", "defaultAgentID"], ["agents", "workspaceRoot"], ["agents", "skillInvocationTimeoutMs"],
         ["agents", "agentIDs"], ["agents", "routeAgentMap"], ["agents", "thinkingLevel"], ["agents", "verboseLevel"],
         ["agents", "reasoningLevel"], ["agents", "responseUsage"], ["agents", "elevatedLevel"], ["agents", "groupActivation"],
@@ -614,6 +618,10 @@ extension OpenClawConfigDocument {
         var removed: [String] = []
         for path in self.sdkOnlyKeyPaths {
             MigrationSupport.deleteRetiredPath(root, path[...], removed: &removed)
+        }
+        if root.object("routing")?.isEmpty == true {
+            root.remove("routing")
+            removed.append("routing")
         }
         if !removed.isEmpty {
             tree = root.dictionary
