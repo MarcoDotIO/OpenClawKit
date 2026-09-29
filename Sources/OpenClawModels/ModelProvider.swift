@@ -420,6 +420,23 @@ public struct ModelGenerationResponse: Sendable, Equatable {
         self.executedToolCalls = executedToolCalls
     }
 
+    /// Returns a copy with different `text`, preserving every other field.
+    /// - Parameter text: Replacement text.
+    /// - Returns: The updated response.
+    public func withText(_ text: String) -> ModelGenerationResponse {
+        ModelGenerationResponse(
+            text: text,
+            providerID: self.providerID,
+            modelID: self.modelID,
+            toolCalls: self.toolCalls,
+            usage: self.usage,
+            stopReason: self.stopReason,
+            reasoningText: self.reasoningText,
+            reasoningSignature: self.reasoningSignature,
+            executedToolCalls: self.executedToolCalls
+        )
+    }
+
     /// Returns a copy carrying `executedToolCalls`, preserving every other field.
     /// - Parameter executedToolCalls: Tool calls the provider executed in-process.
     /// - Returns: The updated response.

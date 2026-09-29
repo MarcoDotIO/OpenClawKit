@@ -249,6 +249,20 @@ enum AnthropicMessagesWire {
         }
     }
 
+    /// Anthropic JSON output is prompt-emulated, and models sometimes wrap the object in a Markdown
+    /// fence or add stray prose; when a JSON response format was requested, return just the JSON
+    /// payload so `response.text` decodes like it does on providers with native structured output.
+    static func normalizingPromptedJSON(_ response: ModelGenerationResponse, format: ModelResponseFormat) -> ModelGenerationResponse {
+        guard format != .text, response.toolCalls.isEmpty else {
+            return response
+        }
+        let payload = ProviderVisibleTextSanitizer.extractJSONPayload(response.text)
+        guard payload.isEmpty == false, payload != response.text else {
+            return response
+        }
+        return response.withText(payload)
+    }
+
     static func jsonSchemaInstruction(name: String, schema: [String: AnyCodable]) -> String {
         "Respond with a single JSON value named \"\(name)\" that validates against this JSON Schema, and no other text:\n"
             + ProviderWireJSON.compactText(schema)
@@ -708,7 +722,8 @@ struct AnthropicMessagesEngine: Sendable {
     func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
         let prepared = try self.prepare(request, stream: false)
         let response = try await self.exchange.data(for: prepared.urlRequest)
-        return try AnthropicMessagesWire.parseResponse(response.body, providerID: self.settings.providerID, modelID: prepared.modelID)
+        let parsed = try AnthropicMessagesWire.parseResponse(response.body, providerID: self.settings.providerID, modelID: prepared.modelID)
+        return AnthropicMessagesWire.normalizingPromptedJSON(parsed, format: request.responseFormat)
     }
 
     func stream(_ request: ModelGenerationRequest) -> AsyncThrowingStream<ModelStreamChunk, Error> {

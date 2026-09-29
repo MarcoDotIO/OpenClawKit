@@ -734,13 +734,143 @@ snippets for every item.
   launch handler registered, because `BGTaskScheduler` raises an exception for a
   permitted identifier without a handler.
 
-### Fixed (review)
+### Fixed and hardened in the release review
 
-<!-- PLACEHOLDER for the orchestrator: entries from the parallel code-review and
-fix phase go here (merge them into the sections above before tagging, then
-delete this heading). -->
+An adversarial review of the whole 2026.3.0 diff produced 128 findings; 119
+were confirmed by an independent verifier and all of them are fixed, each with
+a regression test.
 
-- _Pending: code-review fix entries._
+#### Gateway and protocol
+- Methods with a dynamic scope (`agent`, `sessions.create`/`patch`/`delete`,
+  `node.invoke`, `fs.listDir`, `talk.config`, …) derive their required operator
+  scopes from the request like upstream `method-scopes.ts` and fail closed;
+  methods registered without a descriptor require `operator.admin`.
+- `node.pair.approve` requires `operator.admin` for nodes declaring `system.run`
+  or other admin-only commands.
+- Event broadcasts are filtered by the receiving connection's role and scopes;
+  `sessions.changed` reaches only connections that called `sessions.subscribe`.
+- `tools.invoke` approval ids are bound to the exact invocation (tool,
+  arguments, session, agent) and are single-use.
+- Negative or huge pagination cursors (`tasks.list`, `tasks.history`,
+  `approval.history`) and huge client timeouts no longer crash the host; timeouts
+  are clamped to the upstream timer bound.
+- The built-in `agent.wait` honors `timeoutMs`, reports failed runs as
+  `{status: error}` and evicts finished runs; reusing an active idempotency key
+  answers `in_flight` instead of starting a second run with the same id.
+- Approval events use the upstream `…approval.requested`/`.resolved` wire
+  shapes; decoding 2^63 into compat models no longer traps; loopback clients no
+  longer reconnect every minute; secret-vault writes to one key are serialized.
+
+#### Gateway client, node commands and Apple helpers
+- The opt-in Network.framework transport applies the same TLS pinning policy as
+  the URLSession transport (system trust, fail-closed pin storage, typed
+  rejections that pause reconnects); a successful handshake clears an earlier
+  pin-mismatch pause.
+- Request deadlines start when the frame is sent, not before connect; an
+  out-of-range `tickIntervalMs` or a non-finite timeout no longer crashes.
+- `system.run` pre-launch checks read the approval policy snapshot from
+  `systemRunPlan` and fail closed when an approved run has none.
+- `file.fetch`/`dir.list`/`file.write` open files once without following
+  symlinks and verify identity on the open descriptor, so a swapped path or FIFO
+  cannot escape the allowed roots or hang the handler; error codes match
+  upstream.
+- App Intents runs are matched by run id; Now Playing relevance updates apply in
+  order; device-auth token I/O during connect runs off the channel actor.
+- New `OpenClawSDK.startGatewayServer(…)` attaches the embedded runtime and gates
+  startup by default.
+
+#### Providers and Apple Intelligence
+- Provider streams (Chat Completions, Responses, Anthropic, Gemini, Ollama) fail
+  when they end before the provider's terminal event instead of reporting a
+  truncated turn as complete.
+- `ModelRouter.generateStream` falls back to the next profile or provider when a
+  stream fails before its first output, and cancellation no longer records
+  failures or cooldowns.
+- Gemini API keys move from the URL to the `x-goog-api-key` header; transport
+  errors and router diagnostics no longer carry URLs or credential-looking
+  values (`ProviderErrorRedaction`).
+- OpenAI prompt-cache and session-affinity keys are opaque (SHA-256 of the
+  session key) instead of the routing session key.
+- Anthropic: budget thinking uses the upstream budgets; `AnthropicModelConfig`
+  gains `headers` and `workspaceID` (`anthropic-workspace-id`, needed by
+  organization-level keys); JSON-schema responses are unwrapped from Markdown
+  fences so `response.text` decodes like on providers with native structured
+  output (found by the live tests).
+- Configs without `auth` use auth-profile credentials on the
+  Anthropic-compatible, Gemini, Ollama and xAI routes; OAuth refresh uses an
+  Int64 clock (watchOS arm64_32).
+- Foundation Models agent sessions run every tool call through
+  `FoundationModelsAgentToolGate` (tool policy, schema validation,
+  `before_tool_call` hooks, approvals that fail closed); a Private Cloud Compute
+  failure after in-process tools ran no longer falls back and replays them;
+  framework-executed Vision/Spotlight tools are not offered for forced tool
+  choices.
+- Invalid CoreAI tensors throw instead of trapping, and concurrent CoreAI
+  generations are queued; HEIC/HEIF/AVIF stills are no longer sniffed as video.
+
+#### Agent runtime, skills, MCP and memory
+- Exec allow-always grants bind to the exact argv and cwd; chains,
+  substitutions, redirections, multi-line commands, shells and wrappers never
+  get a durable grant; the approval gate passes the raw command to the
+  allowlist, reviewer and approval card.
+- Sub-agents and wake runs inherit the parent's permission mode, sandbox mode,
+  tool overrides and run policy; hidden tools are refused when called by name;
+  per-agent tool policies can only restrict the global policy.
+- An abort, timeout or error during a tool batch no longer leaves unpaired tool
+  calls, and replay repairs damaged transcripts; JSONL transcripts survive torn
+  writes; model-supplied numbers no longer trap.
+- `memory_search` no longer crashes on lines longer than the chunk size
+  (duplicate chunk ids); Spotlight index writes, deletes and searches time out
+  instead of hanging.
+- MCP: a `tools/call` is never replayed after it may have reached the server;
+  remote JSON-RPC ids that do not fit `Int` no longer crash; the legacy SSE
+  connect timeout fires; stdio servers can no longer kill the host with SIGPIPE,
+  `close()` escalates even during a blocked write, and loader/interpreter
+  injection variables are dropped from server environments.
+- Cron: editing jobs no longer cancels the running automation; `every`
+  schedules enforce upstream limits; six-field expressions are accepted.
+- `PluginRegistry` change listeners broadcast `plugins.changed`.
+
+#### Channels
+- HTTP 5xx send failures are unknown outcomes and are never replayed blindly;
+  partially delivered multi-part sends are never retried.
+- Skill commands require an authorized sender in groups; WhatsApp Cloud
+  webhooks verify `X-Hub-Signature-256`; webhook secrets compare in constant
+  time; A2A outbound calls refuse redirects; Twilio media fetches are bound to
+  the message; bot tokens and credentials are redacted from channel health and
+  diagnostics.
+- The Discord gateway dispatches off its receive loop, so slow agent turns no
+  longer stall heartbeats; A2A tasks pending when the turn ends are failed.
+- Chunk limits count UTF-16 code units like the platforms do; remote
+  `Retry-After` and size budgets can no longer overflow.
+
+#### Config and security
+- The exec allowlist fails closed for backslash-newline continuations,
+  `$\⏎(` substitutions, dynamic executables, leading assignments and subscript
+  substitutions, and never matches `sudo`, `doas`, `su`, `env` with modifiers or
+  busybox shell applets.
+- `SecurityRuntime` re-reads the allowlist store before every evaluation and
+  changes it transactionally, so revoked rules are not honored or written back;
+  the legacy `default` exec-approvals agent folds into `main`.
+- Exec secret providers are bounded by their timeouts and output limits and
+  kill the whole process group on failure; env/store refs naming an
+  unconfigured provider alias are rejected.
+- Gateway config import keeps authored values and writes back only what
+  changed; legacy `routing.*` keys are migrated instead of deleted; the
+  `agents.list` migration pins the first agent's workspace like upstream doctor.
+
+#### ChatUI and ChatStore
+- `OpenClawGatewaySessionChatTransport` replays the durable outbox only when
+  bound to a gateway (`gatewayStableID`) and refuses reads from a different
+  gateway; a route change drops branch reconciliation made against the previous
+  gateway.
+- Link previews resolve hostnames before each request and redirect and require
+  public addresses (NAT64 and IPv4-mapped peers included).
+- The GRDB databases observe suspension notifications and coordinate first open
+  and migration with `NSFileCoordinator`; the cache is no longer deleted on lock
+  contention.
+- Agent and `session.tool` events decode millisecond timestamps as Int64, so
+  they are no longer dropped on watchOS arm64_32.
 
 ### Security
 
@@ -906,6 +1036,28 @@ Each item lists the migration. Snippets are in the DocC article "Migrating to
   snake_case, `MemoryIndex` scores are normalized BM25, and
   `AgentToolResult.value` is computed. Migration: retune memory thresholds; move
   canvas integrations to the presenter commands.
+
+- Release-review hardening (behavior): exec allowlists never match `sudo`,
+  `doas`, `su`, `env` with modifiers or shell carriers, and `<shell> -c …` is
+  matched command by command; `SecurityRuntime` re-reads its allowlist store;
+  env/store secret refs must name a configured provider alias. Migration: add
+  argPattern-bound rules for shells you intentionally allow and configure the
+  aliases you reference.
+- Release-review hardening (behavior): channel sends treat HTTP 5xx as an
+  unknown outcome (no blind retry), `ChannelSendError` gains
+  `partiallyDelivered(receipt:failure:)`, and chunk limits count UTF-16 code
+  units by default. Migration: handle the new case; pass `.chars` to the chunker
+  if you relied on grapheme counting.
+- Release-review hardening (behavior): provider streams that end without a
+  terminal event now throw; `RuntimeProviderAuthResolver` takes an Int64 clock;
+  `ModelProviderFactory.makeProviders(from:)` skips alias keys instead of
+  building duplicate providers. Migration: fix non-conformant OpenAI-compatible
+  servers that close without `[DONE]`/`finish_reason`; pass Int64 clocks.
+- Release-review hardening (behavior): gateway methods registered without a
+  descriptor require `operator.admin`; connection-bound event subscribers see
+  only events their role and scopes allow; approval events use the upstream
+  shapes. Migration: register descriptors with the scopes your methods need and
+  call `sessions.subscribe` for `sessions.changed`.
 
 ### Tests
 

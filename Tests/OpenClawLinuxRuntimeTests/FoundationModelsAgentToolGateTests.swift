@@ -6,7 +6,7 @@ import OpenClawProtocol
 import Testing
 
 /// Tool that records every invocation, so tests can prove a gated call never reached the body.
-private struct RecordingTool: AgentTool {
+private struct GateRecordingTool: AgentTool {
     let name = "exec"
     let log: GateInvocationLog
 
@@ -57,7 +57,7 @@ struct FoundationModelsAgentToolGateTests {
             return nil
         }
         let gate = FoundationModelsAgentToolGate(
-            registry: AgentToolRegistry(tools: [RecordingTool(log: log)]),
+            registry: AgentToolRegistry(tools: [GateRecordingTool(log: log)]),
             context: AgentToolInvocationContext(sessionKey: "agent:main:fm", agentID: "main"),
             hookRegistry: hooks
         )
@@ -76,7 +76,7 @@ struct FoundationModelsAgentToolGateTests {
     @Test
     func closureHooksRewriteAndApprovalsFailClosedWithoutABroker() async throws {
         let log = GateInvocationLog()
-        let registry = AgentToolRegistry(tools: [RecordingTool(log: log)])
+        let registry = AgentToolRegistry(tools: [GateRecordingTool(log: log)])
         let rewriting = FoundationModelsAgentToolGate(
             registry: registry,
             hooks: AgentLoopHooks(beforeToolCall: { context in
@@ -107,7 +107,7 @@ struct FoundationModelsAgentToolGateTests {
         let log = GateInvocationLog()
         let broker = ApprovalBroker()
         let gate = FoundationModelsAgentToolGate(
-            registry: AgentToolRegistry(tools: [RecordingTool(log: log)]),
+            registry: AgentToolRegistry(tools: [GateRecordingTool(log: log)]),
             context: AgentToolInvocationContext(sessionKey: "agent:main:fm", agentID: "main"),
             hooks: AgentLoopHooks(beforeToolCall: { _ in
                 .requireApproval(AgentToolApprovalRequest(title: "Run?", description: "exec"))
@@ -139,7 +139,7 @@ struct FoundationModelsAgentToolGateTests {
             event.params["command"]?.stringValue == "rm" ? BeforeToolCallDecision(block: true, blockReason: "plugin veto") : nil
         }
         let runtime = EmbeddedAgentRuntime(
-            toolRegistry: AgentToolRegistry(tools: [RecordingTool(log: log)]),
+            toolRegistry: AgentToolRegistry(tools: [GateRecordingTool(log: log)]),
             hookRegistry: hooks,
             mediaUnderstandingServices: .none
         )
@@ -171,7 +171,7 @@ struct FoundationModelsAgentToolGateTests {
     @Test
     func policyAndRegistrationAreRechecked() async throws {
         let log = GateInvocationLog()
-        let registry = AgentToolRegistry(tools: [RecordingTool(log: log)])
+        let registry = AgentToolRegistry(tools: [GateRecordingTool(log: log)])
         let gate = FoundationModelsAgentToolGate(registry: registry, policy: ToolPolicy(deny: ["exec"]))
         let forbidden = try await gate.invoke(Self.call("ls"))
         #expect(forbidden.output.text == "Tool exec is not allowed by the current tool policy")

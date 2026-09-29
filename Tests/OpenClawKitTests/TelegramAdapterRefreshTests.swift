@@ -98,11 +98,14 @@ struct TelegramAdapterRefreshTests {
         )
         await http.on("/getUpdates", json: Self.empty)
         let adapter = Self.adapter(http)
+        // Measure from before start: the 429 arrives after this point, so honoring retry_after=1 means
+        // the second poll cannot happen sooner than ~1 s later. (Starting the clock when the degraded
+        // state is observed raced under load, since observation can lag the 429 by hundreds of ms.)
+        let startedAt = Date()
         try await adapter.start()
         try await waitUntil("rate limited") { await adapter.transportHealth().state == .degraded }
-        let limitedAt = Date()
         try await waitUntil("retried") { await http.count("/getUpdates") >= 2 }
-        #expect(Date().timeIntervalSince(limitedAt) >= 0.8)
+        #expect(Date().timeIntervalSince(startedAt) >= 0.9)
         await adapter.stop()
     }
 
