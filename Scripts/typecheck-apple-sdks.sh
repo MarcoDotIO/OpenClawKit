@@ -6,17 +6,26 @@
 #        (default: all)
 #
 # For each SDK it:
-#   1. emits OpenClawProtocol and OpenClawCore modules (Sources/OpenClawProtocol, Sources/OpenClawCore)
-#      for the minimum-OS triple (OpenClawKit files such as the StateReporting bridge use Core types);
-#   2. typechecks Sources/OpenClawKit (minus the OpenClawKit.swift facade, which re-exports the
-#      other package modules) against it with -warnings-as-errors, using a one-line
+#   1. emits every package module OpenClawKit depends on, in dependency order, for the
+#      minimum-OS triple: OpenClawProtocol, OpenClawCore, OpenClawNativeState, OpenClawGateway,
+#      OpenClawMedia, OpenClawModels, OpenClawSkills, OpenClawAgents, OpenClawMemory,
+#      OpenClawMCP, OpenClawPlugins and OpenClawChannels. Third-party packages (swift-crypto,
+#      OpenAIKit, WasmKit, swift-system) are not resolved; the package sources import them
+#      behind `#if canImport(...)`, so the Apple-framework branches are the ones checked.
+#      Dependency modules skip non-inlinable function bodies to stay fast; the protocol and core
+#      modules are emitted in full because OpenClawKit leans on their inlinable helpers.
+#   2. typechecks every Sources/OpenClawKit file (including the OpenClawKit.swift facade that
+#      re-exports the modules above) against them with -warnings-as-errors, using a one-line
 #      `Bundle.module` stub in place of the SwiftPM resource accessor;
 #   3. for iOS, repeats step 2 with -application-extension to catch APIs that are unavailable
 #      in app extensions (share extensions link OpenClawKit).
 #
-# This takes seconds and catches availability, platform-guard and Int-width (watchOS arm64_32)
-# regressions early. Scripts/build-apple-platforms.sh remains the authoritative full build of
-# every product.
+# This catches availability, platform-guard and Int-width (watchOS arm64_32) regressions in
+# OpenClawKit early. It does not run SIL diagnostics (region isolation) or link anything:
+# Scripts/build-apple-platforms.sh remains the authoritative full build of every product.
+#
+# Environment:
+#   OPENCLAW_TYPECHECK_KEEP=1   keep .build/typecheck-apple-sdks after a successful run.
 set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -51,20 +60,54 @@ visionos xros arm64-apple-xros26.0
 EOF
 }
 
-protocol_sources=()
-while IFS= read -r -d '' file; do
-  protocol_sources+=("${file}")
-done < <(find "${ROOT_DIR}/Sources/OpenClawProtocol" -name '*.swift' -print0 | sort -z)
+# "<module> <mode>" rows in dependency order (see Package.swift). `full` emits the module with
+# every function body typechecked; `interface` skips non-inlinable bodies (faster, and enough to
+# typecheck OpenClawKit against the module's public surface).
+module_plan() {
+  cat <<'EOF'
+OpenClawProtocol full
+OpenClawCore full
+OpenClawNativeState full
+OpenClawGateway interface
+OpenClawMedia interface
+OpenClawModels interface
+OpenClawSkills interface
+OpenClawAgents interface
+OpenClawMemory interface
+OpenClawMCP interface
+OpenClawPlugins interface
+OpenClawChannels interface
+EOF
+}
 
-core_sources=()
-while IFS= read -r -d '' file; do
-  core_sources+=("${file}")
-done < <(find "${ROOT_DIR}/Sources/OpenClawCore" -name '*.swift' -print0 | sort -z)
+# Fails loudly when OpenClawKit's target gains a package dependency this script does not emit.
+check_module_plan() {
+  local planned kit_deps missing=""
+  planned="$(module_plan | awk '{print $1}')"
+  kit_deps="$(grep -rhoE --include='*.swift' '^[[:space:]]*(@_exported[[:space:]]+|@preconcurrency[[:space:]]+)?import[[:space:]]+OpenClaw[A-Za-z]+' \
+    "${ROOT_DIR}/Sources/OpenClawKit" | awk '{print $NF}' | sort -u)"
+  local dep
+  for dep in ${kit_deps}; do
+    [[ "${dep}" == "OpenClawKit" ]] && continue
+    if ! grep -qx "${dep}" <<<"${planned}"; then
+      missing="${missing:+${missing} }${dep}"
+    fi
+  done
+  if [[ -n "${missing}" ]]; then
+    echo "error: Sources/OpenClawKit imports module(s) this script does not emit: ${missing}" >&2
+    echo "       add them to module_plan() in $(basename "$0") in dependency order." >&2
+    exit 1
+  fi
+}
+
+module_sources() {
+  find "${ROOT_DIR}/Sources/$1" -name '*.swift' -print0 | sort -z
+}
 
 kit_sources=()
 while IFS= read -r -d '' file; do
   kit_sources+=("${file}")
-done < <(find "${ROOT_DIR}/Sources/OpenClawKit" -name '*.swift' ! -name 'OpenClawKit.swift' -print0 | sort -z)
+done < <(module_sources OpenClawKit)
 
 common_flags=(-swift-version 6 -enable-upcoming-feature StrictConcurrency)
 
@@ -78,6 +121,36 @@ report() {
     | sed 's/^/      /'
 }
 
+emit_module() {
+  local platform="$1" sdk="$2" sdk_path="$3" triple="$4" out_dir="$5" module="$6" mode="$7"
+  local log="${out_dir}/${module}.log" sources=() extra=()
+  while IFS= read -r -d '' file; do
+    sources+=("${file}")
+  done < <(module_sources "${module}")
+  if [[ ${#sources[@]} -eq 0 ]]; then
+    echo "    [${platform}] ${module}: no sources found" >&2
+    return 1
+  fi
+  if [[ "${mode}" == "interface" ]]; then
+    extra+=(-Xfrontend -experimental-skip-non-inlinable-function-bodies)
+  fi
+  if ! xcrun --sdk "${sdk}" swiftc \
+    -emit-module \
+    -module-name "${module}" \
+    -parse-as-library \
+    -target "${triple}" \
+    -sdk "${sdk_path}" \
+    "${common_flags[@]}" \
+    ${extra[@]+"${extra[@]}"} \
+    -I "${out_dir}" \
+    -emit-module-path "${out_dir}/${module}.swiftmodule" \
+    "${sources[@]}" >"${log}" 2>&1; then
+    echo "    [${platform}] ${module} FAILED (${triple})"
+    report "${log}"
+    return 1
+  fi
+}
+
 typecheck_platform() {
   local platform="$1" sdk="$2" triple="$3"
   local sdk_path out_dir stub log status=0
@@ -89,36 +162,12 @@ typecheck_platform() {
   stub="${out_dir}/BundleModuleStub.swift"
   printf 'import Foundation\n\nextension Foundation.Bundle {\n    static let module = Bundle.main\n}\n' >"${stub}"
 
-  log="${out_dir}/OpenClawProtocol.log"
-  if ! xcrun --sdk "${sdk}" swiftc \
-    -emit-module \
-    -module-name OpenClawProtocol \
-    -parse-as-library \
-    -target "${triple}" \
-    -sdk "${sdk_path}" \
-    "${common_flags[@]}" \
-    -emit-module-path "${out_dir}/OpenClawProtocol.swiftmodule" \
-    "${protocol_sources[@]}" >"${log}" 2>&1; then
-    echo "    [${platform}] OpenClawProtocol FAILED (${triple})"
-    report "${log}"
-    return 1
-  fi
-
-  log="${out_dir}/OpenClawCore.log"
-  if ! xcrun --sdk "${sdk}" swiftc \
-    -emit-module \
-    -module-name OpenClawCore \
-    -parse-as-library \
-    -target "${triple}" \
-    -sdk "${sdk_path}" \
-    "${common_flags[@]}" \
-    -I "${out_dir}" \
-    -emit-module-path "${out_dir}/OpenClawCore.swiftmodule" \
-    "${core_sources[@]}" >"${log}" 2>&1; then
-    echo "    [${platform}] OpenClawCore FAILED (${triple})"
-    report "${log}"
-    return 1
-  fi
+  local module mode started
+  started=${SECONDS}
+  while read -r module mode; do
+    emit_module "${platform}" "${sdk}" "${sdk_path}" "${triple}" "${out_dir}" "${module}" "${mode}" || return 1
+  done < <(module_plan)
+  echo "    [${platform}] emitted $(module_plan | wc -l | tr -d ' ') dependency modules in $((SECONDS - started))s"
 
   local variants=("default")
   if [[ "${platform}" == "ios" ]]; then
@@ -142,7 +191,7 @@ typecheck_platform() {
       -target "${triple}" \
       -sdk "${sdk_path}" \
       "${common_flags[@]}" \
-      "${extra[@]}" \
+      ${extra[@]+"${extra[@]}"} \
       -I "${out_dir}" \
       "${kit_sources[@]}" \
       "${stub}" >"${log}" 2>&1; then
@@ -156,6 +205,8 @@ typecheck_platform() {
   return "${status}"
 }
 
+check_module_plan
+
 failed=""
 while read -r platform sdk triple; do
   if [[ "${requested}" != "all" && "${requested}" != "${platform}" ]]; then
@@ -168,7 +219,10 @@ done < <(matrix)
 
 echo
 if [[ -n "${failed}" ]]; then
-  echo "Typecheck failed for: ${failed}"
+  echo "Typecheck failed for: ${failed} (logs in ${WORK_DIR#"${ROOT_DIR}/"})"
   exit 1
+fi
+if [[ "${OPENCLAW_TYPECHECK_KEEP:-0}" != "1" ]]; then
+  rm -rf "${WORK_DIR}"
 fi
 echo "Typecheck passed (${requested})."
