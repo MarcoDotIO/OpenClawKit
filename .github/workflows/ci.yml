@@ -18,7 +18,9 @@ permissions:
 # Swift 6.2 toolchain cannot read the 27 SDK interfaces. Swift 6.2 compatibility of the
 # cross-platform modules is covered by the Linux job, which stays on Swift 6.2.
 env:
-  XCODE_VERSION: "27.1"
+  # GitHub macos-26 images ship Xcode 26.x (no Xcode 27 yet). The package builds on either: 27-only
+  # APIs sit behind `#if compiler(>=6.4)`. latest-stable picks up Xcode 27 once the image adds it.
+  XCODE_VERSION: "latest-stable"
 
 jobs:
   swiftlint:

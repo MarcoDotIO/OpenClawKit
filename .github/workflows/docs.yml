@@ -9,7 +9,9 @@ on:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   # DocC builds the package with Xcode 27 (Swift 6.4 + the 27 SDKs), like the Apple CI jobs.
-  XCODE_VERSION: "27.1"
+  # GitHub macos-26 images ship Xcode 26.x (no Xcode 27 yet). The package builds on either: 27-only
+  # APIs sit behind `#if compiler(>=6.4)`. latest-stable picks up Xcode 27 once the image adds it.
+  XCODE_VERSION: "latest-stable"
 
 concurrency:
   group: docs-${{ github.event.pull_request.number || github.sha }}
