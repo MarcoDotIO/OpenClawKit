@@ -53,17 +53,23 @@ public enum GatewayTimeouts {
         Self.clampedMilliseconds(value).map { Int($0) }
     }
 
+    /// Largest sleep in nanoseconds (`Int64.max`, about 292 years).
+    ///
+    /// Sleeps are capped here rather than at `UInt64.max`, so executors that convert the delay to a
+    /// signed 64-bit offset (dispatch time math takes an `int64_t` delta) cannot wrap it negative.
+    public static let maxSleepNanoseconds = UInt64(Int64.max)
+
     /// Converts milliseconds to nanoseconds, saturating instead of trapping.
     /// - Parameter milliseconds: Duration in milliseconds (negative values count as `0`).
-    /// - Returns: Nanoseconds, capped at `UInt64.max`.
+    /// - Returns: Nanoseconds, capped at ``maxSleepNanoseconds``.
     public static func nanoseconds(milliseconds: Int64) -> UInt64 {
         let (value, overflow) = UInt64(clamping: milliseconds).multipliedReportingOverflow(by: 1_000_000)
-        return overflow ? .max : value
+        return overflow ? Self.maxSleepNanoseconds : min(value, Self.maxSleepNanoseconds)
     }
 
     /// Converts milliseconds to nanoseconds, saturating instead of trapping.
     /// - Parameter milliseconds: Duration in milliseconds (negative values count as `0`).
-    /// - Returns: Nanoseconds, capped at `UInt64.max`.
+    /// - Returns: Nanoseconds, capped at ``maxSleepNanoseconds``.
     public static func nanoseconds(milliseconds: Int) -> UInt64 {
         Self.nanoseconds(milliseconds: Int64(milliseconds))
     }

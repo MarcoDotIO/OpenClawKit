@@ -133,7 +133,8 @@ struct GatewayRunLifecycleTests {
         #expect(GatewayTimeouts.clampedMilliseconds(AnyCodable(1e300)) == GatewayTimeouts.maxTimeoutMs)
         #expect(GatewayTimeouts.clampedMilliseconds(AnyCodable(-5)) == 0)
         #expect(GatewayTimeouts.clampedMilliseconds(AnyCodable("5")) == nil)
-        #expect(GatewayTimeouts.nanoseconds(milliseconds: Int64.max) == UInt64.max)
+        #expect(GatewayTimeouts.nanoseconds(milliseconds: Int64.max) == UInt64(Int64.max))
+        #expect(GatewayTimeouts.nanoseconds(milliseconds: Int64.max / 1_000_000) == UInt64(Int64.max / 1_000_000) * 1_000_000)
         #expect(GatewayTimeouts.nanoseconds(milliseconds: -1) == 0)
     }
 
