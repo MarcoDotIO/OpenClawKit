@@ -221,6 +221,9 @@ public struct ChannelsConfig: Codable, Sendable, Equatable {
         case "imessage": policy = self.imessage.effectivePolicy(accountID: accountID)
         case "msteams": policy = self.msteams.effectivePolicy(accountID: accountID)
         case "webchat": policy = self.webchat.effectivePolicy(accountID: accountID)
+        case "a2a": policy = self.a2a.effectivePolicy
+        case "sms": policy = self.sms.effectivePolicy(accountID: accountID)
+        case "line": policy = self.line.effectivePolicy(accountID: accountID)
         default:
             policy = self.rawSection(named: channelID).map { raw in
                 Self.rawPolicy(raw, accountID: accountID)
@@ -767,6 +770,10 @@ public enum SlackConnectionMode: String, Codable, Sendable, Equatable, Hashable,
     case http
     /// Relay through an OpenClaw relay gateway.
     case relay
+    /// Legacy SDK-only `conversations.history` polling of `defaultChannelID` (pre-2026.3.0 behavior).
+    ///
+    /// The adapter also falls back to polling when `mode` is ``socket`` but no app token is set.
+    case poll
 }
 
 /// Slack relay settings (upstream `channels.slack.relay`).

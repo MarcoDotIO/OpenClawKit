@@ -129,7 +129,7 @@ struct SlackChannelAdapterTests {
     }
 
     @Test
-    func pollDeliversMentionAndUsesThreadTSAsPeerID() async throws {
+    func pollDeliversMentionWithChannelPeerAndThreadID() async throws {
         let transport = MockSlackTransport()
         await transport.enqueue(
             path: "/api/auth.test",
@@ -185,14 +185,17 @@ struct SlackChannelAdapterTests {
             await collector.append(inbound)
         }
         try await adapter.start()
-        try await Task.sleep(nanoseconds: 700_000_000)
+        try await waitUntil("slack mention delivered") { await !collector.snapshot().isEmpty }
         await adapter.stop()
 
         let inbound = await collector.snapshot()
         #expect(inbound.count == 1)
         #expect(inbound.first?.channel == .slack)
         #expect(inbound.first?.senderID == "U123")
-        #expect(inbound.first?.peerID == "1000.000100")
+        // 2026.3.0: the peer is the channel; the thread moved to threadID (replies post into it).
+        #expect(inbound.first?.peerID == "C123")
+        #expect(inbound.first?.threadID == "1000.000100")
+        #expect(inbound.first?.chatType == .thread)
         #expect(inbound.first?.text == "can you summarize this thread?")
     }
 
@@ -252,7 +255,9 @@ struct SlackChannelAdapterTests {
             await collector.append(inbound)
         }
         try await adapter.start()
-        try await Task.sleep(nanoseconds: 700_000_000)
+        try await waitUntil("history polled twice") {
+            await transport.snapshot().filter { $0.path == "/api/conversations.history" }.count >= 2
+        }
         await adapter.stop()
 
         let inbound = await collector.snapshot()
@@ -315,7 +320,7 @@ struct SlackChannelAdapterTests {
             await collector.append(inbound)
         }
         try await adapter.start()
-        try await Task.sleep(nanoseconds: 700_000_000)
+        try await waitUntil("slack message delivered") { await !collector.snapshot().isEmpty }
         await adapter.stop()
 
         let inbound = await collector.snapshot()

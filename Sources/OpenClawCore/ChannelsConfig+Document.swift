@@ -232,6 +232,8 @@ enum ChannelDocumentExport {
     static func discord(_ section: DiscordChannelConfig) -> [String: AnyCodable] {
         var object = self.common(section, policy: section.effectivePolicy)
         object.removeValue(forKey: "requireMention")
+        // SDK-only inbound transport switch; upstream always uses the gateway.
+        object.removeValue(forKey: "transport")
         if let token = section.botTokenInput { self.put(&object, "token", token) }
         return object
     }
@@ -264,7 +266,8 @@ enum ChannelDocumentExport {
         if let token = section.appTokenInput { self.put(&object, "appToken", token) }
         if let secret = section.signingSecretInput { self.put(&object, "signingSecret", secret) }
         if let token = section.userTokenInput { self.put(&object, "userToken", token) }
-        object["mode"] = AnyCodable(section.mode.rawValue)
+        // `poll` is the SDK-only legacy conversations.history mode; upstream has no equivalent.
+        if section.mode != .poll { object["mode"] = AnyCodable(section.mode.rawValue) }
         if let relay = section.relay { self.put(&object, "relay", relay) }
         if section.mode == .http { object["webhookPath"] = AnyCodable(section.webhookPath) }
         if let reaction = section.typingReaction { object["typingReaction"] = AnyCodable(reaction) }

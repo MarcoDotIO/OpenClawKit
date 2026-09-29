@@ -66,7 +66,7 @@ struct DiscordChannelAdapterTests {
             }
 
             if record.path.contains("/messages"), record.method == "POST" {
-                return HTTPResponseData(statusCode: self.postStatusCode, headers: [:], body: Data("{}".utf8))
+                return HTTPResponseData(statusCode: self.postStatusCode, headers: [:], body: Data("{\"id\":\"900\"}".utf8))
             }
 
             if record.path.contains("/reactions/"), record.method == "PUT" {
@@ -110,6 +110,14 @@ struct DiscordChannelAdapterTests {
         }
     }
 
+    /// These tests exercise the legacy REST polling transport; gateway ingestion is covered by
+    /// DiscordGatewayAdapterTests.
+    static func polling(_ config: DiscordChannelConfig) -> DiscordChannelConfig {
+        var copy = config
+        copy.transport = .restPolling
+        return copy
+    }
+
     @Test
     func pollsMessagesAndDeliversInboundUserText() async throws {
         let payload = Data("""
@@ -121,14 +129,14 @@ struct DiscordChannelAdapterTests {
         let transport = MockDiscordTransport(messagesQueue: [Data("[]".utf8), payload, Data("[]".utf8)])
         let collector = InboundCollector()
         let adapter = DiscordChannelAdapter(
-            config: DiscordChannelConfig(
+            config: Self.polling(DiscordChannelConfig(
                 enabled: true,
                 botToken: "secret-token",
                 defaultChannelID: "channel-1",
                 pollIntervalMs: 250,
                 presenceEnabled: false,
                 mentionOnly: true
-            ),
+            )),
             transport: transport,
             baseURL: URL(string: "https://discord.example/api/v10")!
         )
@@ -153,14 +161,14 @@ struct DiscordChannelAdapterTests {
     func sendPostsOutboundMessageToDiscordChannel() async throws {
         let transport = MockDiscordTransport(messagesQueue: [Data("[]".utf8)])
         let adapter = DiscordChannelAdapter(
-            config: DiscordChannelConfig(
+            config: Self.polling(DiscordChannelConfig(
                 enabled: true,
                 botToken: "secret-token",
                 defaultChannelID: "channel-1",
                 pollIntervalMs: 250,
                 presenceEnabled: false,
                 mentionOnly: true
-            ),
+            )),
             transport: transport,
             baseURL: URL(string: "https://discord.example/api/v10")!
         )
@@ -180,14 +188,14 @@ struct DiscordChannelAdapterTests {
     func startFailsWithAuthenticationErrorWhenTokenRejected() async throws {
         let transport = MockDiscordTransport(meStatusCode: 401)
         let adapter = DiscordChannelAdapter(
-            config: DiscordChannelConfig(
+            config: Self.polling(DiscordChannelConfig(
                 enabled: true,
                 botToken: "bad-token",
                 defaultChannelID: "channel-1",
                 pollIntervalMs: 250,
                 presenceEnabled: false,
                 mentionOnly: true
-            ),
+            )),
             transport: transport,
             baseURL: URL(string: "https://discord.example/api/v10")!
         )
@@ -205,14 +213,14 @@ struct DiscordChannelAdapterTests {
         let transport = MockDiscordTransport(messagesQueue: [Data("[]".utf8)])
         let presence = MockPresenceClient()
         let adapter = DiscordChannelAdapter(
-            config: DiscordChannelConfig(
+            config: Self.polling(DiscordChannelConfig(
                 enabled: true,
                 botToken: "secret-token",
                 defaultChannelID: "channel-1",
                 pollIntervalMs: 250,
                 presenceEnabled: true,
                 mentionOnly: true
-            ),
+            )),
             transport: transport,
             baseURL: URL(string: "https://discord.example/api/v10")!,
             presenceFactory: { _ in presence }
@@ -233,14 +241,14 @@ struct DiscordChannelAdapterTests {
         await presence.setFailOnStart(true)
 
         let adapter = DiscordChannelAdapter(
-            config: DiscordChannelConfig(
+            config: Self.polling(DiscordChannelConfig(
                 enabled: true,
                 botToken: "secret-token",
                 defaultChannelID: "channel-1",
                 pollIntervalMs: 250,
                 presenceEnabled: true,
                 mentionOnly: true
-            ),
+            )),
             transport: transport,
             baseURL: URL(string: "https://discord.example/api/v10")!,
             presenceFactory: { _ in presence }
@@ -271,14 +279,14 @@ struct DiscordChannelAdapterTests {
         let transport = MockDiscordTransport(messagesQueue: [firstPoll, secondPoll, Data("[]".utf8)])
         let collector = InboundCollector()
         let adapter = DiscordChannelAdapter(
-            config: DiscordChannelConfig(
+            config: Self.polling(DiscordChannelConfig(
                 enabled: true,
                 botToken: "secret-token",
                 defaultChannelID: "channel-1",
                 pollIntervalMs: 250,
                 presenceEnabled: false,
                 mentionOnly: true
-            ),
+            )),
             transport: transport,
             baseURL: URL(string: "https://discord.example/api/v10")!
         )
@@ -287,7 +295,10 @@ struct DiscordChannelAdapterTests {
         }
 
         try await adapter.start()
-        try await Task.sleep(nanoseconds: 650_000_000)
+        try await waitUntil("new mention delivered") { await !collector.snapshot().isEmpty }
+        try await waitUntil("backlog drained") {
+            await transport.records().filter { $0.method == "GET" && $0.path.hasSuffix("/messages") }.count >= 3
+        }
         await adapter.stop()
 
         let received = await collector.snapshot()
@@ -306,14 +317,14 @@ struct DiscordChannelAdapterTests {
         let transport = MockDiscordTransport(messagesQueue: [Data("[]".utf8), secondPoll, Data("[]".utf8)])
         let collector = InboundCollector()
         let adapter = DiscordChannelAdapter(
-            config: DiscordChannelConfig(
+            config: Self.polling(DiscordChannelConfig(
                 enabled: true,
                 botToken: "secret-token",
                 defaultChannelID: "channel-1",
                 pollIntervalMs: 250,
                 presenceEnabled: false,
                 mentionOnly: true
-            ),
+            )),
             transport: transport,
             baseURL: URL(string: "https://discord.example/api/v10")!
         )
@@ -322,7 +333,7 @@ struct DiscordChannelAdapterTests {
         }
 
         try await adapter.start()
-        try await Task.sleep(nanoseconds: 650_000_000)
+        try await waitUntil("mention delivered") { await !collector.snapshot().isEmpty }
         await adapter.stop()
 
         let received = await collector.snapshot()
@@ -339,23 +350,26 @@ struct DiscordChannelAdapterTests {
         """.utf8)
         let transport = MockDiscordTransport(messagesQueue: [Data("[]".utf8), payload, Data("[]".utf8)])
         let adapter = DiscordChannelAdapter(
-            config: DiscordChannelConfig(
+            config: Self.polling(DiscordChannelConfig(
                 enabled: true,
                 botToken: "secret-token",
                 defaultChannelID: "channel-1",
                 pollIntervalMs: 250,
                 presenceEnabled: false,
                 mentionOnly: true
-            ),
+            )),
             transport: transport,
             baseURL: URL(string: "https://discord.example/api/v10")!
         )
 
         try await adapter.start()
-        try await Task.sleep(nanoseconds: 650_000_000)
-        // 2026.3.0: the poll loop no longer reacts unconditionally; AutoReplyEngine sends the
-        // ack reaction through ReactingChannelAdapter according to ackReactionScope.
+        try await waitUntil("mention polled") {
+            await transport.records().filter { $0.method == "GET" && $0.path.hasSuffix("/messages") }.count >= 2
+        }
+        // 2026.3.0: the poll loop no longer reacts or types unconditionally; AutoReplyEngine sends
+        // the ack reaction (ackReactionScope) and typing keepalives through the adapter.
         try await adapter.addReaction(peerID: "channel-1", messageID: "31", emoji: "👀")
+        try await adapter.sendTypingIndicator(accountID: nil, peerID: "channel-1")
         await adapter.stop()
 
         let records = await transport.records()

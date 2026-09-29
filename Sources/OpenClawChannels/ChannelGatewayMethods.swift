@@ -150,6 +150,9 @@ public struct ChannelGatewayHandlers: Sendable {
 
             let isRegistered = registered.contains(entry.id)
             let configured = config.isChannelEnabled(id)
+            let adapterStatus = (await self.context.registry.adapter(for: entry.id) as? any ChannelConfigurationReporting)?
+                .configurationStatus
+            let credentialsConfigured = adapterStatus?.isConfigured ?? (configured || isRegistered)
             let policy = config.messagingPolicy(for: id)
             let health = await self.context.registry.healthSnapshot(for: entry.id)
             var runtime = await self.context.registry.runtimeState(for: entry.id)
@@ -160,7 +163,7 @@ public struct ChannelGatewayHandlers: Sendable {
             var snapshot = ChannelAccountStatusSnapshot(
                 accountID: "default",
                 enabled: configured,
-                configured: configured || isRegistered,
+                configured: credentialsConfigured,
                 running: runtime.running,
                 connected: runtime.running && health.status != .offline,
                 lastError: health.lastError ?? runtime.lastError,
@@ -195,12 +198,21 @@ public struct ChannelGatewayHandlers: Sendable {
             accounts[id] = channelAccounts
             defaultAccounts[id] = Self.defaultAccountID(for: entry.id, config: config)
             summaries[id] = ChannelStatusSummary(
-                configured: configured || isRegistered,
+                configured: credentialsConfigured,
                 running: runtime.running,
                 connected: snapshot.connected ?? false,
                 lastError: snapshot.lastError
             )
             issues.append(contentsOf: Self.statusIssues(entry: entry, registered: isRegistered, configured: configured, policy: policy, health: health))
+            if let reason = adapterStatus?.reason {
+                issues.append(ChannelStatusIssue(channel: id, kind: .config, message: reason))
+            }
+            if let reporter = await self.context.registry.adapter(for: entry.id) as? any ChannelTransportHealthReporting {
+                let transport = await reporter.transportHealth()
+                if transport.state == .degraded || transport.state == .blocked, let message = transport.lastError {
+                    issues.append(ChannelStatusIssue(channel: id, kind: .runtime, message: message))
+                }
+            }
         }
 
         return ChannelsStatusReport(

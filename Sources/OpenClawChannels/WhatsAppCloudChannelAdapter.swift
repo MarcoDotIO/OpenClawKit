@@ -125,7 +125,7 @@ private struct WhatsAppWebhookPayload: Decodable {
 }
 
 /// WhatsApp Cloud API channel adapter using Graph API transport.
-public actor WhatsAppCloudChannelAdapter: InboundChannelAdapter {
+public actor WhatsAppCloudChannelAdapter: InboundChannelAdapter, ChannelConfigurationReporting {
     /// Adapter channel identifier.
     public let id: ChannelID = .whatsapp
 
@@ -162,6 +162,15 @@ public actor WhatsAppCloudChannelAdapter: InboundChannelAdapter {
     /// - Parameter handler: Optional inbound callback.
     public func setInboundHandler(_ handler: InboundMessageHandler?) async {
         self.inboundHandler = handler
+    }
+
+    /// Configured when an access token and a phone number id are present.
+    nonisolated public var configurationStatus: ChannelConfigurationStatus {
+        let token = self.config.accessToken?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let phone = self.config.phoneNumberID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return token.isEmpty || phone.isEmpty
+            ? .unconfigured(reason: "WhatsApp Cloud requires accessToken and phoneNumberId.")
+            : .configured
     }
 
     /// Starts adapter lifecycle.

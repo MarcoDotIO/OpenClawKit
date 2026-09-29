@@ -174,6 +174,46 @@ public extension ChannelsConfig {
         copy.bluebubbles.passwordInput = try await resolved(copy.bluebubbles.passwordInput, path: "channels.bluebubbles.password")
         copy.msteams.botAppPasswordInput = try await resolved(copy.msteams.botAppPasswordInput, path: "channels.msteams.appPassword")
         copy.webchat.sharedSecretInput = try await resolved(copy.webchat.sharedSecretInput, path: "channels.webchat.sharedSecret")
+        // Native adapters for plugin-shaped sections (stored in extensionChannels).
+        if copy.rawSection(named: "sms") != nil {
+            var sms = copy.sms
+            sms.authTokenInput = try await resolved(sms.authTokenInput, path: "channels.sms.authToken")
+            for (id, account) in sms.accounts {
+                if let raw = account.values["authToken"], let input = ChannelConfigJSON.secretInput(from: raw), case .ref = input,
+                   let value = try await resolved(input, path: "channels.sms.accounts.\(id).authToken")?.stringValue
+                {
+                    var values = account.values
+                    values["authToken"] = AnyCodable(value)
+                    sms.accounts[id] = ChannelAccountOverride(values: values)
+                }
+            }
+            copy.sms = sms
+        }
+        if copy.rawSection(named: "a2a") != nil {
+            var a2a = copy.a2a
+            for (name, peer) in a2a.peers {
+                var resolvedPeer = peer
+                resolvedPeer.tokenInput = try await resolved(peer.tokenInput, path: "channels.a2a.peers.\(name).token")
+                resolvedPeer.outboundTokenInput = try await resolved(
+                    peer.outboundTokenInput,
+                    path: "channels.a2a.peers.\(name).outboundToken"
+                )
+                a2a.peers[name] = resolvedPeer
+            }
+            copy.a2a = a2a
+        }
+        if copy.rawSection(named: "line") != nil {
+            var line = copy.line
+            line.channelAccessTokenInput = try await resolved(line.channelAccessTokenInput, path: "channels.line.channelAccessToken")
+            line.channelSecretInput = try await resolved(line.channelSecretInput, path: "channels.line.channelSecret")
+            if line.channelAccessTokenInput == nil, let tokenFile = line.tokenFile {
+                line.channelAccessTokenInput = .string(try ChannelSecretResolution.readTokenFile(tokenFile))
+            }
+            if line.channelSecretInput == nil, let secretFile = line.secretFile {
+                line.channelSecretInput = .string(try ChannelSecretResolution.readTokenFile(secretFile))
+            }
+            copy.line = line
+        }
         return copy
     }
 }

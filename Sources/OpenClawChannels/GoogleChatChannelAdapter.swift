@@ -56,11 +56,22 @@ private struct GoogleChatWebhookEvent: Decodable {
         let name: String?
         let type: String?
         let spaceType: String?
+        let displayName: String?
     }
 }
 
 /// Google Chat adapter backed by Google Chat API + inbound event webhook.
-public actor GoogleChatChannelAdapter: InboundChannelAdapter {
+///
+/// 2026.3.0 (upstream 2026.9.6): outbound text chunks at 32,000 UTF-8 bytes; `typingIndicator`
+/// `message` (default) posts a `_<bot> is typing..._` placeholder that the first reply chunk
+/// replaces via `PATCH ...?updateMask=text` (`reaction` needs user OAuth and falls back to
+/// `message`, like upstream); bot senders are dropped unless `allowBots` admits them, in which
+/// case they arrive with `isFromBot` so the bot-loop guard applies; `ADDED_TO_SPACE` emits a
+/// ``ChannelJoinEvent``; sends return message-name receipts. Reactions and message actions were
+/// removed upstream and are not advertised.
+public actor GoogleChatChannelAdapter: InboundChannelAdapter, ReceiptingChannelAdapter, JoinEventChannelAdapter,
+    ChannelConfigurationReporting
+{
     /// Adapter channel identifier.
     public let id: ChannelID = .googlechat
 
@@ -70,6 +81,8 @@ public actor GoogleChatChannelAdapter: InboundChannelAdapter {
 
     private var started = false
     private var inboundHandler: InboundMessageHandler?
+    private var joinHandler: ChannelJoinEventHandler?
+    private var typingPlaceholders: [String: String] = [:]
 
     /// Creates a Google Chat adapter.
     /// - Parameters:
@@ -92,12 +105,38 @@ public actor GoogleChatChannelAdapter: InboundChannelAdapter {
         self.inboundHandler = handler
     }
 
+    /// Registers or clears the join-event callback (`ADDED_TO_SPACE`).
+    /// - Parameter handler: Callback.
+    public func setJoinEventHandler(_ handler: ChannelJoinEventHandler?) async {
+        self.joinHandler = handler
+    }
+
+    /// Configured when a bearer token is present (service-account auth is resolved by the host).
+    nonisolated public var configurationStatus: ChannelConfigurationStatus {
+        let token = self.config.bearerToken?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return token.isEmpty ? .unconfigured(reason: "Google Chat requires a bearer token (mint one from the service account).") : .configured
+    }
+
+    /// Effective typing mode (`reaction` falls back to `message`; default `message`).
+    nonisolated var typingMode: GoogleChatTypingIndicator {
+        switch self.config.typingIndicator ?? .message {
+        case .none: .none
+        case .message, .reaction: .message
+        }
+    }
+
+    /// Whether the placeholder typing message is enabled.
+    nonisolated public var supportsTypingIndicator: Bool {
+        self.typingMode != .none
+    }
+
     /// Starts adapter lifecycle.
     public func start() async throws {
         guard self.config.enabled else {
             throw OpenClawCoreError.unavailable("Google Chat channel is disabled")
         }
         _ = try self.resolveBearerToken()
+        self.typingPlaceholders.removeAll()
         self.started = true
     }
 
@@ -106,29 +145,100 @@ public actor GoogleChatChannelAdapter: InboundChannelAdapter {
         self.started = false
     }
 
+    /// Posts the `_<bot> is typing..._` placeholder once per conversation.
+    /// - Parameters:
+    ///   - accountID: Unused.
+    ///   - peerID: Space or thread.
+    public func sendTypingIndicator(accountID _: String?, peerID: String) async throws {
+        guard self.started, self.typingMode == .message, self.typingPlaceholders[peerID] == nil else { return }
+        let target = try self.resolveTarget(peerID: peerID)
+        let botName = self.config.policy.name?.channelTrimmedNonEmpty ?? "OpenClaw"
+        let name = try await self.postMessage(text: "_\(botName) is typing..._", target: target)
+        if let name {
+            self.typingPlaceholders[peerID] = name
+        }
+    }
+
+    /// Deletes an unused typing placeholder.
+    /// - Parameters:
+    ///   - accountID: Unused.
+    ///   - peerID: Space or thread.
+    public func stopTypingIndicator(accountID _: String?, peerID: String) async throws {
+        guard let name = self.typingPlaceholders.removeValue(forKey: peerID) else { return }
+        var request = URLRequest(url: try self.messageURL(name: name))
+        request.httpMethod = "DELETE"
+        request.setValue("Bearer \(try self.resolveBearerToken())", forHTTPHeaderField: "Authorization")
+        _ = try? await self.transport.data(for: request)
+    }
+
     /// Sends outbound message to Google Chat spaces.messages endpoint.
     /// - Parameter message: Outbound payload.
     public func send(_ message: OutboundMessage) async throws {
+        _ = try await self.sendReturningReceipt(message)
+    }
+
+    /// Sends 32 KB byte chunks (the first replaces a pending typing placeholder) and returns message names.
+    /// - Parameter message: Outbound payload.
+    /// - Returns: Receipt.
+    public func sendReturningReceipt(_ message: OutboundMessage) async throws -> ChannelSendReceipt {
         guard self.started else {
             throw OpenClawCoreError.unavailable("Google Chat adapter is not started")
         }
-        let token = try self.resolveBearerToken()
         let target = try self.resolveTarget(from: message)
+        let text = try self.resolveOutboundText(from: message)
+        let chunks = ChannelTextChunker.chunk(text, for: .googlechat, policy: self.config.policy)
+        var parts: [ChannelSendReceipt.Part] = []
+        for (index, chunk) in chunks.enumerated() {
+            var name: String?
+            if index == 0, let placeholder = self.typingPlaceholders.removeValue(forKey: message.peerID.trimmingCharacters(in: .whitespaces)) {
+                name = try await self.updateMessage(name: placeholder, text: chunk)
+            } else {
+                name = try await self.postMessage(text: chunk, target: target)
+            }
+            parts.append(ChannelSendReceipt.Part(platformMessageID: name ?? "", index: index, threadID: target.threadName))
+        }
+        return ChannelSendReceipt(parts: parts.filter { !$0.platformMessageID.isEmpty }, threadID: target.threadName)
+    }
+
+    private func postMessage(text: String, target: (spaceID: String, threadName: String?)) async throws -> String? {
+        let token = try self.resolveBearerToken()
         let endpoint = try self.resolveMessagesEndpoint(spaceID: target.spaceID)
         let requestBody = GoogleChatSendRequest(
-            text: try self.resolveOutboundText(from: message),
+            text: text,
             thread: target.threadName.map { GoogleChatSendRequest.ThreadReference(name: $0) }
         )
-
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.httpBody = try JSONEncoder().encode(requestBody)
         let response = try await self.transport.data(for: request)
-        guard (200..<300).contains(response.statusCode) else {
-            throw OpenClawCoreError.unavailable("Google Chat send failed with status \(response.statusCode)")
+        try ChannelHTTP.check(response)
+        return ChannelHTTP.jsonObject(response.body)?["name"] as? String
+    }
+
+    private func updateMessage(name: String, text: String) async throws -> String? {
+        var components = URLComponents(url: try self.messageURL(name: name), resolvingAgainstBaseURL: false)
+        components?.queryItems = [URLQueryItem(name: "updateMask", value: "text")]
+        guard let url = components?.url else {
+            throw OpenClawCoreError.invalidConfiguration("Invalid Google Chat message name \(name)")
         }
+        var request = URLRequest(url: url)
+        request.httpMethod = "PATCH"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(try self.resolveBearerToken())", forHTTPHeaderField: "Authorization")
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["text": text])
+        let response = try await self.transport.data(for: request)
+        try ChannelHTTP.check(response)
+        return (ChannelHTTP.jsonObject(response.body)?["name"] as? String) ?? name
+    }
+
+    private func messageURL(name: String) throws -> URL {
+        let baseRaw = (self.explicitBaseURL?.absoluteString ?? self.config.baseURL).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard name.hasPrefix("spaces/"), !name.contains(".."), let baseURL = URL(string: baseRaw) else {
+            throw OpenClawCoreError.invalidConfiguration("Invalid Google Chat message name \(name)")
+        }
+        return baseURL.appendingPathComponent(name)
     }
 
     /// Handles inbound webhook event payload from Google Chat.
@@ -146,10 +256,18 @@ public actor GoogleChatChannelAdapter: InboundChannelAdapter {
                 return
             }
         }
+        if event.type?.uppercased() == "ADDED_TO_SPACE" {
+            let spaceName = event.space?.name ?? event.message?.space?.name
+            let spaceType = (event.space?.spaceType ?? event.space?.type)?.uppercased()
+            if let spaceName, spaceType != "DM", spaceType != "DIRECT_MESSAGE", let joinHandler {
+                await joinHandler(ChannelJoinEvent(channel: .googlechat, peerID: spaceName, roomName: event.space?.displayName, chatType: .group))
+            }
+        }
         guard let message = event.message else {
             return
         }
-        if message.sender?.type?.uppercased() == "BOT" {
+        let isBot = message.sender?.type?.uppercased() == "BOT"
+        if isBot, !(self.config.policy.allowBots?.admitsBots ?? false) {
             return
         }
         guard let text = message.text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else {
@@ -177,6 +295,7 @@ public actor GoogleChatChannelAdapter: InboundChannelAdapter {
             chatType: chatType,
             messageID: message.name,
             threadID: message.thread?.name,
+            isFromBot: isBot,
             legacyRoutingAccountID: message.sender?.name
         )
         if let inboundHandler {
@@ -211,7 +330,11 @@ public actor GoogleChatChannelAdapter: InboundChannelAdapter {
     }
 
     private func resolveTarget(from message: OutboundMessage) throws -> (spaceID: String, threadName: String?) {
-        let peerID = message.peerID.trimmingCharacters(in: .whitespacesAndNewlines)
+        try self.resolveTarget(peerID: message.peerID)
+    }
+
+    private func resolveTarget(peerID raw: String) throws -> (spaceID: String, threadName: String?) {
+        let peerID = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if peerID.hasPrefix("spaces/"), let range = peerID.range(of: "/threads/") {
             let spaceID = String(peerID[..<range.lowerBound])
             return (spaceID, peerID)

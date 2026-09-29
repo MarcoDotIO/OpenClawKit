@@ -43,6 +43,13 @@ struct MicrosoftTeamsChannelAdapterTests {
                     body: String(decoding: request.httpBody ?? Data(), as: UTF8.self)
                 )
             )
+            if request.url?.host == "login.microsoftonline.com" {
+                return HTTPResponseData(
+                    statusCode: 200,
+                    headers: [:],
+                    body: Data("{\"access_token\":\"bf-access-token\",\"expires_in\":3600}".utf8)
+                )
+            }
             return HTTPResponseData(statusCode: self.statusCode, headers: [:], body: Data("{\"id\":\"ok\"}".utf8))
         }
 
@@ -62,7 +69,7 @@ struct MicrosoftTeamsChannelAdapterTests {
                 defaultConversationID: "conversation-id"
             ),
             transport: transport,
-            serviceURL: URL(string: "https://teams.example")!
+            serviceURL: URL(string: "https://smba.trafficmanager.net/teams/")!
         )
         try await adapter.start()
         try await adapter.send(
@@ -70,11 +77,12 @@ struct MicrosoftTeamsChannelAdapterTests {
         )
         await adapter.stop()
 
-        let requests = await transport.snapshot()
+        let requests = await transport.snapshot().filter { $0.path.hasSuffix("/activities") }
         #expect(requests.count == 1)
         #expect(requests.first?.method == "POST")
-        #expect(requests.first?.path == "/v3/conversations/conversation-id/activities")
-        #expect(requests.first?.authorization == "Bearer bot-password")
+        #expect(requests.first?.path == "/teams/v3/conversations/conversation-id/activities")
+        // 2026.3.0: a Bot Connector token is acquired; the app secret is never sent as a bearer.
+        #expect(requests.first?.authorization == "Bearer bf-access-token")
         #expect(requests.first?.body.contains("\"text\":\"hello teams\"") == true)
         #expect(requests.first?.body.contains("\"id\":\"bot-app-id\"") == true)
     }
@@ -89,7 +97,7 @@ struct MicrosoftTeamsChannelAdapterTests {
                 defaultConversationID: "conversation-id"
             ),
             transport: MockTeamsTransport(),
-            serviceURL: URL(string: "https://teams.example")!
+            serviceURL: URL(string: "https://smba.trafficmanager.net/teams/")!
         )
 
         do {
@@ -112,7 +120,7 @@ struct MicrosoftTeamsChannelAdapterTests {
                 mentionOnly: true
             ),
             transport: MockTeamsTransport(),
-            serviceURL: URL(string: "https://teams.example")!
+            serviceURL: URL(string: "https://smba.trafficmanager.net/teams/")!
         )
         await adapter.setInboundHandler { inbound in
             await collector.append(inbound)
@@ -157,7 +165,7 @@ struct MicrosoftTeamsChannelAdapterTests {
                 mentionOnly: true
             ),
             transport: MockTeamsTransport(),
-            serviceURL: URL(string: "https://teams.example")!
+            serviceURL: URL(string: "https://smba.trafficmanager.net/teams/")!
         )
         await adapter.setInboundHandler { inbound in
             await collector.append(inbound)
@@ -191,7 +199,7 @@ struct MicrosoftTeamsChannelAdapterTests {
                 mentionOnly: false
             ),
             transport: MockTeamsTransport(),
-            serviceURL: URL(string: "https://teams.example")!
+            serviceURL: URL(string: "https://smba.trafficmanager.net/teams/")!
         )
         await adapter.setInboundHandler { inbound in
             await collector.append(inbound)

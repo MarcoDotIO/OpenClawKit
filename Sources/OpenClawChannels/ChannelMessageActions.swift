@@ -29,6 +29,19 @@ public enum ChannelMessageActionName: String, Codable, Sendable, Equatable, Case
         }
     }
 
+    /// Every upstream `actions.<key>` spelling that toggles the action (Telegram `editMessage`,
+    /// `deleteMessage`, `poll`; Slack/Discord `messages`; ...). Any explicit `false` disables it.
+    public var configToggleKeys: [String] {
+        switch self {
+        case .send: ["sendMessage"]
+        case .react: ["reactions"]
+        case .edit: ["edit", "editMessage", "messages"]
+        case .unsend: ["unsend", "deleteMessage", "messages"]
+        case .delete: ["deleteMessage", "unsend", "messages"]
+        case .poll: ["polls", "poll"]
+        }
+    }
+
     /// Per-channel `actions.<key>` toggle name.
     public var configToggleKey: String {
         switch self {
@@ -99,9 +112,20 @@ public protocol ChannelMessageActions: ChannelAdapter {
     ///   - allowMultiple: Whether multiple answers are allowed.
     /// - Returns: Receipt of the poll message, when available.
     func sendPoll(peerID: String, question: String, options: [String], allowMultiple: Bool) async throws -> ChannelSendReceipt?
+    /// Actions the adapter implements (declare it `nonisolated` on actors).
+    ///
+    /// Listed actions pass the catalog capability gate in ``ChannelRegistry/performAction(_:actionToggles:)``:
+    /// upstream exposes edit/delete as message-tool actions on channels whose capability flags do
+    /// not advertise them (Telegram, Slack, Discord). Default: empty.
+    var supportedMessageActions: Set<ChannelMessageActionName> { get }
 }
 
 public extension ChannelMessageActions {
+    /// Default: no actions are declared (the catalog capabilities gate every action).
+    var supportedMessageActions: Set<ChannelMessageActionName> {
+        []
+    }
+
     /// Default: unsupported.
     func react(peerID _: String, messageID _: String, emoji _: String, remove _: Bool) async throws {
         throw ChannelMessageActionError.unsupported(action: "react", channel: self.id)
@@ -142,13 +166,15 @@ public extension ChannelRegistry {
         guard let action = ChannelMessageActionName(rawValue: params.action) else {
             throw ChannelMessageActionError.unsupported(action: params.action, channel: channel)
         }
-        if let feature = action.requiredFeature, !channel.metadata.capabilities.supports(feature) {
+        let adapter = self.adapter(for: channel)
+        let declared = (adapter as? any ChannelMessageActions)?.supportedMessageActions ?? []
+        if let feature = action.requiredFeature, !channel.metadata.capabilities.supports(feature), !declared.contains(action) {
             throw ChannelMessageActionError.notCapable(action: action.rawValue, channel: channel)
         }
-        if actionToggles[action.configToggleKey] == false {
+        if action.configToggleKeys.contains(where: { actionToggles[$0] == false }) {
             throw ChannelMessageActionError.disabledByConfig(action: action.rawValue, channel: channel)
         }
-        guard let adapter = self.adapter(for: channel) else {
+        guard let adapter else {
             throw OpenClawCoreError.unavailable("No adapter registered for \(channel.rawValue)")
         }
         let values = params.params
@@ -234,22 +260,6 @@ private struct ActionResult: Encodable {
         case ok
         case action
         case messageID = "messageId"
-    }
-}
-
-extension DiscordChannelAdapter: ChannelMessageActions {
-    /// Adds or removes the bot's reaction (`PUT`/`DELETE /channels/{c}/messages/{m}/reactions/{emoji}/@me`).
-    /// - Parameters:
-    ///   - peerID: Channel id.
-    ///   - messageID: Message id.
-    ///   - emoji: Unicode emoji.
-    ///   - remove: Whether to remove the reaction.
-    public func react(peerID: String, messageID: String, emoji: String, remove: Bool) async throws {
-        if remove {
-            try await self.removeReaction(peerID: peerID, messageID: messageID, emoji: emoji)
-        } else {
-            try await self.addReaction(peerID: peerID, messageID: messageID, emoji: emoji)
-        }
     }
 }
 

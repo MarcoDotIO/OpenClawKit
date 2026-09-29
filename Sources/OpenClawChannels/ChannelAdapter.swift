@@ -313,6 +313,8 @@ public struct ChannelRuntimeState: Sendable, Equatable {
     public var lastError: String?
     /// Last probe result.
     public var lastProbe: ChannelProbeResult?
+    /// Why the adapter was not started (``ChannelConfigurationStatus/unconfigured(reason:)``).
+    public var unconfiguredReason: String?
 
     /// Creates runtime state.
     /// - Parameters:
@@ -323,6 +325,7 @@ public struct ChannelRuntimeState: Sendable, Equatable {
     ///   - lastOutboundAt: Last outbound time.
     ///   - lastError: Last error.
     ///   - lastProbe: Last probe result.
+    ///   - unconfiguredReason: Why the adapter was not started.
     public init(
         running: Bool = false,
         lastStartAt: Date? = nil,
@@ -330,7 +333,8 @@ public struct ChannelRuntimeState: Sendable, Equatable {
         lastInboundAt: Date? = nil,
         lastOutboundAt: Date? = nil,
         lastError: String? = nil,
-        lastProbe: ChannelProbeResult? = nil
+        lastProbe: ChannelProbeResult? = nil,
+        unconfiguredReason: String? = nil
     ) {
         self.running = running
         self.lastStartAt = lastStartAt
@@ -339,6 +343,7 @@ public struct ChannelRuntimeState: Sendable, Equatable {
         self.lastOutboundAt = lastOutboundAt
         self.lastError = lastError
         self.lastProbe = lastProbe
+        self.unconfiguredReason = unconfiguredReason
     }
 }
 
@@ -426,6 +431,10 @@ public actor ChannelRegistry {
     // MARK: Lifecycle
 
     /// Starts one registered adapter and records its runtime state.
+    ///
+    /// Adapters conforming to ``ChannelConfigurationReporting`` that report
+    /// ``ChannelConfigurationStatus/unconfigured(reason:)`` are not started and do not throw: the
+    /// reason is recorded in ``ChannelRuntimeState/unconfiguredReason`` (upstream `unconfigured`).
     /// - Parameter id: Channel identifier.
     /// - Throws: `OpenClawCoreError.unavailable` when no adapter is registered, or the start error.
     public func start(id: ChannelID) async throws {
@@ -434,6 +443,17 @@ public actor ChannelRegistry {
         }
         var state = self.runtimeStates[id] ?? ChannelRuntimeState()
         state.lastStartAt = Date()
+        if let reporting = adapter as? any ChannelConfigurationReporting,
+           case .unconfigured(let reason) = reporting.configurationStatus
+        {
+            state.running = false
+            state.unconfiguredReason = reason
+            state.lastError = reason
+            self.runtimeStates[id] = state
+            await self.emitDiagnostic(name: "channel.unconfigured", metadata: ["channel": id.rawValue, "reason": reason])
+            return
+        }
+        state.unconfiguredReason = nil
         do {
             try await adapter.start()
             state.running = true
