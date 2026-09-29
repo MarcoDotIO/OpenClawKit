@@ -113,15 +113,19 @@ public struct GatewayConnectionContext: Sendable, Equatable {
     /// Returns whether this connection satisfies a method scope from ``GatewayMethodDescriptor/scope``.
     ///
     /// Mirrors upstream `operatorScopeSatisfied`: `operator.admin` implies every operator scope and
-    /// `operator.write` implies read, talk and session read/write. `node` requires the node role and
-    /// `dynamic` is resolved by the handler itself.
+    /// `operator.write` implies read, talk and session read/write. `node` requires the node role, an
+    /// empty scope requires nothing, and `dynamic` (a scope that depends on the request params) is
+    /// satisfied only by an `operator.admin` operator; ``GatewayServer`` resolves the per-request
+    /// scopes of dynamic catalog methods with ``GatewayMethodScopePolicy``.
     /// - Parameter scope: Required scope.
     /// - Returns: `true` when the connection may call a method with that scope.
     public func allows(scope: String) -> Bool {
         let required = scope.trimmingCharacters(in: .whitespacesAndNewlines)
         switch required {
-        case "", "dynamic":
+        case "":
             return true
+        case GatewayMethodScopePolicy.dynamicScope:
+            return self.allows(scope: Self.operatorAdminScope)
         case "node":
             return self.role == "node"
         default:
@@ -424,7 +428,7 @@ public protocol GatewayMethodRegistrar: Sendable {
     /// - Parameters:
     ///   - method: Wire method name.
     ///   - descriptor: Metadata for the method; `nil` uses the upstream catalog descriptor when the
-    ///     method is a core method, otherwise the method is treated as unscoped.
+    ///     method is a core method, otherwise the method requires `operator.admin`.
     ///   - handler: Handler invoked for each request.
     func register(method: String, descriptor: GatewayMethodDescriptor?, handler: @escaping GatewayMethodHandler) async
 }

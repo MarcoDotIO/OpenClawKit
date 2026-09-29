@@ -431,9 +431,9 @@ public actor TaskLedger {
             return left == right ? lhs.id < rhs.id : left > right
         }
         let pageSize = min(500, max(1, limit ?? 100))
-        let start = cursor.flatMap(Int.init) ?? 0
-        guard start < sorted.count else { return ([], nil) }
-        let end = min(sorted.count, start + pageSize)
+        guard let (start, end) = GatewayOffsetCursor.page(cursor: cursor, count: sorted.count, pageSize: pageSize) else {
+            return ([], nil)
+        }
         return (Array(sorted[start..<end]), end < sorted.count ? String(end) : nil)
     }
 
@@ -513,12 +513,16 @@ public actor TaskLedger {
                 let values = raw.arrayValue?.compactMap(\.stringValue) ?? raw.stringValue.map { [$0] } ?? []
                 statuses = Set(values.compactMap(AgentTaskStatus.init(rawValue:)))
             }
+            let cursor = request.params["cursor"]?.stringValue
+            guard GatewayOffsetCursor.parse(cursor) != nil else {
+                throw GatewayMethodError.invalidRequest("invalid or expired tasks.list cursor; restart pagination without a cursor")
+            }
             let page = await self.list(
                 statuses: statuses,
                 agentID: request.params["agentId"]?.stringValue,
                 sessionKey: request.params["sessionKey"]?.stringValue,
                 limit: request.params["limit"]?.intValue,
-                cursor: request.params["cursor"]?.stringValue,
+                cursor: cursor,
                 sortBy: request.params["sortBy"]?.stringValue
             )
             var payload: [String: AnyCodable] = ["tasks": AnyCodable(page.tasks.map { AnyCodable($0.payload()) })]
@@ -534,6 +538,10 @@ public actor TaskLedger {
         }
         await server.register(method: "tasks.history", descriptor: nil) { [weak self, weak runtime] request in
             guard let self, let runtime else { throw GatewayMethodError.unavailable("task ledger released") }
+            let cursor = request.params["cursor"]?.stringValue
+            guard GatewayOffsetCursor.parse(cursor) != nil else {
+                throw GatewayMethodError.invalidRequest("invalid or expired tasks.history cursor; restart pagination without a cursor")
+            }
             guard let id = request.stringParam("taskId"), let task = await self.get(id: id) else {
                 throw GatewayMethodError.invalidRequest("unknown task id")
             }
@@ -542,10 +550,10 @@ public actor TaskLedger {
             }
             let messages = (try? await runtime.history(sessionKey: sessionKey)) ?? []
             let limit = min(200, max(1, request.params["limit"]?.intValue ?? 200))
-            let start = request.params["cursor"]?.stringValue.flatMap(Int.init) ?? 0
-            let page = start < messages.count ? Array(messages[start..<min(messages.count, start + limit)]) : []
+            let bounds = GatewayOffsetCursor.page(cursor: cursor, count: messages.count, pageSize: limit)
+            let page = bounds.map { Array(messages[$0.start..<$0.end]) } ?? []
             var payload: [String: AnyCodable] = ["messages": (try? AnyCodable(encoding: page)) ?? AnyCodable([AnyCodable]())]
-            if start + limit < messages.count { payload["nextCursor"] = AnyCodable(String(start + limit)) }
+            if let bounds, bounds.end < messages.count { payload["nextCursor"] = AnyCodable(String(bounds.end)) }
             return AnyCodable(payload)
         }
         await server.register(method: "tasks.cancel", descriptor: nil) { [weak self] request in
@@ -559,5 +567,35 @@ public actor TaskLedger {
             if let reason = request.stringParam("reason") { payload["reason"] = AnyCodable(reason) }
             return AnyCodable(payload)
         }
+    }
+}
+
+/// Offset cursors of the paginated gateway lists (`tasks.list`, `tasks.history`, `approval.history`).
+///
+/// Upstream rejects cursors that are not non-negative safe integers ("invalid or expired … cursor");
+/// the library list APIs clamp instead, and page bounds use saturating arithmetic so a huge cursor
+/// cannot overflow.
+enum GatewayOffsetCursor {
+    /// Parses an offset cursor.
+    /// - Parameter raw: Cursor string (`nil` starts at the first item).
+    /// - Returns: The offset, or `nil` when the cursor is not a non-negative integer.
+    static func parse(_ raw: String?) -> Int? {
+        guard let raw else { return 0 }
+        guard let value = Int(raw.trimmingCharacters(in: .whitespacesAndNewlines)), value >= 0 else { return nil }
+        return value
+    }
+
+    /// Bounds of one page, or `nil` when the cursor is past the end.
+    /// - Parameters:
+    ///   - cursor: Offset cursor (malformed or negative cursors start at `0`).
+    ///   - count: Item count.
+    ///   - pageSize: Page size (at least 1).
+    /// - Returns: `start..<end` bounds within `0..<count`.
+    static func page(cursor: String?, count: Int, pageSize: Int) -> (start: Int, end: Int)? {
+        let start = Self.parse(cursor) ?? 0
+        guard start < count else { return nil }
+        let size = max(1, pageSize)
+        let end = count - start <= size ? count : start + size
+        return (start, end)
     }
 }

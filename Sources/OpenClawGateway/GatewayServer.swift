@@ -87,6 +87,9 @@ public struct GatewayServerHandlers: Sendable {
 /// require the node role and all others the operator role (`INVALID_REQUEST "unauthorized role: …"`),
 /// and the descriptor scope is checked against the connection's grants
 /// (``GatewayConnectionContext/allows(scope:)``), answering `FORBIDDEN` with `MISSING_SCOPE` details.
+/// `dynamic` methods (`agent`, `sessions.create/patch/delete`, `node.invoke`, …) derive their scopes
+/// from the request params (``GatewayMethodScopePolicy``) and fail closed; a method registered
+/// without any descriptor requires `operator.admin`.
 /// While startup is pending (``beginStartup(gating:)``), startup-gated methods then answer the
 /// retryable startup `UNAVAILABLE` error (`details.reason == "startup-sidecars"`).
 ///
@@ -209,13 +212,17 @@ public actor GatewayServer: GatewayMethodRegistrar {
         let implementation: MethodImplementation
     }
 
-    /// Metadata of an agent run started through the built-in `agent`/`sessions.send` handlers.
+    /// Metadata of an active agent run started through the built-in `agent`/`sessions.send` handlers.
     struct TrackedRun: Sendable {
         let sessionKey: String
         let agentID: String
         let startedAt: Int64
         /// Start order (breaks `startedAt` ties within one millisecond).
         let order: Int
+        /// Identity of this tracking (a later run reusing the run id gets a new token).
+        let token: UUID
+        /// Whether `sessions.abort` already cancelled the run (it stays tracked until it finishes).
+        var aborted = false
     }
 
     /// One event subscription.
@@ -240,9 +247,24 @@ public actor GatewayServer: GatewayMethodRegistrar {
     /// Node pairing records backing `node.pair.*`, `node.list` and `node.rename`.
     nonisolated public let nodePairing: GatewayNodePairingStore
     let agentIdempotency = GatewayIdempotencyCache()
+    /// Tasks of the active built-in runs (finished runs move to ``completedRuns``).
     var agentRuns: [String: Task<GatewayAgentWaitResult, Error>] = [:]
     var trackedRuns: [String: TrackedRun] = [:]
     var runOrder = 0
+    /// One `agent.wait` caller suspended on an active built-in run.
+    struct RunWaiter {
+        let continuation: CheckedContinuation<GatewayAgentWaitResult, Never>
+        /// Wait deadline timer, cancelled when the run finishes first.
+        let timeout: Task<Void, Never>?
+    }
+
+    /// `agent.wait` callers suspended on an active built-in run.
+    var runWaiters: [String: [UUID: RunWaiter]] = [:]
+    /// Terminal results of recently finished built-in runs (newest ``completedRunLimit``).
+    var completedRuns: [String: GatewayAgentWaitResult] = [:]
+    var completedRunOrder: [String] = []
+    /// Finished built-in runs whose results stay available to late `agent.wait` calls.
+    static let completedRunLimit = 256
     private var methods: [String: MethodEntry]
     private var resolvers: [GatewayMethodResolver] = []
     var eventSubscribers: [UUID: EventSubscriber] = [:]
@@ -299,7 +321,7 @@ public actor GatewayServer: GatewayMethodRegistrar {
     /// - Parameters:
     ///   - method: Wire method name.
     ///   - descriptor: Method metadata; `nil` uses the upstream catalog (or SDK extension) descriptor
-    ///     when one exists, otherwise the method is unscoped.
+    ///     when one exists, otherwise the method requires `operator.admin` (upstream default-deny).
     ///   - handler: Handler invoked for each request.
     public func register(method: String, descriptor: GatewayMethodDescriptor?, handler: @escaping GatewayMethodHandler) {
         let name = method.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -335,6 +357,10 @@ public actor GatewayServer: GatewayMethodRegistrar {
     }
 
     /// Adds a resolver consulted for methods without a registered handler, in insertion order.
+    ///
+    /// A resolved method that has a catalog or SDK extension descriptor is authorized like a
+    /// registered one; for any other method the resolved handler must authorize the request itself
+    /// (as `PluginRegistry.gatewayHandler(for:)` does with the plugin's descriptor).
     /// - Parameter resolver: Resolver returning a handler, or `nil` to pass.
     public func addMethodResolver(_ resolver: @escaping GatewayMethodResolver) {
         self.resolvers.append(resolver)
@@ -397,7 +423,12 @@ public actor GatewayServer: GatewayMethodRegistrar {
         )
         self.touchConnection(connection.connectionID)
         do {
-            if let descriptor, let denial = Self.authorizationError(method: request.method, descriptor: descriptor, connection: connection) {
+            // Registered methods are always authorized (a registration without any descriptor
+            // requires operator.admin); resolver-served methods without a descriptor authorize in
+            // the resolver's handler.
+            if descriptor != nil || entry != nil,
+               let denial = Self.authorizationError(method: request.method, descriptor: descriptor, params: request.params, connection: connection)
+            {
                 throw denial
             }
             // Startup gating follows authorization (upstream server-methods.ts): stores may not be
@@ -437,27 +468,18 @@ public actor GatewayServer: GatewayMethodRegistrar {
         }
     }
 
-    /// Mirrors upstream `authorizeGatewayMethod`: `health` is always reachable, node-scoped methods
-    /// require the node role and every other method the operator role (`INVALID_REQUEST
-    /// "unauthorized role: …"`), and operator scopes are checked against the connection grants
-    /// (`FORBIDDEN` with `MISSING_SCOPE` details). `dynamic` methods resolve their scope in the handler.
+    /// Mirrors upstream `authorizeGatewayMethod` (see ``GatewayMethodScopePolicy/authorizationError(method:descriptor:params:connection:)``):
+    /// `health` is always reachable, node-scoped methods require the node role and every other method
+    /// the operator role (`INVALID_REQUEST "unauthorized role: …"`), and operator scopes, including the
+    /// per-request scopes of `dynamic` methods, are checked against the connection grants (`FORBIDDEN`
+    /// with `MISSING_SCOPE` details). A registered method without a descriptor requires `operator.admin`.
     static func authorizationError(
         method: String,
-        descriptor: GatewayMethodDescriptor,
+        descriptor: GatewayMethodDescriptor?,
+        params: AnyCodable?,
         connection: GatewayConnectionContext
     ) -> GatewayMethodError? {
-        if method == "health" {
-            return nil
-        }
-        let role = connection.role.trimmingCharacters(in: .whitespacesAndNewlines)
-        let requiresNodeRole = descriptor.scope == "node"
-        guard role == (requiresNodeRole ? "node" : "operator") else {
-            return .invalidRequest("unauthorized role: \(role)")
-        }
-        if requiresNodeRole || connection.allows(scope: descriptor.scope) {
-            return nil
-        }
-        return .missingScope(descriptor.scope)
+        GatewayMethodScopePolicy.authorizationError(method: method, descriptor: descriptor, params: params, connection: connection)
     }
 
     /// Error for a method without any in-process handler.

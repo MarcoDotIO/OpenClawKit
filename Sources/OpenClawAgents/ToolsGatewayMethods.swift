@@ -83,18 +83,103 @@ public extension EmbeddedAgentRuntime {
     ///   grouped `core`/`plugin`/`channel`/`mcp`; tools only the session denies carry `deniedBySession`.
     /// - `tools.invoke {name, args?, sessionKey?, agentId?, confirm?, idempotencyKey?}` →
     ///   `{ok, toolName, output?, source?, requiresApproval?, approvalId?, error?}`. When a
-    ///   `beforeToolCall` hook requires approval and `confirm` is not `true`, the answer carries the
-    ///   pending `approvalId` from ``ApprovalBroker/begin(presentation:sessionKey:agentID:runID:toolCallID:grantKey:timeoutMs:)``;
-    ///   resolve it and call again with `confirm: true` and `approvalId`. Error codes follow upstream:
+    ///   `beforeToolCall` hook requires approval, `confirm: true` asks for an approval and waits for
+    ///   the decision (upstream `approvalMode: "request"`). Without `confirm`, the answer carries the
+    ///   pending `approvalId` from ``ApprovalBroker/begin(presentation:sessionKey:agentID:runID:toolCallID:grantKey:timeoutMs:)``
+    ///   (an SDK extension); resolve it and call again with the same `name`, `args`, `sessionKey` and
+    ///   `agentId` plus `confirm: true` and `approvalId`. That id authorizes exactly one invocation of
+    ///   the call it was raised for: a different tool, arguments, session or agent, an id not issued
+    ///   by `tools.invoke`, or a second use answers `forbidden`. Error codes follow upstream:
     ///   `not_found`, `validation_error`, `forbidden`, `requires_approval`, `internal_error`.
     /// - Parameters:
     ///   - registrar: Gateway server or registrar.
     ///   - options: Hooks, notices and approval settings.
     func registerToolGatewayMethods(on registrar: some GatewayMethodRegistrar, options: AgentToolGatewayOptions = AgentToolGatewayOptions()) async {
-        let handlers = AgentToolGatewayHandlers(runtime: self, options: options, idempotency: GatewayIdempotencyCache())
+        let handlers = AgentToolGatewayHandlers(
+            runtime: self,
+            options: options,
+            idempotency: GatewayIdempotencyCache(),
+            approvalBindings: ToolInvokeApprovalBindings()
+        )
         await registrar.register(method: "tools.catalog") { try await handlers.catalog($0) }
         await registrar.register(method: "tools.effective") { try await handlers.effective($0) }
         await registrar.register(method: "tools.invoke") { try await handlers.invoke($0) }
+    }
+}
+
+/// Approvals minted by `tools.invoke`, each bound to the exact invocation it was raised for and
+/// usable once (the SDK's two-step `approvalId` round trip; upstream only waits inline).
+actor ToolInvokeApprovalBindings {
+    /// The invocation an approval authorizes.
+    struct Binding: Sendable, Equatable {
+        let toolName: String
+        let grantKey: String
+        let sessionKey: String?
+        let agentID: String
+        /// Canonical (sorted-key) JSON of the arguments after `beforeToolCall` rewrites.
+        let arguments: String
+    }
+
+    /// Outcome of presenting an `approvalId`.
+    enum Claim: Sendable, Equatable {
+        case accepted(toolCallID: String)
+        case unknown
+        case mismatch
+        case consumed
+    }
+
+    private struct Entry {
+        let binding: Binding
+        let toolCallID: String
+    }
+
+    static let capacity = 512
+    private var entries: [String: Entry] = [:]
+    private var entryOrder: [String] = []
+    private var consumed: Set<String> = []
+    private var consumedOrder: [String] = []
+
+    /// Canonical JSON of tool arguments (sorted keys) used to compare invocations.
+    static func canonicalArguments(_ arguments: [String: AnyCodable]) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let data = (try? encoder.encode(arguments)) ?? Data()
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    func bind(_ approvalID: String, toolCallID: String, binding: Binding) {
+        if self.entries[approvalID] == nil {
+            self.entryOrder.append(approvalID)
+        }
+        self.entries[approvalID] = Entry(binding: binding, toolCallID: toolCallID)
+        while self.entryOrder.count > Self.capacity {
+            self.entries.removeValue(forKey: self.entryOrder.removeFirst())
+        }
+    }
+
+    /// Checks an id against the current invocation without using it up.
+    func check(_ approvalID: String, binding: Binding) -> Claim {
+        if self.consumed.contains(approvalID) {
+            return .consumed
+        }
+        guard let entry = self.entries[approvalID] else {
+            return .unknown
+        }
+        return entry.binding == binding ? .accepted(toolCallID: entry.toolCallID) : .mismatch
+    }
+
+    /// Uses an id up when it still matches; the first caller wins.
+    func consume(_ approvalID: String, binding: Binding) -> Claim {
+        let claim = self.check(approvalID, binding: binding)
+        guard case .accepted = claim else { return claim }
+        self.entries.removeValue(forKey: approvalID)
+        self.entryOrder.removeAll { $0 == approvalID }
+        self.consumed.insert(approvalID)
+        self.consumedOrder.append(approvalID)
+        while self.consumedOrder.count > Self.capacity {
+            self.consumed.remove(self.consumedOrder.removeFirst())
+        }
+        return claim
     }
 }
 
@@ -102,6 +187,7 @@ struct AgentToolGatewayHandlers: Sendable {
     let runtime: EmbeddedAgentRuntime
     let options: AgentToolGatewayOptions
     let idempotency: GatewayIdempotencyCache
+    let approvalBindings: ToolInvokeApprovalBindings
 
     static let profileLabels: [(ToolProfileID, String)] = [
         (.minimal, "Minimal"), (.coding, "Coding"), (.messaging, "Messaging"), (.full, "Full"),
@@ -377,7 +463,8 @@ struct AgentToolGatewayHandlers: Sendable {
                     toolName: toolName,
                     sessionKey: sessionKey,
                     agentID: agentID,
-                    toolCallID: toolCallID
+                    toolCallID: toolCallID,
+                    arguments: arguments
                 )
                 if let denial {
                     return denial
@@ -406,6 +493,10 @@ struct AgentToolGatewayHandlers: Sendable {
     }
 
     /// Approval gate of a direct invocation; returns the failure payload, or `nil` to proceed.
+    ///
+    /// A presented `approvalId` is honored only when `tools.invoke` minted it for this exact call
+    /// (tool, grant key, session, agent and arguments) and it was not used before; it is consumed on
+    /// success, so an `allow-once` decision authorizes one invocation.
     private func resolveApproval(
         _ approvalRequest: AgentToolApprovalRequest,
         request: GatewayMethodRequest,
@@ -413,23 +504,26 @@ struct AgentToolGatewayHandlers: Sendable {
         toolName: String,
         sessionKey: String?,
         agentID: String,
-        toolCallID: String
+        toolCallID: String,
+        arguments: [String: AnyCodable]
     ) async -> AnyCodable? {
         let broker = self.runtime.approvals
         let confirmed = request.params["confirm"]?.boolValue == true
-        if confirmed, let approvalID = request.stringParam("approvalId"), let prior = await broker.get(id: approvalID) {
-            if prior.isAllowed {
-                return nil
-            }
-            if prior.state != .pending {
-                return Self.failure(toolName, code: "forbidden", message: "Tool call was not approved (\(prior.state.rawValue))")
-            }
-        }
         let grantKey: String
         if case .mcp(let server, let tool) = descriptor.source {
             grantKey = ApprovalBroker.mcpGrantKey(server: server, tool: tool)
         } else {
             grantKey = ApprovalBroker.pluginGrantKey(pluginID: approvalRequest.pluginID, toolName: toolName)
+        }
+        let binding = ToolInvokeApprovalBindings.Binding(
+            toolName: toolName,
+            grantKey: grantKey,
+            sessionKey: sessionKey,
+            agentID: agentID,
+            arguments: ToolInvokeApprovalBindings.canonicalArguments(arguments)
+        )
+        if confirmed, let approvalID = request.stringParam("approvalId") {
+            return await self.redeemApproval(approvalID, binding: binding, toolName: toolName)
         }
         let started = await broker.begin(
             presentation: .plugin(
@@ -443,14 +537,16 @@ struct AgentToolGatewayHandlers: Sendable {
             ),
             sessionKey: sessionKey,
             agentID: agentID,
+            runID: Self.approvalRunID,
             toolCallID: toolCallID,
             grantKey: grantKey,
-            timeoutMs: self.options.approvalTimeoutMs ?? approvalRequest.timeoutMs
+            timeoutMs: GatewayTimeouts.clamped(self.options.approvalTimeoutMs ?? approvalRequest.timeoutMs)
         )
         if started.isAllowed {
             return nil
         }
         guard confirmed else {
+            await self.approvalBindings.bind(started.id, toolCallID: toolCallID, binding: binding)
             return Self.failure(
                 toolName,
                 code: "requires_approval",
@@ -470,5 +566,50 @@ struct AgentToolGatewayHandlers: Sendable {
             requiresApproval: true,
             approvalID: terminal.id
         )
+    }
+
+    /// `runId` recorded on approvals raised by direct invocations.
+    static let approvalRunID = "tools.invoke"
+
+    /// Redeems a presented `approvalId` for the current invocation (waiting while it is pending).
+    private func redeemApproval(_ approvalID: String, binding: ToolInvokeApprovalBindings.Binding, toolName: String) async -> AnyCodable? {
+        let broker = self.runtime.approvals
+        let toolCallID: String
+        switch await self.approvalBindings.check(approvalID, binding: binding) {
+        case .accepted(let boundToolCallID):
+            toolCallID = boundToolCallID
+        case .unknown:
+            return Self.failure(toolName, code: "forbidden", message: "approvalId \(approvalID) was not issued by tools.invoke for this call")
+        case .mismatch:
+            return Self.failure(toolName, code: "forbidden", message: "approvalId \(approvalID) does not match this invocation")
+        case .consumed:
+            return Self.failure(toolName, code: "forbidden", message: "approvalId \(approvalID) was already used")
+        }
+        guard let prior = await broker.get(id: approvalID),
+              prior.kind == .plugin,
+              prior.runID == Self.approvalRunID,
+              prior.toolCallID == toolCallID,
+              prior.grantKey == binding.grantKey,
+              prior.presentation.toolName == binding.toolName,
+              prior.sessionKey == binding.sessionKey,
+              prior.agentID == binding.agentID
+        else {
+            return Self.failure(toolName, code: "forbidden", message: "approvalId \(approvalID) does not match this invocation")
+        }
+        let terminal = prior.state == .pending ? await broker.waitUntilTerminal(prior) : prior
+        guard terminal.isAllowed else {
+            return Self.failure(
+                toolName,
+                code: "forbidden",
+                message: "Tool call was not approved (\(terminal.state.rawValue))",
+                requiresApproval: true,
+                approvalID: terminal.id
+            )
+        }
+        // A concurrent confirmation may have used the id while this one waited.
+        guard case .accepted = await self.approvalBindings.consume(approvalID, binding: binding) else {
+            return Self.failure(toolName, code: "forbidden", message: "approvalId \(approvalID) was already used")
+        }
+        return nil
     }
 }

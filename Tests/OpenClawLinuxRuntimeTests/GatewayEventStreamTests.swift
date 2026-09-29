@@ -143,6 +143,8 @@ struct GatewayEventStreamTests {
         try await Task.sleep(nanoseconds: 20_000_000)
 
         let connection = GatewayConnectionContext(connectionID: "conn-late", scopes: [GatewayConnectionContext.operatorAdminScope])
+        // Connection-bound subscriptions follow the registered connection's role and scopes.
+        await stack.server.connectionOpened(connection)
         let bound = await stack.server.events(filter: .connection("conn-late"))
         _ = try Harness.payload(await Harness.call(
             stack.server, "sessions.messages.subscribe", ["key": AnyCodable("agent:main:main")], connection: connection

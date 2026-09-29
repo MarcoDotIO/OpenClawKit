@@ -57,10 +57,16 @@ private struct GatewaySecretIndex: Codable, Sendable {
 }
 
 /// Small metadata wrapper that adds list semantics on top of `CredentialStore`.
+///
+/// Mutations (``setSecret(_:for:kind:allowedHosts:updatedBy:)``, ``deleteSecret(for:)``) run one at
+/// a time in call order, so the credential store and the index always apply them in the same
+/// order even when the store's calls suspend or run concurrently.
 public actor GatewaySecretVault {
     private let credentialStore: any CredentialStore
     private let indexURL: URL?
     private var entries: [String: GatewaySecretMetadata]
+    /// Last queued mutation; each new mutation waits for it (FIFO).
+    private var mutationTail: Task<Void, Never>?
 
     /// Creates a metadata-aware secret vault backed by a credential store.
     /// - Parameters:
@@ -134,6 +140,39 @@ public actor GatewaySecretVault {
         updatedBy: String?
     ) async throws {
         let normalizedKey = try Self.normalizedKey(key)
+        try await self.serializedMutation {
+            try await self.applySet(value, for: normalizedKey, kind: kind, allowedHosts: allowedHosts, updatedBy: updatedBy)
+        }
+    }
+
+    /// Deletes a secret value and returns whether it existed before removal.
+    /// - Parameter key: Entry name.
+    /// - Returns: `true` when the entry was tracked.
+    public func deleteSecret(for key: String) async throws -> Bool {
+        let normalizedKey = try Self.normalizedKey(key)
+        return try await self.serializedMutation {
+            try await self.applyDelete(for: normalizedKey)
+        }
+    }
+
+    /// Runs `operation` after every previously queued mutation finished (FIFO).
+    private func serializedMutation<T: Sendable>(_ operation: @escaping @Sendable () async throws -> T) async throws -> T {
+        let previous = self.mutationTail
+        let task = Task<T, Error> {
+            await previous?.value
+            return try await operation()
+        }
+        self.mutationTail = Task { _ = await task.result }
+        return try await task.value
+    }
+
+    private func applySet(
+        _ value: String,
+        for normalizedKey: String,
+        kind: GatewaySecretKind?,
+        allowedHosts: [String]?,
+        updatedBy: String?
+    ) async throws {
         try await self.credentialStore.saveSecret(value, for: normalizedKey)
         let now = Int64(Date().timeIntervalSince1970 * 1000)
         var entry = self.entries[normalizedKey] ?? GatewaySecretMetadata(name: normalizedKey, createdAtMs: now, updatedAtMs: now)
@@ -154,11 +193,7 @@ public actor GatewaySecretVault {
         try self.persistIndexIfNeeded()
     }
 
-    /// Deletes a secret value and returns whether it existed before removal.
-    /// - Parameter key: Entry name.
-    /// - Returns: `true` when the entry was tracked.
-    public func deleteSecret(for key: String) async throws -> Bool {
-        let normalizedKey = try Self.normalizedKey(key)
+    private func applyDelete(for normalizedKey: String) async throws -> Bool {
         let existed = self.entries[normalizedKey] != nil
         try await self.credentialStore.deleteSecret(for: normalizedKey)
         self.entries.removeValue(forKey: normalizedKey)

@@ -887,9 +887,9 @@ public actor ApprovalBroker {
     public func history(cursor: String? = nil, limit: Int? = nil, kind: ApprovalKind? = nil) -> (items: [AgentApproval], nextCursor: String?) {
         let pageSize = min(100, max(1, limit ?? 50))
         let filtered = self.history.filter { kind == nil || $0.kind == kind }
-        let start = cursor.flatMap(Int.init) ?? 0
-        guard start < filtered.count else { return ([], nil) }
-        let end = min(filtered.count, start + pageSize)
+        guard let (start, end) = GatewayOffsetCursor.page(cursor: cursor, count: filtered.count, pageSize: pageSize) else {
+            return ([], nil)
+        }
         return (Array(filtered[start..<end]), end < filtered.count ? String(end) : nil)
     }
 

@@ -178,6 +178,22 @@ public actor GatewayNodePairingStore {
     /// - Parameter requestID: Request identifier.
     /// - Returns: The paired node, or `nil` for an unknown request.
     public func approve(requestID: String) -> PairedNode? {
+        // A non-throwing authorizer never fails.
+        (try? self.approve(requestID: requestID) { _ in }) ?? nil
+    }
+
+    /// Approves a pending request after `authorize` accepts it, atomically on the store's actor.
+    ///
+    /// When `authorize` throws, the request stays pending and the error is rethrown; the gateway uses
+    /// this to require the scopes the declared commands need (``GatewayMethodScopePolicy/nodePairApprovalScopes(commands:)``).
+    /// - Parameters:
+    ///   - requestID: Request identifier.
+    ///   - authorize: Check run against the pending request before it is approved.
+    /// - Returns: The paired node, or `nil` for an unknown request.
+    /// - Throws: The error thrown by `authorize`.
+    public func approve(requestID: String, authorize: @Sendable (PendingRequest) throws -> Void) throws -> PairedNode? {
+        guard let pendingRequest = self.pending[requestID] else { return nil }
+        try authorize(pendingRequest)
         guard let request = self.pending.removeValue(forKey: requestID) else { return nil }
         let node = PairedNode(
             nodeID: request.nodeID,

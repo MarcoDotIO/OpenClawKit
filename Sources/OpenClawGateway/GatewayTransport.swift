@@ -178,7 +178,7 @@ public actor GatewayClient {
                 return response
             }
             retries += 1
-            try await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000)
+            try await Task.sleep(nanoseconds: GatewayTimeouts.nanoseconds(milliseconds: delayMs))
         }
     }
 
@@ -207,7 +207,7 @@ public actor GatewayClient {
                 }
             }
 
-            let timeoutNs = UInt64(max(0, timeoutMs)) * 1_000_000
+            let timeoutNs = GatewayTimeouts.nanoseconds(milliseconds: timeoutMs)
             Task { [weak self] in
                 if (try? await Task.sleep(nanoseconds: timeoutNs)) == nil {
                     return
@@ -305,7 +305,7 @@ public actor GatewayClient {
         self.watchdogTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                let sleepNs = UInt64(self.tickIntervalMs) * 1_000_000
+                let sleepNs = GatewayTimeouts.nanoseconds(milliseconds: self.tickIntervalMs)
                 do {
                     try await Task.sleep(nanoseconds: sleepNs)
                 } catch {
@@ -319,7 +319,11 @@ public actor GatewayClient {
 
     private func validateTickDeadline() {
         guard self.connected else { return }
-        let timeoutSeconds = TimeInterval(self.tickIntervalMs * self.tickTimeoutMultiplier) / 1000
+        // Every request owns a finite timeout, so in-flight requests keep their own deadlines
+        // (upstream client.ts skips the watchdog while all pending requests are bounded).
+        guard self.pending.isEmpty else { return }
+        // Double math: `tickIntervalMs * 2` could overflow a 32-bit Int on watchOS.
+        let timeoutSeconds = Double(self.tickIntervalMs) * Double(self.tickTimeoutMultiplier) / 1000
         guard Date().timeIntervalSince(self.lastTick) >= timeoutSeconds else { return }
 
         Task { [weak self] in
@@ -334,13 +338,12 @@ public actor GatewayClient {
         let data = Data(raw.utf8)
         do {
             let frame = try JSONDecoder().decode(GatewayFrame.self, from: data)
+            // Any decoded inbound frame proves the connection is alive (upstream `onActivity`).
+            self.lastTick = Date()
             switch frame {
             case .res(let response):
                 self.resolvePending(id: response.id, with: response)
             case .event(let event):
-                if event.event == "tick" {
-                    self.lastTick = Date()
-                }
                 if let onEvent = self.onEvent {
                     Task {
                         await onEvent(event)

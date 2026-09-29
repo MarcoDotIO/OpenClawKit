@@ -136,7 +136,7 @@ extension GatewayServer {
             message: message,
             modelProviderID: parts.count == 2 ? parts[0] : nil,
             modelID: parts.count == 2 ? parts[1] : model,
-            timeoutMs: request.params["timeoutMs"]?.intValue,
+            timeoutMs: GatewayTimeouts.clampedIntMilliseconds(request.params["timeoutMs"]),
             agentID: agentID,
             sessionID: record?.sessionID,
             thinking: request.stringParam("thinking") ?? record?.thinkingLevel?.rawValue,
@@ -151,7 +151,9 @@ extension GatewayServer {
     // MARK: - sessions.abort
 
     /// `sessions.abort {key?, runId?, agentId?}` → `{ok, abortedRunId, status: "aborted" | "no-active-run"}`
-    /// (plus the SDK extras `aborted` and `runIds`). Without `runId`, the latest run of the session is aborted.
+    /// (plus the SDK extras `aborted` and `runIds`). Without `runId`, the latest active run of the
+    /// session is aborted. Finished and already-aborted runs answer `no-active-run`; an aborted run
+    /// stays tracked until its task ends, so `agent.wait` still receives its terminal status.
     func handleSessionsAbort(_ request: GatewayMethodRequest) async throws -> AnyCodable? {
         let runID = request.stringParam("runId", "runID")
         let key = request.stringParam("key", "sessionKey")
@@ -159,18 +161,20 @@ extension GatewayServer {
             throw GatewayMethodError.invalidRequest("sessions.abort requires key or runId")
         }
         var target: String?
-        if let runID, self.agentRuns[runID] != nil {
-            target = runID
-        } else if runID == nil, let key {
+        if let runID {
+            if self.trackedRuns[runID]?.aborted == false {
+                target = runID
+            }
+        } else if let key {
             target = self.trackedRuns
-                .filter { $0.value.sessionKey == key }
+                .filter { $0.value.sessionKey == key && !$0.value.aborted }
                 .max { $0.value.order < $1.value.order }?
                 .key
         }
         var abortedIDs: [String] = []
-        if let target, let task = self.agentRuns.removeValue(forKey: target) {
+        if let target, let task = self.agentRuns[target] {
+            self.trackedRuns[target]?.aborted = true
             task.cancel()
-            self.trackedRuns.removeValue(forKey: target)
             abortedIDs.append(target)
         }
         return Self.abortPayload(abortedRunIDs: abortedIDs)

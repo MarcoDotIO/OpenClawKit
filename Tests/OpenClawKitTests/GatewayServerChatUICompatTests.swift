@@ -91,6 +91,7 @@ struct GatewayServerChatUICompatTests {
             onEvent: { await recorder.record($0) }
         )
         try await client.connect(to: GatewayEndpoint(url: URL(string: "ws://127.0.0.1:18789")!))
+        _ = try await client.send(method: "sessions.subscribe")
         _ = try await client.send(method: "sessions.messages.subscribe", params: ["key": AnyCodable("agent:main:main")])
         let ack = try await client.send(method: "chat.send", params: [
             "sessionKey": AnyCodable("agent:main:main"),

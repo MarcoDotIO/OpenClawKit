@@ -7,7 +7,7 @@ import OpenClawProtocol
 public struct AgentGatewayOptions: Sendable, Equatable {
     /// Forward runtime `AgentEventFrame`s as `agent` gateway events.
     public var forwardAgentEvents: Bool
-    /// Forward approval changes as `exec.approval.*` / `plugin.approval.*` events.
+    /// Forward approval changes as `exec.approval.*` / `plugin.approval.*` / `openclaw.approval.*` events.
     public var forwardApprovalEvents: Bool
     /// Forward question changes as `question.requested` / `question.resolved` events.
     public var forwardQuestionEvents: Bool
@@ -62,8 +62,9 @@ public extension EmbeddedAgentRuntime {
     /// Registers ``gatewayMethodNames``, the tool inventory methods (``toolGatewayMethodNames``) and
     /// the transcript DAG / search methods (``sessionBranchGatewayMethodNames``). One subscription to
     /// ``events(bufferingNewest:)`` feeds `agent`, `chat` (protocol v4), `session.tool`,
-    /// `session.message` and lifecycle `sessions.changed` events; approvals and questions forward as
-    /// `exec.approval.*` / `plugin.approval.*` and `question.*`.
+    /// `session.message` and lifecycle `sessions.changed` events; approvals forward as upstream
+    /// `exec.approval.*` / `plugin.approval.*` / `openclaw.approval.*` events
+    /// (``AgentGatewayApprovalEvents``) and questions as `question.*`.
     /// - Parameters:
     ///   - server: Gateway server.
     ///   - options: Bridging options.
@@ -84,21 +85,30 @@ public extension EmbeddedAgentRuntime {
                 }
             }
         }
+        // Ordered update streams (not per-change listener tasks), so a `requested` event always
+        // precedes its `resolved` event on the wire.
         if options.forwardApprovalEvents {
-            await self.approvals.addListener { [weak server] approval in
-                guard let server else { return }
-                let family = approval.kind == .exec ? "exec" : "plugin"
-                let phase = approval.state == .pending ? "requested" : "resolved"
-                await server.broadcast(event: "\(family).approval.\(phase)", payload: AnyCodable(approval.snapshotPayload))
+            let approvals = await self.approvals.updates(bufferingNewest: 1024)
+            Task { [weak server] in
+                for await approval in approvals {
+                    guard let server else { return }
+                    await server.broadcast(
+                        event: AgentGatewayApprovalEvents.eventName(for: approval),
+                        payload: AnyCodable(AgentGatewayApprovalEvents.payload(for: approval))
+                    )
+                }
             }
         }
         if options.forwardQuestionEvents {
-            await self.questions.addListener { [weak server] question in
-                guard let server else { return }
-                if question.status == .pending {
-                    await server.broadcast(event: GatewayEventName.questionRequested.rawValue, payload: AnyCodable(question.payload))
-                } else {
-                    await server.broadcast(event: GatewayEventName.questionResolved.rawValue, payload: AnyCodable(question.resolvedEventPayload))
+            let questions = await self.questions.updates(bufferingNewest: 1024)
+            Task { [weak server] in
+                for await question in questions {
+                    guard let server else { return }
+                    if question.status == .pending {
+                        await server.broadcast(event: GatewayEventName.questionRequested.rawValue, payload: AnyCodable(question.payload))
+                    } else {
+                        await server.broadcast(event: GatewayEventName.questionResolved.rawValue, payload: AnyCodable(question.resolvedEventPayload))
+                    }
                 }
             }
         }
@@ -126,12 +136,130 @@ public extension EmbeddedAgentRuntime {
             fallbacks: fallbacks,
             options: options,
             idempotency: GatewayIdempotencyCache(),
+            runAdmission: AgentGatewayRunAdmission(),
             sessionGroups: (registrar as? GatewayServer)?.sessionGroups
         )
         for (method, handler) in handlers.table() {
             await registrar.register(method: method, descriptor: nil, handler: handler)
         }
     }
+}
+
+/// Upstream wire shapes of the approval events and list rows the runtime publishes.
+///
+/// - Requested (`<family>.approval.requested`) and `*.approval.list` rows:
+///   `{id, approvalKind, request, createdAtMs, expiresAtMs}` (upstream `buildRequestedApprovalEvent`);
+///   exec requests also carry `warningText`, `commandPreview`, `nodeId` and `unavailableDecisions`.
+/// - Resolved (`<family>.approval.resolved`): `{id, decision, resolvedBy, ts, request}`, plus
+///   `terminalStatus` for expired or cancelled system-agent approvals (upstream `publishAppliedApprovalResolution`).
+/// - Families: `exec`, `plugin`, and `openclaw` for system-agent approvals.
+public enum AgentGatewayApprovalEvents {
+    /// Event name for an approval's current state.
+    /// - Parameter approval: Approval.
+    /// - Returns: `exec|plugin|openclaw.approval.requested|resolved`.
+    public static func eventName(for approval: AgentApproval) -> String {
+        let family: String
+        switch approval.kind {
+        case .exec:
+            family = "exec"
+        case .plugin:
+            family = "plugin"
+        case .systemAgent:
+            family = "openclaw"
+        }
+        return "\(family).approval.\(approval.state == .pending ? "requested" : "resolved")"
+    }
+
+    /// Event payload for an approval's current state (requested or resolved shape).
+    /// - Parameter approval: Approval.
+    /// - Returns: The payload.
+    public static func payload(for approval: AgentApproval) -> [String: AnyCodable] {
+        approval.state == .pending ? Self.requestedPayload(approval) : Self.resolvedPayload(approval)
+    }
+
+    /// Requested event payload and list row `{id, approvalKind, request, createdAtMs, expiresAtMs}`.
+    /// - Parameter approval: Approval.
+    /// - Returns: The payload.
+    public static func requestedPayload(_ approval: AgentApproval) -> [String: AnyCodable] {
+        var payload = approval.legacyListPayload
+        payload["request"] = AnyCodable(Self.request(approval))
+        return payload
+    }
+
+    /// Resolved event payload `{id, decision, resolvedBy, ts, request, terminalStatus?}`.
+    /// - Parameter approval: Terminal approval.
+    /// - Returns: The payload.
+    public static func resolvedPayload(_ approval: AgentApproval) -> [String: AnyCodable] {
+        var payload: [String: AnyCodable] = [
+            "id": AnyCodable(approval.id),
+            "decision": AnyCodable((approval.decision ?? .deny).rawValue),
+            "resolvedBy": Self.resolvedBy(approval.reviewer).map { AnyCodable($0) } ?? .nullValue,
+            "ts": AnyCodable(approval.resolvedAtMs ?? SessionTranscriptClock.nowMs()),
+            "request": AnyCodable(Self.request(approval)),
+        ]
+        if approval.kind == .systemAgent, approval.state == .expired || approval.state == .cancelled {
+            payload["terminalStatus"] = AnyCodable(approval.state.rawValue)
+        }
+        return payload
+    }
+
+    /// Upstream request object of an approval (exec requests add the reviewer hints clients render).
+    static func request(_ approval: AgentApproval) -> [String: AnyCodable] {
+        var request = approval.legacyListPayload["request"]?.dictionaryValue ?? [:]
+        guard approval.kind == .exec else { return request }
+        let presentation = approval.presentation
+        if let warning = presentation.warningText {
+            request["warningText"] = AnyCodable(warning)
+        }
+        if let preview = presentation.commandPreview {
+            request["commandPreview"] = AnyCodable(preview)
+        }
+        if let nodeID = presentation.nodeID {
+            request["nodeId"] = AnyCodable(nodeID)
+        }
+        let allowed = Set(presentation.allowedDecisions)
+        let unavailable = [ApprovalDecision.allowOnce, .allowAlways, .deny].filter { !allowed.contains($0) }
+        if !unavailable.isEmpty {
+            request["unavailableDecisions"] = AnyCodable(unavailable.map { AnyCodable($0.rawValue) })
+        }
+        return request
+    }
+
+    /// Upstream `resolvedBy`: the reviewer's device id, else `channel:account:sender`.
+    static func resolvedBy(_ reviewer: AgentApprovalReviewer?) -> String? {
+        if let deviceID = reviewer?.deviceID {
+            return deviceID
+        }
+        let parts = [reviewer?.channel, reviewer?.accountID, reviewer?.senderID].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: ":")
+    }
+}
+
+/// Serializes the "is this run id already active?" check with the start of a run, so two requests
+/// reusing one idempotency key (across methods or sessions) cannot both start a run under that id.
+actor AgentGatewayRunAdmission {
+    private var reserved: Set<String> = []
+
+    /// Reserves a run id for the duration of a check-and-start.
+    /// - Parameter runID: Run id.
+    /// - Returns: `false` when another request is admitting the same id right now.
+    func reserve(_ runID: String) -> Bool {
+        self.reserved.insert(runID).inserted
+    }
+
+    /// Releases a reservation.
+    /// - Parameter runID: Run id.
+    func release(_ runID: String) {
+        self.reserved.remove(runID)
+    }
+}
+
+/// A run started (or found already running) by a gateway handler.
+struct AgentGatewayRunStart: Sendable {
+    /// Run id (the idempotency key when present).
+    let runID: String
+    /// `true` when a run with this id was already active, so no new run started (upstream `in_flight`).
+    let inFlight: Bool
 }
 
 /// Built-in handlers the runtime's handlers fall back to.
@@ -175,6 +303,7 @@ struct AgentGatewayHandlers: Sendable {
     let fallbacks: AgentGatewayFallbacks
     let options: AgentGatewayOptions
     let idempotency: GatewayIdempotencyCache
+    let runAdmission: AgentGatewayRunAdmission
     let sessionGroups: GatewaySessionGroupCatalog?
 
     func table() -> [(String, GatewayMethodHandler)] {
@@ -257,21 +386,38 @@ struct AgentGatewayHandlers: Sendable {
     }
 
     /// Starts a runtime run; the idempotency key (when present) becomes the run id, as upstream.
+    ///
+    /// Idempotency caches are per method (and per session for `sessions.send`), but a run id is
+    /// global: when a run with the key's id is still active, no second run starts and the existing
+    /// run answers `in_flight` (upstream chat-send admission), so two runs never share an id.
     private func startRun(
         sessionKey: String,
         message: String,
         request: GatewayMethodRequest,
         record: SessionRecord?,
         overrides: GatewayAgentRequest? = nil
-    ) async -> String {
+    ) async -> AgentGatewayRunStart {
         let thinking = ThinkLevel.normalize(overrides?.thinking ?? request.params["thinking"]?.stringValue) ?? record?.thinkingLevel
-        let timeoutMs = overrides?.timeoutMs ?? request.params["timeoutMs"]?.intValue ?? self.options.runTimeoutMs
+        // Client timeouts clamp to the upstream timer bound so runtime deadline math cannot overflow.
+        let timeoutMs = GatewayTimeouts.clamped(overrides?.timeoutMs)
+            ?? GatewayTimeouts.clampedIntMilliseconds(request.params["timeoutMs"])
+            ?? GatewayTimeouts.clamped(self.options.runTimeoutMs)
         let model = record?.modelOverride
         let parts = model?.split(separator: "/", maxSplits: 1).map(String.init) ?? []
         let idempotencyKey = overrides?.idempotencyKey ?? request.stringParam("idempotencyKey")
         let attachments = AgentGatewayAttachments.decode(overrides?.attachments ?? request.params["attachments"]?.arrayValue)
+        let runID = idempotencyKey ?? UUID().uuidString.lowercased()
+        if idempotencyKey != nil {
+            guard await self.runAdmission.reserve(runID) else {
+                return AgentGatewayRunStart(runID: runID, inFlight: true)
+            }
+            if await self.runtime.activeRunIDs().contains(runID) {
+                await self.runAdmission.release(runID)
+                return AgentGatewayRunStart(runID: runID, inFlight: true)
+            }
+        }
         let run = AgentRunRequest(
-            runID: idempotencyKey ?? UUID().uuidString.lowercased(),
+            runID: runID,
             sessionKey: sessionKey,
             prompt: message,
             modelProviderID: overrides?.modelProviderID ?? (parts.count == 2 ? parts[0] : nil),
@@ -288,7 +434,12 @@ struct AgentGatewayHandlers: Sendable {
             extraSystemPrompt: overrides?.extraSystemPrompt,
             spawnedBy: record?.spawnedBy
         )
-        return await self.runtime.start(run, timeoutMs: timeoutMs, streaming: true)
+        let started = await self.runtime.start(run, timeoutMs: timeoutMs, streaming: true)
+        if idempotencyKey != nil {
+            // The run is registered as active once `start` returns.
+            await self.runAdmission.release(runID)
+        }
+        return AgentGatewayRunStart(runID: started, inFlight: false)
     }
 
     // MARK: - Agent
@@ -306,9 +457,15 @@ struct AgentGatewayHandlers: Sendable {
                 record = await self.runtime.sessionStore?.update(forKey: params.sessionKey) { $0.label = label } ?? record
             }
             let acceptedAt = SessionTranscriptClock.nowMs()
-            let runID = await self.startRun(sessionKey: params.sessionKey, message: message, request: request, record: record, overrides: params)
+            let run = await self.startRun(sessionKey: params.sessionKey, message: message, request: request, record: record, overrides: params)
             return try GatewayPayloadCodec.encode(
-                GatewayAgentAccepted(runID: runID, sessionKey: params.sessionKey, agentID: record?.agentID ?? agentID, acceptedAt: acceptedAt)
+                GatewayAgentAccepted(
+                    runID: run.runID,
+                    status: run.inFlight ? "in_flight" : "accepted",
+                    sessionKey: params.sessionKey,
+                    agentID: record?.agentID ?? agentID,
+                    acceptedAt: acceptedAt
+                )
             )
         }
     }
@@ -367,9 +524,14 @@ struct AgentGatewayHandlers: Sendable {
         if let message = (request.stringParam("message") ?? request.stringParam("task"))?.trimmingCharacters(in: .whitespacesAndNewlines),
            !message.isEmpty
         {
-            let runID = await self.startRun(sessionKey: key, message: message, request: request, record: record)
-            payload["runStarted"] = AnyCodable(true)
-            payload["runId"] = AnyCodable(runID)
+            let run = await self.startRun(sessionKey: key, message: message, request: request, record: record)
+            payload["runStarted"] = AnyCodable(!run.inFlight)
+            payload["runId"] = AnyCodable(run.runID)
+            if run.inFlight {
+                payload["runError"] = (try? GatewayPayloadCodec.encode(
+                    GatewayMethodError.invalidRequest("run \(run.runID) is already in flight").errorShape
+                )) ?? .nullValue
+            }
         }
         return Self.object(payload)
     }
@@ -389,13 +551,13 @@ struct AgentGatewayHandlers: Sendable {
                 defaultAgentID: request.stringParam("agentId") ?? self.runtime.defaultAgentID,
                 route: nil
             )
-            let runID = await self.startRun(sessionKey: key, message: message, request: request, record: record)
+            let run = await self.startRun(sessionKey: key, message: message, request: request, record: record)
             return Self.object([
                 "ok": AnyCodable(true),
                 "key": AnyCodable(key),
-                "runId": AnyCodable(runID),
-                "status": AnyCodable("started"),
-                "runStarted": AnyCodable(true),
+                "runId": AnyCodable(run.runID),
+                "status": AnyCodable(run.inFlight ? "in_flight" : "started"),
+                "runStarted": AnyCodable(!run.inFlight),
             ])
         }
     }
@@ -509,8 +671,8 @@ struct AgentGatewayHandlers: Sendable {
                 defaultAgentID: request.stringParam("agentId") ?? self.runtime.defaultAgentID,
                 route: nil
             )
-            let runID = await self.startRun(sessionKey: key, message: message, request: request, record: record)
-            return Self.object(["runId": AnyCodable(runID), "status": AnyCodable("in_flight")])
+            let run = await self.startRun(sessionKey: key, message: message, request: request, record: record)
+            return Self.object(["runId": AnyCodable(run.runID), "status": AnyCodable("in_flight")])
         }
     }
 
@@ -535,7 +697,7 @@ struct AgentGatewayHandlers: Sendable {
     /// `agent.wait {runId, timeoutMs?}` → `{runId, status, startedAt, endedAt?, error?, sessionKey, output?}`.
     private func agentWait(_ request: GatewayMethodRequest) async throws -> AnyCodable? {
         let params = try request.decodeParams(GatewayAgentWaitParams.self)
-        guard let result = await self.runtime.wait(runID: params.runID, timeoutMs: params.timeoutMs) else {
+        guard let result = await self.runtime.wait(runID: params.runID, timeoutMs: GatewayTimeouts.clamped(params.timeoutMs)) else {
             if let fallback = self.fallbacks.agentWait {
                 return try await fallback(request)
             }
@@ -625,8 +787,12 @@ struct AgentGatewayHandlers: Sendable {
 
     private func approvalHistory(_ request: GatewayMethodRequest) async throws -> AnyCodable? {
         let kind = request.params["kind"]?.stringValue.flatMap(ApprovalKind.init(rawValue:))
+        let cursor = request.params["cursor"]?.stringValue
+        guard GatewayOffsetCursor.parse(cursor) != nil else {
+            throw GatewayMethodError.invalidRequest("invalid or expired approval.history cursor; restart pagination without a cursor")
+        }
         let page = await self.runtime.approvals.history(
-            cursor: request.params["cursor"]?.stringValue,
+            cursor: cursor,
             limit: request.params["limit"]?.intValue,
             kind: kind
         )
@@ -655,11 +821,18 @@ struct AgentGatewayHandlers: Sendable {
     }
 
     private func legacyApprovalList(kind: ApprovalKind) async -> AnyCodable? {
-        AnyCodable(await self.runtime.approvals.pending(kind: kind).map { AnyCodable($0.legacyListPayload) })
+        AnyCodable(await self.runtime.approvals.pending(kind: kind).map { AnyCodable(AgentGatewayApprovalEvents.requestedPayload($0)) })
     }
+
+    /// Upstream `MAX_PLUGIN_APPROVAL_TIMEOUT_MS` (plugin approval requests reject longer timeouts).
+    static let maxPluginApprovalTimeoutMs: Int64 = 600_000
 
     private func legacyApprovalRequest(_ request: GatewayMethodRequest, kind: ApprovalKind) async throws -> AnyCodable? {
         let params = request.params
+        let timeoutMs = GatewayTimeouts.clampedMilliseconds(params["timeoutMs"])
+        if kind != .exec, let requested = params["timeoutMs"]?.doubleValue, requested > Double(Self.maxPluginApprovalTimeoutMs) {
+            throw GatewayMethodError.invalidRequest("plugin.approval.request timeoutMs must be at most \(Self.maxPluginApprovalTimeoutMs)")
+        }
         let presentation: AgentApprovalPresentation
         let grantKey: String?
         switch kind {
@@ -695,7 +868,7 @@ struct AgentGatewayHandlers: Sendable {
             runID: params["runId"]?.stringValue,
             toolCallID: params["toolCallId"]?.stringValue,
             grantKey: grantKey,
-            timeoutMs: params["timeoutMs"]?.int64Value
+            timeoutMs: timeoutMs
         )
         if params["twoPhase"]?.boolValue == true {
             return Self.object([
@@ -712,7 +885,10 @@ struct AgentGatewayHandlers: Sendable {
     private func legacyApprovalWait(_ request: GatewayMethodRequest) async throws -> AnyCodable? {
         let id = try self.requireString(request, "id")
         do {
-            let approval = try await self.runtime.approvals.waitDecision(id: id, timeoutMs: request.params["timeoutMs"]?.int64Value)
+            let approval = try await self.runtime.approvals.waitDecision(
+                id: id,
+                timeoutMs: GatewayTimeouts.clampedMilliseconds(request.params["timeoutMs"])
+            )
             return AnyCodable(approval.legacyWaitPayload)
         } catch {
             throw GatewayMethodError.approvalNotFound(id)
@@ -774,7 +950,7 @@ struct AgentGatewayHandlers: Sendable {
                 agentID: request.params["agentId"]?.stringValue,
                 sessionKey: request.params["sessionKey"]?.stringValue,
                 runID: request.params["runId"]?.stringValue,
-                timeoutMs: request.params["timeoutMs"]?.int64Value
+                timeoutMs: GatewayTimeouts.clampedMilliseconds(request.params["timeoutMs"])
             )
             return Self.object(["id": AnyCodable(record.id), "expiresAtMs": AnyCodable(record.expiresAtMs)])
         } catch let error as QuestionBrokerError {
@@ -785,7 +961,10 @@ struct AgentGatewayHandlers: Sendable {
     private func questionWait(_ request: GatewayMethodRequest) async throws -> AnyCodable? {
         let id = try self.requireString(request, "id")
         do {
-            let result = try await self.runtime.questions.waitAnswer(id: id, timeoutMs: request.params["timeoutMs"]?.int64Value)
+            let result = try await self.runtime.questions.waitAnswer(
+                id: id,
+                timeoutMs: GatewayTimeouts.clampedMilliseconds(request.params["timeoutMs"])
+            )
             return AnyCodable(result.payload(includeResolutionID: request.params["includeResolutionId"]?.boolValue == true))
         } catch {
             throw GatewayMethodError.invalidRequest(error.localizedDescription)

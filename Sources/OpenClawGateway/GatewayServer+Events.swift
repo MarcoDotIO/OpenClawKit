@@ -5,10 +5,13 @@ import OpenClawProtocol
 /// Selects which events a ``GatewayServer/events(filter:bufferingNewest:)`` subscriber receives.
 ///
 /// - ``eventNames``: `nil` delivers every event name; otherwise only the listed names.
-/// - ``connectionID``: binds the subscription to a client connection. Session-scoped events
-///   (``sessionScopedEvents``: `session.message`, `session.tool`) then reach the subscriber only for
-///   sessions that connection subscribed to with `sessions.messages.subscribe`. Unbound subscribers
-///   (in-process observers) receive session-scoped events for every published session.
+/// - ``connectionID``: binds the subscription to a client connection registered with
+///   ``GatewayServer/connectionOpened(_:)``. Events then follow that connection's role and scopes
+///   (``hasEventScope(_:event:)``, upstream `EVENT_SCOPE_GUARDS`); an unregistered connection
+///   receives nothing. `sessions.changed` reaches it only after `sessions.subscribe`, and
+///   session-scoped events (``sessionScopedEvents``: `session.message`, `session.tool`) only for
+///   sessions it subscribed to with `sessions.messages.subscribe`. Unbound subscribers (trusted
+///   in-process observers) receive every event.
 public struct GatewayEventFilter: Sendable, Equatable {
     /// Events delivered only to connections subscribed to the event's `sessionKey`.
     public static let sessionScopedEvents: Set<String> = [
@@ -47,17 +50,82 @@ public struct GatewayEventFilter: Sendable, Equatable {
         GatewayEventFilter(eventNames: Set(names.map(\.rawValue)))
     }
 
-    /// Every event, bound to a client connection (session-scoped events follow its subscriptions).
+    /// Every event the connection may receive, bound to a client connection registered with
+    /// ``GatewayServer/connectionOpened(_:)`` (role and scope guards apply; `sessions.changed` and
+    /// session-scoped events follow its subscriptions).
     /// - Parameter connectionID: Connection identifier (``GatewayConnectionContext/connectionID``).
     /// - Returns: The filter.
     public static func connection(_ connectionID: String) -> GatewayEventFilter {
         GatewayEventFilter(connectionID: connectionID)
     }
 
-    /// Whether the filter admits an event name (session subscriptions are checked separately).
+    /// Whether the filter admits an event name (scopes and session subscriptions are checked separately).
     /// - Parameter event: Event name.
     public func admits(_ event: String) -> Bool {
         self.eventNames?.contains(event) ?? true
+    }
+
+    /// Operator scopes a connection needs to receive each event (upstream `EVENT_SCOPE_GUARDS`).
+    ///
+    /// Any listed scope suffices; an empty list admits every connection, node-role ones included.
+    public static let scopeGuards: [String: [String]] = {
+        let read = GatewayConnectionContext.operatorReadScope
+        let admin = GatewayConnectionContext.operatorAdminScope
+        let approvals = "operator.approvals"
+        let questions = GatewayMethodScopePolicy.questionsScope
+        let pairing = GatewayMethodScopePolicy.pairingScope
+        let talk = "operator.talk"
+        var guards: [String: [String]] = [
+            "chat.metadata.changed": [read, GatewayMethodScopePolicy.sessionsReadScope],
+            "exec.approval.requested": [approvals], "exec.approval.resolved": [approvals],
+            "plugin.approval.requested": [approvals], "plugin.approval.resolved": [approvals],
+            "openclaw.approval.requested": [approvals], "openclaw.approval.resolved": [approvals],
+            "session.approval": [approvals],
+            "question.requested": [questions], "question.resolved": [questions],
+            "talk.mode": [talk], "talk.voice.change": [talk],
+            "update.run.changed": [admin], "plugins.install.progress": [admin],
+            "terminal.data": [admin], "terminal.exit": [admin],
+            "device.pair.changed": [pairing], "device.pair.requested": [pairing], "device.pair.resolved": [pairing],
+            "device.pair.setup.completed": [pairing], "device.pair.setup.deliveryUncertain": [pairing],
+            "node.pair.requested": [pairing], "node.pair.resolved": [pairing],
+        ]
+        for event in ["health", "heartbeat", "shutdown", "gateway.suspension", "tick", "update.available"] {
+            guards[event] = []
+        }
+        let readEvents = [
+            "agent", "chat", "board.changed", "board.command", "progressCard.changed", "ui.command", "chat.send_timing",
+            "chat.side_result", "cron", "presence", "talk.event", "task", "task.suggestion", "config.changed",
+            "users.prefs.changed", "mentions.changed", "skills.changed", "plugins.changed", "voicewake.changed",
+            "voicewake.routing.changed", "node.presence", "node.hostStats", "node.runnerInventory.changed",
+            "sessions.catalog.host", "sessions.changed", "controlUi.sessionPullRequests.changed",
+            "plugins.controlUi.changed", "session.message", "session.observer", "session.operation", "session.sharing",
+            "session.sharing.evidence", "session.suggestion", "session.typing", "session.tool", "portal.changed",
+        ]
+        for event in readEvents {
+            guards[event] = [read]
+        }
+        return guards
+    }()
+
+    /// Whether a client connection may receive an event (upstream `hasEventScope`).
+    ///
+    /// Guarded events need the operator role and one of their ``scopeGuards`` (an empty guard admits
+    /// everyone); unguarded `plugin.*` events need `operator.write`; any other unguarded event (for
+    /// example an SDK-defined one) needs `operator.admin`. An unknown connection (`nil`) receives nothing.
+    /// - Parameters:
+    ///   - connection: Connection context, or `nil` when the connection is not registered.
+    ///   - event: Event name.
+    /// - Returns: `true` when the event may be delivered.
+    public static func hasEventScope(_ connection: GatewayConnectionContext?, event: String) -> Bool {
+        guard let connection else { return false }
+        let isOperator = connection.role.trimmingCharacters(in: .whitespacesAndNewlines) == "operator"
+        if let required = Self.scopeGuards[event] {
+            return required.isEmpty || (isOperator && required.contains { connection.allows(scope: $0) })
+        }
+        if event.hasPrefix("plugin.") {
+            return isOperator && connection.allows(scope: GatewayConnectionContext.operatorWriteScope)
+        }
+        return isOperator && connection.allows(scope: GatewayConnectionContext.operatorAdminScope)
     }
 }
 
@@ -94,6 +162,11 @@ extension GatewayServer {
     // MARK: - Emitting
 
     /// Emits an event to every matching subscriber with the next sequence number.
+    ///
+    /// Connection-bound subscribers receive the event only when their connection's role and scopes
+    /// allow it (``GatewayEventFilter/hasEventScope(_:event:)``); `sessions.changed` additionally
+    /// needs `sessions.subscribe`, and `session.message`/`session.tool` a matching
+    /// `sessions.messages.subscribe`.
     /// - Parameters:
     ///   - event: Event name (see ``GatewayEventName``).
     ///   - payload: Optional event payload.
@@ -104,10 +177,19 @@ extension GatewayServer {
         let frame = EventFrame(type: "event", event: event, payload: payload, seq: self.eventSequence)
         let sessionScoped = GatewayEventFilter.sessionScopedEvents.contains(event)
         let sessionKey = sessionScoped ? payload?.dictionaryValue?["sessionKey"]?.stringValue.map(Self.subscriptionKey) : nil
+        let sessionsChanged = event == GatewayEventName.sessionsChanged.rawValue
         for subscriber in self.eventSubscribers.values where subscriber.filter.admits(event) {
-            if sessionScoped, let connectionID = subscriber.filter.connectionID {
-                guard let sessionKey, self.messageSubscriptions[connectionID]?.contains(sessionKey) == true else {
+            if let connectionID = subscriber.filter.connectionID {
+                guard GatewayEventFilter.hasEventScope(self.connections[connectionID]?.context, event: event) else {
                     continue
+                }
+                if sessionsChanged, !self.sessionEventConnections.contains(connectionID) {
+                    continue
+                }
+                if sessionScoped {
+                    guard let sessionKey, self.messageSubscriptions[connectionID]?.contains(sessionKey) == true else {
+                        continue
+                    }
                 }
             }
             subscriber.continuation.yield(frame)

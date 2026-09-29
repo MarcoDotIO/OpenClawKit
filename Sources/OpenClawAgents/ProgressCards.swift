@@ -162,16 +162,19 @@ public actor ProgressCardStore {
         }
         await server.register(method: "progressCard.put", descriptor: nil) { [weak self] request in
             guard let self else { throw GatewayMethodError.unavailable("progress cards unavailable") }
-            guard let sessionKey = request.stringParam("sessionKey") else {
+            guard request.stringParam("sessionKey") != nil else {
                 throw GatewayMethodError.invalidRequest("progressCard.put requires sessionKey")
             }
-            let steps = request.params["plan"].flatMap { try? AgentJSONCoding.decode([AgentProgressStep].self, from: $0) }
+            // Typed decode (upstream `ProgressCardPutParams`): a mistyped plan, step, status, markdown
+            // or expectedRevision answers INVALID_REQUEST instead of silently replacing the card.
+            let params = try request.decodeParams(ProgressCardPutParams.self)
+            let sessionKey = params.sessionkey.trimmingCharacters(in: .whitespacesAndNewlines)
             do {
                 let card = try await self.put(
                     sessionKey: sessionKey,
-                    markdown: request.params["markdown"]?.stringValue,
-                    steps: steps,
-                    expectedRevision: request.params["expectedRevision"]?.intValue
+                    markdown: params.markdown,
+                    steps: params.plan?.map { AgentProgressStep(step: $0.step, status: $0.status.rawValue) },
+                    expectedRevision: params.expectedrevision
                 )
                 return AnyCodable(["card": Self.payload(card)])
             } catch let error as ProgressCardError {
@@ -183,15 +186,23 @@ public actor ProgressCardStore {
             guard let sessionKey = request.stringParam("sessionKey"), let key = request.stringParam("idempotencyKey") else {
                 throw GatewayMethodError.invalidRequest("progressCard.refresh requires sessionKey and idempotencyKey")
             }
-            let runID = await runtime.start(
-                AgentRunRequest(
-                    runID: "progress-\(key)",
-                    sessionKey: sessionKey,
-                    prompt: "Refresh the session progress card with the progress_card tool to reflect the current status. Do not reply to the user.",
-                    hiddenPrompt: true
-                ),
-                streaming: true
-            )
+            // A retry with the same idempotency key while its refresh run is active answers the
+            // same run instead of starting a second run under the same id.
+            let refreshRunID = "progress-\(key)"
+            let runID: String
+            if await runtime.activeRunIDs().contains(refreshRunID) {
+                runID = refreshRunID
+            } else {
+                runID = await runtime.start(
+                    AgentRunRequest(
+                        runID: refreshRunID,
+                        sessionKey: sessionKey,
+                        prompt: "Refresh the session progress card with the progress_card tool to reflect the current status. Do not reply to the user.",
+                        hiddenPrompt: true
+                    ),
+                    streaming: true
+                )
+            }
             return AnyCodable([
                 "runId": AnyCodable(runID),
                 "status": AnyCodable("accepted"),

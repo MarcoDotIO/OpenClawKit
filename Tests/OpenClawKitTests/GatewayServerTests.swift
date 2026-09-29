@@ -200,13 +200,17 @@ struct GatewayServerTests {
         #expect(waited.status == "ok")
         #expect(waited.output == "first")
 
-        let missingAfterCleanup = await self.rawRequest(
+        // Finished runs leave the active tables but stay answerable for late waits.
+        let lateWait = try await self.request(
             server,
             method: "agent.wait",
-            params: GatewayAgentWaitParams(runID: accepted.runID, timeoutMs: 10)
+            params: GatewayAgentWaitParams(runID: accepted.runID, timeoutMs: 10),
+            as: GatewayAgentWaitResult.self
         )
-        #expect(missingAfterCleanup.ok == false)
-        #expect(missingAfterCleanup.error?.errorCode == .unavailable)
+        #expect(lateWait.status == "ok")
+        #expect(lateWait.output == "first")
+        let abortFinished = await self.rawRequest(server, method: "sessions.abort", params: ["runId": AnyCodable(accepted.runID)])
+        #expect(abortFinished.payload?.dictionaryValue?["status"] == AnyCodable("no-active-run"))
 
         let slow = try await self.request(
             server,
@@ -689,13 +693,16 @@ struct GatewayServerTests {
             params: GatewayAgentRequest(sessionKey: "controls", prompt: "explode"),
             as: GatewayAgentAccepted.self
         )
-        let explodedWait = await self.rawRequest(
+        // A run whose task throws answers a terminal `error` status (upstream), not an RPC error.
+        let explodedWait = try await self.request(
             server,
             method: "agent.wait",
-            params: GatewayAgentWaitParams(runID: explodedRun.runID)
+            params: GatewayAgentWaitParams(runID: explodedRun.runID),
+            as: GatewayAgentWaitResult.self
         )
-        #expect(explodedWait.ok == false)
-        #expect(explodedWait.error?.errorCode == .unavailable)
+        #expect(explodedWait.status == "error")
+        #expect(explodedWait.error?.contains("boom") == true)
+        #expect(explodedWait.endedAt != nil)
     }
 
     @Test

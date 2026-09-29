@@ -101,13 +101,9 @@ public enum TalkConfigParsing {
         if let timeout = value?.intValue, timeout > 0 {
             return timeout
         }
-        if
-            let timeout = value?.doubleValue,
-            timeout > 0,
-            timeout.rounded(.towardZero) == timeout,
-            timeout <= Double(Int.max)
-        {
-            return Int(timeout)
+        // `Int(exactly:)` rejects fractions and values beyond `Int` (2^63 would trap `Int(_:)`).
+        if let timeout = value?.doubleValue, timeout > 0, let int = Int(exactly: timeout) {
+            return int
         }
         return fallback
     }
