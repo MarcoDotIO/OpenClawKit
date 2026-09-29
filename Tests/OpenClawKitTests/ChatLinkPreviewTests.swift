@@ -106,6 +106,19 @@ struct ChatLinkPreviewHostPolicyTests {
         "http://subdomain.localhost",
         "http://host.local",
         "http://sub.host.local.",
+        "http://router/cgi-bin/reboot?x=1",
+        "http://nas",
+        "https://printer.lan",
+        "https://git.corp",
+        "https://wiki.intranet",
+        "https://nas.home.arpa",
+        "https://svc.internal",
+        "https://box.localdomain",
+        "http://[::ffff:127.0.0.1]",
+        "http://[::ffff:c0a8:101]",
+        "http://[64:ff9b::c0a8:101]",
+        "http://[64:ff9b::7f00:1]",
+        "http://[64:ff9b:1::5db8:d822]",
     ])
     func `rejects non-public hosts`(_ value: String) throws {
         #expect(try !chatLinkPreviewAllowsHost(#require(URL(string: value))))
@@ -116,9 +129,34 @@ struct ChatLinkPreviewHostPolicyTests {
         "http://1.1.1.1",
         "https://8.8.8.8",
         "https://[2606:4700:4700::1111]",
+        "https://[64:ff9b::5db8:d822]",
+        "https://[::ffff:5db8:d822]",
     ])
     func `accepts public hosts`(_ value: String) throws {
         #expect(try chatLinkPreviewAllowsHost(#require(URL(string: value))))
+    }
+
+    @Test func `nat64 and mapped peers are judged by their embedded IPv4 address`() {
+        // DNS64 synthesizes 64:ff9b::/96 peers for IPv4-only sites on IPv6-only networks.
+        #expect(chatLinkPreviewAllowsRemoteAddress("64:ff9b::5db8:d822"))
+        #expect(chatLinkPreviewAllowsRemoteAddress("64:ff9b::93.184.216.34"))
+        #expect(chatLinkPreviewAllowsRemoteAddress("::ffff:93.184.216.34"))
+        #expect(!chatLinkPreviewAllowsRemoteAddress("64:ff9b::c0a8:101"))
+        #expect(!chatLinkPreviewAllowsRemoteAddress("64:ff9b::a00:1"))
+        #expect(!chatLinkPreviewAllowsRemoteAddress("::ffff:10.0.0.1"))
+        #expect(!chatLinkPreviewAllowsRemoteAddress("64:ff9b:1::5db8:d822"))
+        #expect(ChatLinkPreviewFetcher.publicConnectionsOnly(["64:ff9b::5db8:d822", "93.184.216.34"]))
+        #expect(!ChatLinkPreviewFetcher.publicConnectionsOnly(["64:ff9b::5db8:d822", "64:ff9b::c0a8:101"]))
+        #expect(!ChatLinkPreviewFetcher.publicConnectionsOnly([nil]))
+        #expect(!ChatLinkPreviewFetcher.publicConnectionsOnly([]))
+    }
+
+    @Test func `pre-send resolution rejects loopback names and checks literals without DNS`() async throws {
+        // `localhost` resolves locally (no network) to loopback addresses.
+        #expect(try await !chatLinkPreviewResolvesToPublicAddresses(#require(URL(string: "http://localhost:8080/"))))
+        #expect(try await chatLinkPreviewResolvesToPublicAddresses(#require(URL(string: "https://93.184.216.34/"))))
+        #expect(try await !chatLinkPreviewResolvesToPublicAddresses(#require(URL(string: "https://192.168.1.1/"))))
+        #expect(try await !chatLinkPreviewResolvesToPublicAddresses(#require(URL(string: "https://[64:ff9b::a00:1]/"))))
     }
 }
 
@@ -181,6 +219,7 @@ struct ChatLinkPreviewNetworkTests {
                 configuration: configuration,
                 timeout: 0,
                 hostPolicy: { _ in true },
+                resolutionPolicy: { _ in true },
                 connectionPolicy: { _ in true })
             let url = try #require(URL(string: "https://preview.test/slow"))
             let clock = ContinuousClock()
@@ -218,9 +257,36 @@ struct ChatLinkPreviewNetworkTests {
             #expect(ChatLinkPreviewStubURLProtocol.requestCount == 0)
         }
 
+        @Test func `hostname resolving to a private address is never requested`() async throws {
+            ChatLinkPreviewStubURLProtocol.set(.response(
+                headers: ["Content-Type": "text/html"],
+                data: Data("<title>internal</title>".utf8)))
+            let fetcher = self.fetcher(timeout: 1, resolutionPolicy: { _ in false })
+            let url = try #require(URL(string: "https://intranet.example.com/cgi-bin/reboot?x=1"))
+
+            #expect(await fetcher.fetch(url) == .failed)
+            #expect(await fetcher.fetchImage(url).thumbnail == nil)
+            #expect(ChatLinkPreviewStubURLProtocol.requestCount == 0)
+        }
+
+        @Test func `redirect hops are resolved before they are followed`() async throws {
+            let publicURL = try #require(URL(string: "https://preview.test/start"))
+            let internalURL = try #require(URL(string: "https://internal.example.com/admin?delete=1"))
+            ChatLinkPreviewStubURLProtocol.set { request in
+                request.url == publicURL
+                    ? .redirect(to: internalURL)
+                    : .response(headers: ["Content-Type": "text/html"], data: Data("<title>x</title>".utf8))
+            }
+            let fetcher = self.fetcher(timeout: 2, resolutionPolicy: { $0.host != "internal.example.com" })
+
+            #expect(await fetcher.fetch(publicURL) == .failed)
+            #expect(ChatLinkPreviewStubURLProtocol.requestURLs == [publicURL])
+        }
+
         private func fetcher(
             timeout: TimeInterval,
-            hostPolicy: @escaping ChatLinkPreviewFetcher.HostPolicy = { _ in true }) -> ChatLinkPreviewFetcher
+            hostPolicy: @escaping ChatLinkPreviewFetcher.HostPolicy = { _ in true },
+            resolutionPolicy: @escaping ChatLinkPreviewFetcher.ResolutionPolicy = { _ in true }) -> ChatLinkPreviewFetcher
         {
             let configuration = URLSessionConfiguration.ephemeral
             configuration.protocolClasses = [ChatLinkPreviewStubURLProtocol.self]
@@ -228,6 +294,7 @@ struct ChatLinkPreviewNetworkTests {
                 configuration: configuration,
                 timeout: timeout,
                 hostPolicy: hostPolicy,
+                resolutionPolicy: resolutionPolicy,
                 connectionPolicy: { _ in true })
         }
     }
@@ -367,6 +434,7 @@ struct ChatLinkPreviewNetworkTests {
                 configuration: configuration,
                 timeout: 1,
                 hostPolicy: { _ in true },
+                resolutionPolicy: { _ in true },
                 connectionPolicy: { _ in true })
         }
     }
@@ -404,6 +472,7 @@ private actor ChatLinkPreviewFetchCounter {
 private final class ChatLinkPreviewStubURLProtocol: URLProtocol, @unchecked Sendable {
     enum Stub {
         case response(headers: [String: String], data: Data)
+        case redirect(to: URL)
         case hanging
     }
 
@@ -476,6 +545,19 @@ private final class ChatLinkPreviewStubURLProtocol: URLProtocol, @unchecked Send
             }
             self.client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
             self.client?.urlProtocol(self, didLoad: data)
+            self.client?.urlProtocolDidFinishLoading(self)
+        case let .redirect(location):
+            guard let url = self.request.url,
+                  let response = HTTPURLResponse(
+                      url: url,
+                      statusCode: 302,
+                      httpVersion: nil,
+                      headerFields: ["Location": location.absoluteString])
+            else {
+                self.client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+                return
+            }
+            self.client?.urlProtocol(self, wasRedirectedTo: URLRequest(url: location), redirectResponse: response)
             self.client?.urlProtocolDidFinishLoading(self)
         case .hanging:
             break

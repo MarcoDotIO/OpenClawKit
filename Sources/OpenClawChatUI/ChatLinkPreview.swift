@@ -264,20 +264,103 @@ private func chatDecodeHTMLEntities(_ value: String) -> String {
     return decoded
 }
 
+/// Private-network name suffixes that never resolve on the public internet (RFC 6762, RFC 8375,
+/// ICANN's reserved `.internal`, and common split-horizon zones).
+private let chatLinkPreviewPrivateHostSuffixes = [
+    ".localhost", ".local", ".internal", ".home.arpa", ".lan", ".intranet", ".corp", ".localdomain",
+]
+
+/// Pre-connect host check: rejects unsafe literals and names that can only address a private network.
 func chatLinkPreviewAllowsHost(_ url: URL) -> Bool {
-    guard chatSafeWebURL(url.absoluteString) != nil,
-          var rawHost = url.host?.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ".")),
-          rawHost != "localhost",
-          !rawHost.hasSuffix(".localhost"),
-          !rawHost.hasSuffix(".local"),
-          !rawHost.contains("%")
-    else { return false }
-    if rawHost.hasPrefix("["), rawHost.hasSuffix("]") {
-        rawHost.removeFirst()
-        rawHost.removeLast()
+    guard chatSafeWebURL(url.absoluteString) != nil, let rawHost = chatLinkPreviewHost(url) else { return false }
+    if let address = chatParsedIPAddress(rawHost) {
+        return chatLinkPreviewAllowsAddress(address)
     }
-    guard let address = chatParsedIPAddress(rawHost) else { return true }
-    return chatLinkPreviewAllowsAddress(address)
+    // Single-label names (`router`, `nas`) resolve through local search domains and are exempt
+    // from App Transport Security under NSAllowsLocalNetworking.
+    return rawHost.contains(".")
+        && rawHost != "localhost"
+        && !chatLinkPreviewPrivateHostSuffixes.contains(where: { rawHost.hasSuffix($0) })
+}
+
+/// Lowercased host without surrounding dots or IPv6 brackets; `nil` for zone ids or no host.
+private func chatLinkPreviewHost(_ url: URL) -> String? {
+    guard var host = url.host?.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ".")),
+          !host.isEmpty,
+          !host.contains("%")
+    else { return nil }
+    if host.hasPrefix("["), host.hasSuffix("]") {
+        host.removeFirst()
+        host.removeLast()
+    }
+    return host
+}
+
+/// Resolves the URL's host before any request is sent and requires every address to be public.
+///
+/// URLSession resolves again when it connects, so this does not stop DNS rebinding; the
+/// post-connect peer check (`publicConnectionsOnly`) still discards those responses. It does keep
+/// the request (path and query included) from reaching hosts whose public DNS already points at a
+/// private network. Fails closed when resolution fails or exceeds the preview timeout.
+func chatLinkPreviewResolvesToPublicAddresses(_ url: URL) async -> Bool {
+    guard let host = chatLinkPreviewHost(url) else { return false }
+    if let address = chatParsedIPAddress(host) {
+        return chatLinkPreviewAllowsAddress(address)
+    }
+    return await withCheckedContinuation { continuation in
+        let resume = ChatLinkPreviewResumeOnce(continuation)
+        let queue = DispatchQueue.global(qos: .utility)
+        queue.asyncAfter(deadline: .now() + chatLinkPreviewTimeout) { resume.resume(false) }
+        queue.async {
+            let addresses = chatResolvedIPAddresses(host)
+            resume.resume(!addresses.isEmpty && addresses.allSatisfy(chatLinkPreviewAllowsAddress))
+        }
+    }
+}
+
+private final class ChatLinkPreviewResumeOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Bool, Never>?
+
+    init(_ continuation: CheckedContinuation<Bool, Never>) {
+        self.continuation = continuation
+    }
+
+    func resume(_ value: Bool) {
+        let continuation = self.lock.withLock { () -> CheckedContinuation<Bool, Never>? in
+            defer { self.continuation = nil }
+            return self.continuation
+        }
+        continuation?.resume(returning: value)
+    }
+}
+
+/// Every address `getaddrinfo` returns for `host` (empty on failure). Blocking; call off the main thread.
+private func chatResolvedIPAddresses(_ host: String) -> [ChatIPAddress] {
+    var hints = addrinfo()
+    hints.ai_family = AF_UNSPEC
+    hints.ai_socktype = SOCK_STREAM
+    hints.ai_flags = AI_DEFAULT
+    var list: UnsafeMutablePointer<addrinfo>?
+    guard getaddrinfo(host, nil, &hints, &list) == 0, let list else { return [] }
+    defer { freeaddrinfo(list) }
+    var addresses: [ChatIPAddress] = []
+    var cursor: UnsafeMutablePointer<addrinfo>? = list
+    while let entry = cursor?.pointee {
+        defer { cursor = entry.ai_next }
+        guard let socketAddress = entry.ai_addr else { continue }
+        switch Int32(socketAddress.pointee.sa_family) {
+        case AF_INET:
+            let address = socketAddress.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee.sin_addr }
+            addresses.append(.v4(withUnsafeBytes(of: address) { Array($0) }))
+        case AF_INET6:
+            let address = socketAddress.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) { $0.pointee.sin6_addr }
+            addresses.append(.v6(withUnsafeBytes(of: address) { Array($0) }))
+        default:
+            continue
+        }
+    }
+    return addresses
 }
 
 private enum ChatIPAddress {
@@ -319,6 +402,14 @@ private func chatLinkPreviewAllowsAddress(_ address: ChatIPAddress) -> Bool {
             || first >= 224)
     case let .v6(bytes):
         guard bytes.count == 16 else { return false }
+        // IPv4-mapped (::ffff:0:0/96) and well-known-prefix NAT64 (64:ff9b::/96, RFC 6052) peers embed
+        // the real IPv4 destination: judge that address. DNS64 synthesizes these on IPv6-only networks.
+        // 64:ff9b:1::/48 (RFC 8215 local use) falls through and is rejected as non-global below.
+        if bytes.hasPrefix([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF])
+            || bytes.hasPrefix([0x00, 0x64, 0xFF, 0x9B, 0, 0, 0, 0, 0, 0, 0, 0])
+        {
+            return chatLinkPreviewAllowsAddress(.v4(Array(bytes[12..<16])))
+        }
         let globalUnicast = bytes[0] & 0xE0 == 0x20
         let special2001 = bytes.hasPrefix([0x20, 0x01, 0x00])
         let orchid = special2001 && (bytes[3] & 0xF0 == 0x10 || bytes[3] & 0xF0 == 0x20)
@@ -332,7 +423,8 @@ private func chatLinkPreviewAllowsAddress(_ address: ChatIPAddress) -> Bool {
     }
 }
 
-private func chatLinkPreviewAllowsRemoteAddress(_ address: String) -> Bool {
+/// Post-connect check for one transaction's peer address as URLSession metrics report it.
+func chatLinkPreviewAllowsRemoteAddress(_ address: String) -> Bool {
     guard let parsed = chatParsedIPAddress(address) else { return false }
     return chatLinkPreviewAllowsAddress(parsed)
 }
@@ -404,22 +496,29 @@ private enum ChatLinkPreviewFetchMode {
 
 final class ChatLinkPreviewFetcher: @unchecked Sendable {
     typealias HostPolicy = @Sendable (URL) -> Bool
+    typealias ResolutionPolicy = @Sendable (URL) async -> Bool
     typealias ConnectionPolicy = @Sendable ([String?]) -> Bool
 
     private let configuration: URLSessionConfiguration
     private let timeout: TimeInterval
     private let hostPolicy: HostPolicy
+    private let resolutionPolicy: ResolutionPolicy
     private let connectionPolicy: ConnectionPolicy
 
+    /// Three checks guard every request and redirect hop: the host literal/name (`hostPolicy`),
+    /// the resolved addresses before sending (`resolutionPolicy`), and each transaction's actual
+    /// peer address after connecting (`connectionPolicy`).
     init(
         configuration: URLSessionConfiguration = .chatLinkPreview,
         timeout: TimeInterval = chatLinkPreviewTimeout,
         hostPolicy: @escaping HostPolicy = chatLinkPreviewAllowsHost,
+        resolutionPolicy: @escaping ResolutionPolicy = chatLinkPreviewResolvesToPublicAddresses,
         connectionPolicy: @escaping ConnectionPolicy = ChatLinkPreviewFetcher.publicConnectionsOnly)
     {
         self.configuration = configuration
         self.timeout = timeout
         self.hostPolicy = hostPolicy
+        self.resolutionPolicy = resolutionPolicy
         self.connectionPolicy = connectionPolicy
     }
 
@@ -452,12 +551,17 @@ final class ChatLinkPreviewFetcher: @unchecked Sendable {
         _ originalURL: URL,
         mode: ChatLinkPreviewFetchMode) async -> ChatLinkPreviewResponse?
     {
-        guard chatSafeWebURL(originalURL.absoluteString) != nil, self.hostPolicy(originalURL) else {
+        guard chatSafeWebURL(originalURL.absoluteString) != nil,
+              self.hostPolicy(originalURL),
+              await self.resolutionPolicy(originalURL),
+              !Task.isCancelled
+        else {
             return nil
         }
         let delegate = ChatLinkPreviewSessionDelegate(
             mode: mode,
             hostPolicy: self.hostPolicy,
+            resolutionPolicy: self.resolutionPolicy,
             connectionPolicy: self.connectionPolicy)
         let session = URLSession(configuration: self.configuration, delegate: delegate, delegateQueue: nil)
         var request = URLRequest(url: originalURL, timeoutInterval: self.timeout)
@@ -484,7 +588,7 @@ final class ChatLinkPreviewFetcher: @unchecked Sendable {
         return response
     }
 
-    private static func publicConnectionsOnly(_ addresses: [String?]) -> Bool {
+    static func publicConnectionsOnly(_ addresses: [String?]) -> Bool {
         !addresses.isEmpty && addresses.allSatisfy { address in
             address.map(chatLinkPreviewAllowsRemoteAddress) == true
         }
@@ -516,6 +620,7 @@ private final class ChatLinkPreviewSessionDelegate: NSObject, URLSessionDataDele
     private let lock = NSLock()
     private let mode: ChatLinkPreviewFetchMode
     private let hostPolicy: ChatLinkPreviewFetcher.HostPolicy
+    private let resolutionPolicy: ChatLinkPreviewFetcher.ResolutionPolicy
     private let connectionPolicy: ChatLinkPreviewFetcher.ConnectionPolicy
     private var continuation: CheckedContinuation<ChatLinkPreviewResponse?, Never>?
     private var responseURL: URL?
@@ -530,10 +635,12 @@ private final class ChatLinkPreviewSessionDelegate: NSObject, URLSessionDataDele
     init(
         mode: ChatLinkPreviewFetchMode,
         hostPolicy: @escaping ChatLinkPreviewFetcher.HostPolicy,
+        resolutionPolicy: @escaping ChatLinkPreviewFetcher.ResolutionPolicy,
         connectionPolicy: @escaping ChatLinkPreviewFetcher.ConnectionPolicy)
     {
         self.mode = mode
         self.hostPolicy = hostPolicy
+        self.resolutionPolicy = resolutionPolicy
         self.connectionPolicy = connectionPolicy
         self.body = ChatLinkPreviewBodyAccumulator(maxBytes: mode.maxBodyBytes)
     }
@@ -573,7 +680,15 @@ private final class ChatLinkPreviewSessionDelegate: NSObject, URLSessionDataDele
             }
             return url
         }
-        completionHandler(nextURL == nil ? nil : request)
+        guard let nextURL else {
+            completionHandler(nil)
+            return
+        }
+        // Each hop gets the same pre-send address check as the original URL.
+        let resolutionPolicy = self.resolutionPolicy
+        Task {
+            completionHandler(await resolutionPolicy(nextURL) ? request : nil)
+        }
     }
 
     func urlSession(
@@ -613,9 +728,10 @@ private final class ChatLinkPreviewSessionDelegate: NSObject, URLSessionDataDele
     }
 
     func urlSession(_: URLSession, task _: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
-        // URLSession has no DNS hook. Pre-flight rejects unsafe literals; after connection,
-        // every transaction's actual peer address is required and re-validated. The body is
-        // discarded if Foundation omits metrics or reports any non-public address.
+        // URLSession has no DNS hook. Pre-flight rejects unsafe literals and names, then resolves
+        // the host; after connection, every transaction's actual peer address is required and
+        // re-validated (DNS rebinding). The body is discarded if Foundation omits metrics or
+        // reports any non-public address.
         self.lock.withLock {
             self.remoteAddresses.append(contentsOf: metrics.transactionMetrics.map(\.remoteAddress))
         }
@@ -797,8 +913,12 @@ final class ChatLinkPreviewModel {
 #if os(iOS) || os(macOS) || os(visionOS)
 extension OpenClawChatDisplayOptions {
     /// Shows a collapsed preview chip for the first web link in user and assistant messages. Off by
-    /// default: expanding a chip fetches the page and its image from this device (public addresses only,
-    /// size- and redirect-capped), which reveals the viewer's network address to that site.
+    /// default: expanding a chip fetches the page and its image from this device (size- and
+    /// redirect-capped, without cookies or credentials), which reveals the viewer's network address to
+    /// that site. Private-network literals and names are refused, and hostnames must resolve to public
+    /// addresses before each request is sent. A host that switches its DNS to a private address between
+    /// that check and the connection (DNS rebinding) can still receive one cookie-less GET; its
+    /// response is discarded after the peer address check.
     public static let linkPreviews = Self(rawValue: 1 << 2)
 }
 
