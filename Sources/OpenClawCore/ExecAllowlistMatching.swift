@@ -277,7 +277,9 @@ public struct ExecCommandResolution: Sendable, Equatable {
     /// Fails closed (`nil`) for command substitution, process substitution, redirections, background
     /// jobs, comments followed by more lines, unterminated quotes, and executables the shell would
     /// expand (`$VAR/…`, globs, `~user/…`) or leading `NAME=value` assignments (upstream
-    /// `dynamic-executable` and `shell-env-assignment`, which only a prompt can approve).
+    /// `dynamic-executable` and `shell-env-assignment`, which only a prompt can approve). Quoted
+    /// command substitution inside an array subscript (`printf -v 'a[$(id)]' x`) fails closed too,
+    /// because shell builtins evaluate it.
     /// - Parameters:
     ///   - commandText: Shell command text.
     ///   - cwd: Working directory.
@@ -295,6 +297,7 @@ public struct ExecCommandResolution: Sendable, Equatable {
         for segment in segments {
             guard let argv = ExecShellWords.split(segment), let first = argv.first, !Self.isDynamicShellWord(first),
                   first == first.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !argv.contains(where: Self.hasSubscriptCommandSubstitution),
                   let resolution = Self.resolve(argv: argv, cwd: cwd, environment: environment),
                   let executable = resolution.argv?.first, !Self.isDynamicShellWord(executable)
             else {
@@ -355,6 +358,27 @@ public struct ExecCommandResolution: Sendable, Equatable {
             return nil
         }
         return argv[2]
+    }
+
+    /// Whether a word (after quote removal) holds command substitution after a `[`: bash and zsh
+    /// builtins evaluate array subscripts in variable-name operands even when they were quoted
+    /// (`printf -v 'a[$(id)]' x`, `test -v`, `read`, `getopts`), so the allowlisted builtin would run
+    /// the substituted command.
+    static func hasSubscriptCommandSubstitution(_ word: String) -> Bool {
+        guard let bracket = word.unicodeScalars.firstIndex(of: "[") else { return false }
+        let tail = Array(word.unicodeScalars[bracket...])
+        for (offset, scalar) in tail.enumerated() {
+            if scalar == "`" {
+                return true
+            }
+            guard scalar == "$" else { continue }
+            // Skip escapes and line breaks the evaluating shell may drop (`$\⏎(`).
+            let next = tail[(offset + 1)...].first { $0 != "\\" && $0 != "\n" && $0 != "\r" }
+            if next == "(" {
+                return true
+            }
+        }
+        return false
     }
 
     /// Whether a command word (after quote removal) is something the shell would expand or treat as

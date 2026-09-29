@@ -277,6 +277,33 @@ struct ExecAllowlistRulesTests {
     }
 
     @Test
+    func quotedSubstitutionInArraySubscriptsFailsClosed() throws {
+        // bash/zsh `printf -v`, `test -v`, `read` and `getopts` evaluate subscripts of variable-name
+        // operands, running `$(…)` even when it was single-quoted.
+        let path = ["PATH": "/usr/bin:/bin"]
+        let printf = try #require(ExecCommandResolution.resolve(argv: ["printf"], environment: path)?.resolvedRealPath)
+        let test = try #require(ExecCommandResolution.resolve(argv: ["test"], environment: path)?.resolvedRealPath)
+        let evaluator = ExecAllowlistEvaluator(
+            entries: [ExecAllowlistEntry(pattern: printf), ExecAllowlistEntry(pattern: test)],
+            cwd: "/",
+            environment: path
+        )
+        for unsafe in [
+            "printf -v 'a[$(touch /tmp/pwned)]' x",
+            "printf -v \"a[\\$(touch /tmp/pwned)]\" x",
+            "printf -v 'a[`touch /tmp/pwned`]' x",
+            "test -v 'a[$\\\n(touch /tmp/pwned)]'",
+            "sh -c \"printf -v 'a[\\$(id)]' x\"",
+        ] {
+            #expect(!evaluator.allows(commandText: unsafe), "\(unsafe.debugDescription) must fail closed")
+        }
+        // Literal `$(` outside a subscript and plain subscripts stay allowed.
+        #expect(evaluator.allows(commandText: "printf '%s\\n' '$(not run)'"))
+        #expect(evaluator.allows(commandText: "printf '%s' 'a[$1]'"))
+        #expect(evaluator.allows(commandText: "test -v 'a[1]'"))
+    }
+
+    @Test
     func lineContinuationsNeverHideCommentsOrSubstitutions() throws {
         // A comment ends at the newline even after a trailing backslash; `split` would drop the next line.
         for unsafe in [
