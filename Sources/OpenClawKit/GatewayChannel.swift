@@ -351,8 +351,8 @@ public actor GatewayChannelActor {
     /// Re-trust request from the TLS pin mismatch that stopped automatic reconnects.
     ///
     /// Present both fingerprints to the user. Only after they confirm, call
-    /// ``GatewayTLSStore/acceptRotation(_:)`` and then ``resumeAfterTLSRepair()`` (usually with a
-    /// fresh ``GatewayTLSPinningSession``, whose in-memory pin still holds the old fingerprint).
+    /// ``acceptTLSPinRotation(_:)``, which updates the stored pin (and a ``GatewayTLSPinningSession``'s
+    /// in-memory pin) and reconnects.
     /// - Returns: `nil` unless a pin mismatch paused reconnects and the failure carried both fingerprints.
     public func pendingTLSPinRotationRequest() -> GatewayTLSPinRotationRequest? {
         guard self.reconnectPausedForTLSFailure else { return nil }
@@ -363,6 +363,26 @@ public actor GatewayChannelActor {
     /// last attempt had none.
     public func lastTLSFailureClassification() -> GatewayTLSFailureClassification? {
         self.lastTLSFailure.map(GatewayTLSFailureClassification.init(failure:))
+    }
+
+    /// Accepts the pending pin rotation after the user confirmed it, then reconnects.
+    ///
+    /// With a ``GatewayTLSPinningSession`` the session's in-memory pin is updated too
+    /// (``GatewayTLSPinningSession/acceptPinRotation(_:)``); other sessions only update
+    /// ``GatewayTLSStore``. Never call this without explicit user confirmation.
+    /// - Parameter request: The request from ``pendingTLSPinRotationRequest()``.
+    /// - Returns: `false` when `request` is not the pending one or the stored pin changed meanwhile.
+    @discardableResult
+    public func acceptTLSPinRotation(_ request: GatewayTLSPinRotationRequest) -> Bool {
+        guard self.reconnectPausedForTLSFailure, self.pendingTLSPinRotation == request else { return false }
+        let accepted = if let pinningSession = self.session as? GatewayTLSPinningSession {
+            pinningSession.acceptPinRotation(request)
+        } else {
+            GatewayTLSStore.acceptRotation(request)
+        }
+        guard accepted else { return false }
+        self.resumeAfterTLSRepair()
+        return true
     }
 
     /// Clears a TLS pin-mismatch pause and reconnects.

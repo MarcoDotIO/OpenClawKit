@@ -1028,6 +1028,27 @@ public final class GatewayTLSPinningSession: NSObject, WebSocketSessioning, URLS
         return self.pinningState.acceptedFingerprint
     }
 
+    /// Accepts a pin rotation the user reviewed: replaces the stored pin (compare-and-swap through
+    /// ``GatewayTLSStore/acceptRotation(_:)``) and makes this session enforce the presented fingerprint,
+    /// so the same session can reconnect.
+    ///
+    /// Refused for another store key and for explicitly configured pins (`params.expectedFingerprint`),
+    /// which only the host configuration can change.
+    /// - Parameter request: Rotation request from the pin mismatch.
+    /// - Returns: `true` when the rotation was stored and applied.
+    @discardableResult
+    public func acceptPinRotation(_ request: GatewayTLSPinRotationRequest) -> Bool {
+        guard self.params.expectedFingerprint == nil,
+              let storeKey = self.params.storeKey, storeKey == request.storeKey,
+              GatewayTLSStore.acceptRotation(request)
+        else { return false }
+        self.failureLock.lock()
+        self.pinningState.enforceFingerprint(normalizeFingerprint(request.presentedFingerprint))
+        self.lastTLSFailure = nil
+        self.failureLock.unlock()
+        return true
+    }
+
     /// Returns and clears the most recent TLS validation failure.
     public func consumeLastTLSFailure() -> GatewayTLSValidationFailure? {
         self.failureLock.lock()
