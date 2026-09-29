@@ -251,8 +251,15 @@ public actor GatewayServer: GatewayMethodRegistrar {
     var agentRuns: [String: Task<GatewayAgentWaitResult, Error>] = [:]
     var trackedRuns: [String: TrackedRun] = [:]
     var runOrder = 0
+    /// One `agent.wait` caller suspended on an active built-in run.
+    struct RunWaiter {
+        let continuation: CheckedContinuation<GatewayAgentWaitResult, Never>
+        /// Wait deadline timer, cancelled when the run finishes first.
+        let timeout: Task<Void, Never>?
+    }
+
     /// `agent.wait` callers suspended on an active built-in run.
-    var runWaiters: [String: [UUID: CheckedContinuation<GatewayAgentWaitResult, Never>]] = [:]
+    var runWaiters: [String: [UUID: RunWaiter]] = [:]
     /// Terminal results of recently finished built-in runs (newest ``completedRunLimit``).
     var completedRuns: [String: GatewayAgentWaitResult] = [:]
     var completedRunOrder: [String] = []

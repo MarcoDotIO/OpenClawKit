@@ -156,17 +156,18 @@ extension GatewayServer {
             self.completedRunOrder.removeFirst(overflow)
         }
         for waiter in (self.runWaiters.removeValue(forKey: runID) ?? [:]).values {
-            waiter.resume(returning: terminal)
+            waiter.timeout?.cancel()
+            waiter.continuation.resume(returning: terminal)
         }
     }
 
     /// Resumes one `agent.wait` caller with `timeout` once its wait deadline passes.
     private func expireRunWaiter(_ runID: String, token: UUID, sessionKey: String?, startedAt: Int64?) {
-        guard let continuation = self.runWaiters[runID]?.removeValue(forKey: token) else { return }
+        guard let waiter = self.runWaiters[runID]?.removeValue(forKey: token) else { return }
         if self.runWaiters[runID]?.isEmpty == true {
             self.runWaiters[runID] = nil
         }
-        continuation.resume(returning: GatewayAgentWaitResult(runID: runID, status: "timeout", sessionKey: sessionKey, startedAt: startedAt))
+        waiter.continuation.resume(returning: GatewayAgentWaitResult(runID: runID, status: "timeout", sessionKey: sessionKey, startedAt: startedAt))
     }
 
     /// Decodes the legacy `GatewayAgentRequest` shape, falling back to (or enriching from) upstream `AgentParams`.
@@ -247,12 +248,16 @@ extension GatewayServer {
         let timeoutMs = GatewayTimeouts.clamped(params.timeoutMs) ?? 0
         let waiter = UUID()
         return await withCheckedContinuation { continuation in
-            self.runWaiters[runID, default: [:]][waiter] = continuation
-            guard timeoutMs > 0 else { return }
-            Task { [weak self] in
-                try? await Task.sleep(nanoseconds: GatewayTimeouts.nanoseconds(milliseconds: timeoutMs))
-                await self?.expireRunWaiter(runID, token: waiter, sessionKey: tracked.sessionKey, startedAt: tracked.startedAt)
-            }
+            // The timer is cancelled when the run finishes first, so long waits leave no sleeping task.
+            let timeout: Task<Void, Never>? = timeoutMs > 0
+                ? Task { [weak self] in
+                    guard (try? await Task.sleep(nanoseconds: GatewayTimeouts.nanoseconds(milliseconds: timeoutMs))) != nil else {
+                        return
+                    }
+                    await self?.expireRunWaiter(runID, token: waiter, sessionKey: tracked.sessionKey, startedAt: tracked.startedAt)
+                }
+                : nil
+            self.runWaiters[runID, default: [:]][waiter] = RunWaiter(continuation: continuation, timeout: timeout)
         }
     }
 
