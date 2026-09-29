@@ -58,13 +58,30 @@ public struct InteractiveAuthFlowDescriptor: Sendable, Equatable {
 public enum InteractiveAuthFlowCatalog {
     /// Known interactive auth descriptors: the upstream 2026.9.6 flows
     /// (``upstreamProviderDescriptors``: OpenAI ChatGPT login and device pairing, xAI, OpenRouter,
-    /// Chutes) followed by the SDK device-code flows (GitHub Copilot, Qwen Portal, MiniMax Portal).
+    /// Chutes), then Sign in with ChatGPT (`chatgpt-plan`, see ``SignInWithChatGPTSession``), then the
+    /// SDK device-code flows (GitHub Copilot, Qwen Portal, MiniMax Portal).
     ///
     /// - Note: 2026.3.0 merged `openai-codex` into `openai`. The ChatGPT browser flow is listed under
     ///   `openai` and uses the upstream loopback callback `http://localhost:1455/auth/callback`
     ///   (previously `http://127.0.0.1:1455/oauth-callback`); `descriptor(for: "openai-codex")` still
     ///   resolves to it.
-    public static let descriptors: [InteractiveAuthFlowDescriptor] = upstreamProviderDescriptors + sdkDeviceCodeDescriptors
+    public static let descriptors: [InteractiveAuthFlowDescriptor] = upstreamProviderDescriptors + sdkBrowserDescriptors
+        + sdkDeviceCodeDescriptors
+
+    /// SDK browser flows not covered by the upstream descriptors: Sign in with ChatGPT for plan usage
+    /// (registration client id; later sign-ins use the issued client id).
+    static let sdkBrowserDescriptors: [InteractiveAuthFlowDescriptor] = [
+        InteractiveAuthFlowDescriptor(
+            providerID: "chatgpt-plan",
+            displayName: "Sign in with ChatGPT",
+            kind: .browserOAuth,
+            authorizationURL: SignInWithChatGPTConfiguration.authorizationURL,
+            tokenURL: SignInWithChatGPTConfiguration.tokenURL,
+            callbackURL: SignInWithChatGPTConfiguration.callbackURL(),
+            clientID: SignInWithChatGPTConfiguration.dynamicClientID,
+            scopes: SignInWithChatGPTConfiguration.identityScopes + SignInWithChatGPTConfiguration.planUsageScopes
+        ),
+    ]
 
     /// SDK device-code flows not covered by the upstream descriptors.
     static let sdkDeviceCodeDescriptors: [InteractiveAuthFlowDescriptor] = [

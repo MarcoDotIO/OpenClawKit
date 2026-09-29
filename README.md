@@ -17,13 +17,14 @@ The repository currently ships:
 - layered SwiftPM products for protocol, core runtime, gateway, agents, plugins, channels, memory, media, models, skills and MCP
 - an Apple-facing `OpenClawKit` facade for app and gateway-node integrations, plus Apple-only products for native state, App Intents, SwiftUI chat and an offline chat store
 - an in-process gateway with a public method-registration API, and a gateway client that speaks OpenClaw protocol v4
+- Sign in with ChatGPT, so people can run agents on their ChatGPT plan instead of an API key
 - provider routing across OpenAI (Platform and ChatGPT/Codex OAuth), OpenAI-compatible, Anthropic, Google Gemini/Vertex, xAI, Bedrock, Ollama, local runtimes and Apple Foundation Models (on-device and Private Cloud Compute)
 - channel adapters with upstream access policy and DM pairing, secret-aware lossless config, session transcripts, diagnostics, replay and security audit tooling
 - a published Swift-DocC site plus CI, SwiftLint, and release automation
 
 Current baseline:
 
-- latest release: `2026.3.0`
+- latest release: `2026.3.1`
 - upstream parity target: OpenClaw `v2026.9.6` at `.codex/openclaw` commit `eb377ac59e`
 - gateway protocol: v4 (operator clients negotiate 4; node sessions accept 3...4)
 - toolchain: Xcode 27.1 / Swift 6.4 for Apple platforms; the cross-platform modules stay compatible with Swift 6.2 on Linux (`swift-tools-version` 6.2)
@@ -44,7 +45,7 @@ Add the package with Swift Package Manager:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/MarcoDotIO/OpenClawKit.git", from: "2026.3.0")
+    .package(url: "https://github.com/MarcoDotIO/OpenClawKit.git", from: "2026.3.1")
 ]
 ```
 
@@ -73,7 +74,7 @@ The experimental App Intents model-delegation surface (built on the underscored 
 ```swift
 .package(
     url: "https://github.com/MarcoDotIO/OpenClawKit.git",
-    from: "2026.3.0",
+    from: "2026.3.1",
     traits: [.defaults, "ExperimentalAppleModelDelegation"]
 )
 ```
@@ -140,6 +141,24 @@ For a persistent embedded agent (session and transcript stores, the tool-calling
 
 - Swift tools: `6.2`. Build with Xcode 27.1 (Swift 6.4) on Apple platforms; Xcode's own toolchain is required to use the 27 SDKs.
 - Apple 27 APIs (FoundationModels 27, Private Cloud Compute, StateReporting, NowPlaying, App Intents 27, TrustInsights, LinkSecurity, BackgroundTasks async submission, MediaIntelligence, MusicUnderstanding, CoreAI, ScreenCaptureKit on iOS) sit behind `#if compiler(>=6.4)` and per-OS `@available`, so apps with the floors above launch on older systems. `Scripts/check-apple-weak-links.sh` enforces this.
+
+## Highlights in 2026.3.1
+
+- [Sign in with ChatGPT](https://developers.openai.com/siwc): `SignInWithChatGPTSession` runs OpenAI's open-source "ChatGPT plan usage" flow (loopback PKCE sign-in with `dynamic_agent_client` registration, RS256 ID-token validation, multi-account storage, single-flight token refresh, revocation on sign-out) on Apple platforms and Linux.
+- `ChatGPTPlanModelProvider` runs inference on the user's ChatGPT plan through the Responses API (`store: false`, streaming, namespaced function tools) and throws typed `ChatGPTPlanError`s such as "usage limit reached".
+- `OpenClawChatUI` adds the "Continue with ChatGPT" button, the one-time plan welcome, the "Using ChatGPT plan" indicator and the usage-limit prompt, following OpenAI's UI guidelines.
+
+```swift
+let session = SignInWithChatGPTSession(
+    configuration: SignInWithChatGPTClientConfiguration(agentName: "MyAgent"),
+    credentialStore: KeychainCredentialStore()
+)
+let result = try await session.signIn(using: SignInWithChatGPTWebAuthenticationBrowser())
+let models = try await ChatGPTPlanModelProvider(tokenProvider: session).listModels()
+let provider = ChatGPTPlanModelProvider(tokenProvider: session, defaultModelID: models.first?.slug)
+```
+
+See the DocC article "Sign in with ChatGPT" for accounts, errors and UI.
 
 ## Highlights in 2026.3.0
 
