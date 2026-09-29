@@ -291,4 +291,52 @@ struct CoreConfigIntegrationTests {
         #expect(host?["root"] == nil)
         #expect(collector.issues.contains { $0.path.hasPrefix("canvasHost") })
     }
+
+    @Test
+    func canvasHostMigrationKeepsPluginEnableAndDropsRetiredHostKeys() throws {
+        let document = try OpenClawConfigDocument.decode(Data(#"""
+        {"canvasHost": {"enabled": false, "port": 18793},
+         "plugins": {"entries": {"canvas": {"config": {"host": {"enabled": true, "port": 1, "liveReload": true}, "keep": 1}}}}}
+        """#.utf8))
+        let config = document.plugins?.entries?["canvas"]?.config
+        let host = config?["host"]?.dictionaryValue
+        #expect(host?["enabled"]?.boolValue == true)
+        #expect(host?["port"] == nil)
+        #expect(host?["liveReload"] == nil)
+        #expect(config?["keep"]?.intValue == 1)
+
+        // Retired plugin host keys alone also migrate; a host without enabled is removed.
+        let pluginOnly = try OpenClawConfigDocument.decode(Data(#"""
+        {"plugins": {"entries": {"canvas": {"config": {"host": {"port": 1}}}}}}
+        """#.utf8))
+        #expect(pluginOnly.plugins?.entries?["canvas"]?.config?["host"] == nil)
+    }
+
+    @Test
+    func canvasHostMigrationRetainsTemplateAndPopulatedRoots() throws {
+        let template = try OpenClawConfigDocument.decode(Data(#"""
+        {"canvasHost": {"root": "${CANVAS_ROOT}"}}
+        """#.utf8))
+        let templateHost = template.plugins?.entries?["canvas"]?.config?["host"]?.dictionaryValue
+        #expect(templateHost?["root"]?.stringValue == "${CANVAS_ROOT}")
+        #expect(templateHost?["enabled"] == nil)
+        #expect(template.additionalProperties["canvasHost"] == nil)
+
+        let legacyRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("openclaw-canvas-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: legacyRoot) }
+        let empty = MigrationValue.string(legacyRoot.path)
+        #expect(ConfigMigrationRules.shouldRetainLegacyCanvasRoot(empty) == false)
+        try FileManager.default.createDirectory(
+            at: legacyRoot.appendingPathComponent("documents/doc-1", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        #expect(ConfigMigrationRules.shouldRetainLegacyCanvasRoot(empty))
+        let populated = try OpenClawConfigDocument.decode(Data(
+            #"{"canvasHost": {"enabled": true, "root": "\#(legacyRoot.path)"}}"#.utf8
+        ))
+        let populatedHost = populated.plugins?.entries?["canvas"]?.config?["host"]?.dictionaryValue
+        #expect(populatedHost?["root"]?.stringValue == legacyRoot.path)
+        #expect(populatedHost?["enabled"]?.boolValue == true)
+    }
 }

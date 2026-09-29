@@ -35,7 +35,7 @@ struct ConfigDocumentStoreObserverTests {
         let url = directory.appendingPathComponent("openclaw.json")
         let log = EventLog()
         let store = OpenClawConfigDocumentStore(fileURL: url, environment: [:], observer: { log.append($0) })
-        #expect(await store.usesDefaultLocation == false)
+        #expect(store.usesDefaultLocation == false)
 
         let missing = try await store.load()
         #expect(log.events == [.loaded(missing)])
@@ -71,14 +71,14 @@ struct ConfigDocumentStoreObserverTests {
     }
 
     @Test
-    func defaultLocationIsDetected() async {
+    func defaultLocationIsDetected() {
         let environment = ["OPENCLAW_STATE_DIR": "/tmp/openclaw-state-\(UUID().uuidString)"]
         let implicit = OpenClawConfigDocumentStore(fileURL: nil, environment: environment, observer: nil)
-        #expect(await implicit.usesDefaultLocation)
+        #expect(implicit.usesDefaultLocation)
         let explicitDefault = OpenClawConfigDocumentStore(
             fileURL: OpenClawConfigDocumentStore.defaultConfigURL(environment: environment),
             environment: environment
         )
-        #expect(await explicitDefault.usesDefaultLocation)
+        #expect(explicitDefault.usesDefaultLocation)
     }
 }
