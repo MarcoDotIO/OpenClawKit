@@ -41,6 +41,40 @@ private struct ScriptedProvider: ModelProvider {
     }
 }
 
+/// Provider whose script may throw (call index -> response or error).
+private struct FailingScriptedProvider: ModelProvider {
+    let id = "scripted"
+    let log = RequestLog()
+    let script: @Sendable (ModelGenerationRequest, Int) throws -> ModelGenerationResponse
+
+    var capabilities: ModelProviderCapabilities {
+        ModelProviderCapabilities(supportsStreaming: true, supportsTools: true, supportsJSONSchema: true, supportsTranscript: true)
+    }
+
+    func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
+        let index = await self.log.append(request)
+        return try self.script(request, index)
+    }
+}
+
+private actor InvocationCounter {
+    private(set) var calls = 0
+
+    func increment() {
+        self.calls += 1
+    }
+}
+
+/// In-process executor that counts how often each call actually ran.
+private struct CountingExecutor: FoundationModelsToolExecuting {
+    let counter = InvocationCounter()
+
+    func executeTool(_ call: ModelToolCall) async throws -> FoundationModelsToolOutput {
+        await self.counter.increment()
+        return FoundationModelsToolOutput(text: "sent")
+    }
+}
+
 private struct FixedExecutor: FoundationModelsToolExecuting {
     let text: String
 
@@ -308,6 +342,87 @@ struct AppleFoundationModelsBridgeTests {
         #expect(toolResult.toolName == "lookup")
         #expect(toolResult.toolCallID == "p1")
         #expect(toolResult.content == [.text("42")])
+    }
+
+    @Test
+    func privateCloudFallbackNeverRepeatsInProcessTools() async throws {
+        guard #available(macOS 27.0, iOS 27.0, visionOS 27.0, *) else { return }
+        try await Self.checkFallbackAfterInProcessTools()
+    }
+
+    @available(macOS 27.0, iOS 27.0, visionOS 27.0, *)
+    private static func checkFallbackAfterInProcessTools() async throws {
+        // The model sends a message through an in-process tool, then the next turn hits a transient
+        // (fallback-eligible) failure.
+        let provider = FailingScriptedProvider { _, index in
+            if index == 0 {
+                return ModelGenerationResponse(
+                    text: "",
+                    providerID: "scripted",
+                    toolCalls: [ModelToolCall(id: "p1", name: "send", arguments: ["to": AnyCodable("ops")])]
+                )
+            }
+            throw FoundationModelsError(code: .rateLimited, message: "quota reached")
+        }
+        let executor = CountingExecutor()
+        let options = FoundationModelsProviderOptions(tools: FoundationModelsToolOptions(execution: .executeInProcess(executor)))
+        let request = ModelGenerationRequest(
+            sessionKey: "s",
+            prompt: "Tell ops.",
+            tools: [
+                ModelToolDefinition(
+                    name: "send",
+                    parameters: ["type": AnyCodable("object"), "properties": AnyCodable(["to": AnyCodable(["type": AnyCodable("string")])])]
+                ),
+            ]
+        )
+        let recorder = FoundationModelsToolCallRecorder()
+        let context = AppleFMRunContext(
+            request: request,
+            options: options,
+            providerID: "apple-fm",
+            target: .privateCloudCompute,
+            sink: nil,
+            recorder: recorder
+        )
+        let fallbacks = InvocationCounter()
+        do {
+            _ = try await AppleFoundationModelsEngine.attemptWithFallback(recorder: recorder, sink: nil) {
+                try await AppleFMGeneration27.run(model: OpenClawLanguageModel(provider: provider), context: context, tokenCounter: nil)
+            } fallback: { _ in
+                await fallbacks.increment()
+                return FoundationModelsGenerationResult(response: ModelGenerationResponse(text: "again", providerID: "apple-fm"), target: .system)
+            }
+            Issue.record("expected the failure to propagate instead of falling back")
+        } catch {
+            let failure = await AppleFoundationModelsEngine.failure(error, recorder: recorder)
+            let modelError = try #require(failure as? FoundationModelsError)
+            #expect(modelError.code == .rateLimited)
+            #expect(!modelError.retryable)
+            #expect(modelError.executedToolCalls.map(\.call.name) == ["send"])
+            #expect(modelError.executedToolCalls.first?.output.text == "sent")
+        }
+        #expect(await fallbacks.calls == 0)
+        #expect(await executor.counter.calls == 1)
+
+        // Without side effects the same failure still falls back to the on-device model.
+        let clean = FoundationModelsToolCallRecorder()
+        let result = try await AppleFoundationModelsEngine.attemptWithFallback(recorder: clean, sink: nil) {
+            throw FoundationModelsError(code: .networkFailure, message: "offline")
+        } fallback: { error in
+            #expect(error.code == .networkFailure)
+            return FoundationModelsGenerationResult(response: ModelGenerationResponse(text: "on device", providerID: "apple-fm"), target: .system)
+        }
+        #expect(result.response.text == "on device")
+        // A non-transient failure never falls back.
+        await #expect(throws: FoundationModelsError.self) {
+            _ = try await AppleFoundationModelsEngine.attemptWithFallback(recorder: clean, sink: nil) {
+                throw FoundationModelsError(code: .guardrail, message: "blocked")
+            } fallback: { _ in
+                Issue.record("guardrail failures must not fall back")
+                return FoundationModelsGenerationResult(response: ModelGenerationResponse(text: "", providerID: "apple-fm"), target: .system)
+            }
+        }
     }
 
     @Test

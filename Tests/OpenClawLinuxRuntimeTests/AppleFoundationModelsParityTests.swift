@@ -222,6 +222,27 @@ struct AppleFoundationModelsErrorTests {
     }
 
     @Test
+    func errorsAfterInProcessToolsCarryTheCallsAndNeverInviteRetries() {
+        let executed = [
+            FoundationModelsExecutedToolCall(
+                call: ModelToolCall(id: "c1", name: "message.send", arguments: ["to": AnyCodable("ops")]),
+                output: FoundationModelsToolOutput(text: "sent")
+            ),
+        ]
+        let limited = FoundationModelsError(code: .networkFailure, message: "offline").recordingExecutedToolCalls(executed)
+        #expect(limited.code == .networkFailure)
+        #expect(!limited.retryable)
+        #expect(limited.executedToolCalls == executed)
+        #expect(limited.message.contains("message.send"))
+        // A context overflow after side effects must not trigger the loop's compact-and-retry.
+        let overflow = FoundationModelsError(code: .contextOverflow, message: "too long", executedToolCalls: executed)
+        #expect(!overflow.retryable)
+        #expect(!overflow.isContextOverflow)
+        #expect(FoundationModelsError(code: .contextOverflow, message: "too long").isContextOverflow)
+        #expect(FoundationModelsError(code: .timeout, message: "slow").recordingExecutedToolCalls([]).retryable)
+    }
+
+    @Test
     func mapperPassesThroughKnownErrorsAndSniffsSandboxFailures() {
         let original = OpenClawCoreError.unavailable("x")
         #expect(FoundationModelsErrorMapper.map(original) is OpenClawCoreError)

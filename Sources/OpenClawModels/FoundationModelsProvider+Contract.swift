@@ -21,9 +21,11 @@ public extension FoundationModelsGenerationResult {
 }
 
 extension FoundationModelsError: ModelContextOverflowReporting {
-    /// Whether the error is a context-window overflow (``Code/contextOverflow``).
+    /// Whether the error is a context-window overflow (``Code/contextOverflow``) that is safe to
+    /// retry after compaction: `false` once in-process tools already ran
+    /// (``executedToolCalls``), because an automatic retry would repeat their side effects.
     public var isContextOverflow: Bool {
-        self.code == .contextOverflow
+        self.code == .contextOverflow && self.executedToolCalls.isEmpty
     }
 
     /// Model context window reported with the overflow.

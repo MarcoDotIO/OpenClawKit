@@ -29,6 +29,11 @@ actor FoundationModelsToolCallRecorder {
     func recordExecuted(_ call: ModelToolCall, output: FoundationModelsToolOutput) {
         self.executed.append(FoundationModelsExecutedToolCall(call: call, output: output))
     }
+
+    /// Forgets proposed calls (they have no side effects) before a retry on another backend.
+    func discardProposed() {
+        self.proposed = []
+    }
 }
 
 /// Host tool registered with Foundation Models (upstream `HostTool`).
