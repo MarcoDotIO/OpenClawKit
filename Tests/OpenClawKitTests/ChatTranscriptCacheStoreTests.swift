@@ -195,6 +195,9 @@ extension OpenClawChatSQLiteTranscriptCache {
     }
 }
 
+// Serialized: every case opens real SQLite files synchronously; running them all at once starves
+// timing-sensitive suites that share the cooperative pool.
+@Suite(.serialized)
 final class ChatTranscriptCacheStoreTests: ClientDatabaseTestSuite, @unchecked Sendable {
     @Test func `one installation owns exactly the two named databases`() throws {
         let sqliteFiles = try FileManager.default.contentsOfDirectory(atPath: directory.path)
@@ -831,6 +834,9 @@ final class ChatTranscriptCacheStoreTests: ClientDatabaseTestSuite, @unchecked S
     }
 }
 
+// Serialized: every case opens real SQLite files synchronously; running them all at once starves
+// timing-sensitive suites that share the cooperative pool.
+@Suite(.serialized)
 final class ClientDatabaseLegacyImportTests: TemporaryDatabaseTestSuite, @unchecked Sendable {
     @Test func `legacy v1 cache is discarded`() async throws {
         let legacyURL = directory.appendingPathComponent("chat-cache.sqlite")
@@ -1090,6 +1096,9 @@ final class ClientDatabaseLegacyImportTests: TemporaryDatabaseTestSuite, @unchec
     }
 }
 
+// Serialized: every case opens real SQLite files synchronously; running them all at once starves
+// timing-sensitive suites that share the cooperative pool.
+@Suite(.serialized)
 final class ChatCommandOutboxStoreTests: ClientDatabaseTestSuite, @unchecked Sendable {
     @Test func `session settings expectation survives a cold outbox reopen`() async throws {
         let expectation = OpenClawChatSessionSettingsExpectation(
@@ -1663,6 +1672,9 @@ final class ChatCommandOutboxStoreTests: ClientDatabaseTestSuite, @unchecked Sen
     }
 }
 
+// Serialized: every case opens real SQLite files synchronously; running them all at once starves
+// timing-sensitive suites that share the cooperative pool.
+@Suite(.serialized)
 final class WatchMessageJournalStoreTests: ClientDatabaseTestSuite, @unchecked Sendable {
     private let now = Int64(Date().timeIntervalSince1970 * 1000)
     private var journal: OpenClawWatchMessageJournal {

@@ -831,6 +831,8 @@ actor ScriptedOutbox: OpenClawChatCommandOutbox {
     }
 }
 
+// Serialized: every case opens a real SQLite outbox (see ChatTranscriptCacheStoreTests).
+@Suite(.serialized)
 struct ChatViewModelOutboxTests {
     @Test func `offline send queues durably and renders queued row`() async throws {
         let (store, _, databaseDirectory) = try makeOutboxStore()
