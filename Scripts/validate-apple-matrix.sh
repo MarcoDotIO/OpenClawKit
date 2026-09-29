@@ -120,6 +120,12 @@ while IFS= read -r file; do
   done <<<"${call_lines}"
 done <<<"$(swift_files_matching 'submitTaskRequest\(' Sources Examples)"
 
+# OS 27-only availability sites must also be compiled out below Swift 6.4, because CI and SDK
+# consumers can build with Xcode 26 (26 SDKs), where the 27-only types do not exist.
+if ! python3 Scripts/check-os27-compiler-gates.py Sources Tests Examples; then
+  status=1
+fi
+
 if [[ ${status} -ne 0 ]]; then
   exit 1
 fi

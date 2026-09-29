@@ -1,6 +1,7 @@
+import Foundation
+
 #if compiler(>=6.4) && canImport(AppIntents)
 import AppIntents
-import Foundation
 import OpenClawKit
 
 /// Runs a longer OpenClaw task in the background with progress ("Run OpenClaw Task", OS 27).
