@@ -14,6 +14,18 @@ extension OpenClawClientDatabases {
     ///
     /// The directory is not created; ``init(directoryURL:legacyDirectoryURLs:registeredGatewayIDs:)``
     /// creates it with private permissions.
+    ///
+    /// The app container (the default, and upstream's only placement) is the safe choice. An
+    /// app-group directory shared with another process has extra host obligations:
+    /// - Call ``suspend()`` when the app enters the background (and before background tasks expire)
+    ///   and ``resume()`` when it becomes active and at the start of every background-mode callback.
+    ///   Otherwise iOS can terminate the app (`0xDEAD10CC`) for holding a SQLite lock on a
+    ///   shared-container file at suspension.
+    /// - Live change notifications (the outbox `changes()` stream and view-model refreshes) only
+    ///   reach the process that made the change. Another process sees queued commands and cached
+    ///   transcripts on its next load, so reload after it hands off work.
+    /// - First open and migration are coordinated with `NSFileCoordinator`, so concurrent launches
+    ///   do not race the schema; writes wait up to five seconds for another process's lock.
     /// - Throws: `CocoaError(.fileNoSuchFile)` when the app-group container is unavailable (for
     ///   example, a missing entitlement), or the Application Support lookup error.
     public static func defaultDirectoryURL(appGroupIdentifier: String? = nil) throws -> URL {
