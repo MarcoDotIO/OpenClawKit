@@ -68,9 +68,10 @@ struct ApprovalQuestionBrokerTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let grantsURL = directory.appendingPathComponent("grants.json")
         let broker = ApprovalBroker(grantsFileURL: grantsURL)
-        let key = ApprovalBroker.execGrantKey(command: "git status -s")
-        #expect(key == "exec:git status")
-        #expect(ApprovalBroker.execGrantKey(command: "/usr/bin/rm -rf /") == "exec:rm")
+        let key = try #require(ApprovalBroker.execGrantKey(command: "git status"))
+        // Grants bind the exact argv: flags and different paths get their own keys.
+        #expect(ApprovalBroker.execGrantKey(command: "git status -s") != key)
+        #expect(ApprovalBroker.execGrantKey(command: "/usr/bin/rm -rf /") != ApprovalBroker.execGrantKey(command: "/usr/bin/rm -f x"))
 
         let waiter = Task {
             await broker.requestAndWait(presentation: .exec(commandText: "git status"), agentID: "main", grantKey: key)
@@ -86,7 +87,7 @@ struct ApprovalQuestionBrokerTests {
         #expect(await waiter.value.isAllowed)
 
         // The grant answers the next request without a pending approval.
-        let reused = await broker.requestAndWait(presentation: .exec(commandText: "git status -v"), agentID: "main", grantKey: key)
+        let reused = await broker.requestAndWait(presentation: .exec(commandText: "git status"), agentID: "main", grantKey: key)
         #expect(reused.isAllowed)
         #expect(await broker.pending().isEmpty)
         let grants = await broker.listGrants()
