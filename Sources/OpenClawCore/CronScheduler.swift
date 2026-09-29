@@ -538,8 +538,7 @@ public actor CronScheduler {
         self.loop = Task.detached { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                let delay = await self.secondsUntilNextWake()
-                await self.sleep(nanoseconds: UInt64(max(0.05, min(60, delay)) * 1_000_000_000))
+                await self.sleepUntilNextWake()
                 if Task.isCancelled { return }
                 await self.runDueJobs()
             }
@@ -561,8 +560,11 @@ public actor CronScheduler {
         return next.timeIntervalSince(self.now())
     }
 
-    /// Sleeps in a separate task that ``reschedule()`` can cancel to wake the loop early.
-    private func sleep(nanoseconds: UInt64) async {
+    /// Sleeps until the next due job (50 ms...60 s) in a separate task that ``reschedule()`` can cancel to
+    /// wake the loop early. The delay is computed and the sleeper installed in one actor turn, so a job
+    /// change that lands in between can never be missed.
+    private func sleepUntilNextWake() async {
+        let nanoseconds = UInt64(max(0.05, min(60, self.secondsUntilNextWake())) * 1_000_000_000)
         let sleeper = Task<Void, Never> { try? await Task.sleep(nanoseconds: nanoseconds) }
         self.sleeper = sleeper
         await sleeper.value

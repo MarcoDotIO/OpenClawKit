@@ -44,6 +44,25 @@ struct AutomationHardeningTests {
     }
 
     @Test
+    func addingAJobWakesTheSleepingLoop() async throws {
+        let scheduler = CronScheduler()
+        await scheduler.setExecutor { _ in AutomationRunOutcome(status: .ok) }
+        // No jobs: the loop sleeps for its one-minute cap until a job change wakes it.
+        await scheduler.start()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        let at = ISO8601DateFormatter().string(from: Date().addingTimeInterval(1))
+        let job = try await scheduler.addJob(AutomationJob(name: "soon", schedule: .at(at), payload: Self.event))
+        let deadline = Date().addingTimeInterval(10)
+        var records = await scheduler.runs(jobID: job.id)
+        while records.isEmpty, Date() < deadline {
+            try await Task.sleep(nanoseconds: 20_000_000)
+            records = await scheduler.runs(jobID: job.id)
+        }
+        await scheduler.stop()
+        #expect(records.first?.status == .ok, "the job ran well before the loop's one-minute cap")
+    }
+
+    @Test
     func runningJobsAreNotDueAgain() async throws {
         let scheduler = CronScheduler()
         let gate = AsyncGate()
