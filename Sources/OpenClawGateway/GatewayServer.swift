@@ -212,13 +212,17 @@ public actor GatewayServer: GatewayMethodRegistrar {
         let implementation: MethodImplementation
     }
 
-    /// Metadata of an agent run started through the built-in `agent`/`sessions.send` handlers.
+    /// Metadata of an active agent run started through the built-in `agent`/`sessions.send` handlers.
     struct TrackedRun: Sendable {
         let sessionKey: String
         let agentID: String
         let startedAt: Int64
         /// Start order (breaks `startedAt` ties within one millisecond).
         let order: Int
+        /// Identity of this tracking (a later run reusing the run id gets a new token).
+        let token: UUID
+        /// Whether `sessions.abort` already cancelled the run (it stays tracked until it finishes).
+        var aborted = false
     }
 
     /// One event subscription.
@@ -243,9 +247,17 @@ public actor GatewayServer: GatewayMethodRegistrar {
     /// Node pairing records backing `node.pair.*`, `node.list` and `node.rename`.
     nonisolated public let nodePairing: GatewayNodePairingStore
     let agentIdempotency = GatewayIdempotencyCache()
+    /// Tasks of the active built-in runs (finished runs move to ``completedRuns``).
     var agentRuns: [String: Task<GatewayAgentWaitResult, Error>] = [:]
     var trackedRuns: [String: TrackedRun] = [:]
     var runOrder = 0
+    /// `agent.wait` callers suspended on an active built-in run.
+    var runWaiters: [String: [UUID: CheckedContinuation<GatewayAgentWaitResult, Never>]] = [:]
+    /// Terminal results of recently finished built-in runs (newest ``completedRunLimit``).
+    var completedRuns: [String: GatewayAgentWaitResult] = [:]
+    var completedRunOrder: [String] = []
+    /// Finished built-in runs whose results stay available to late `agent.wait` calls.
+    static let completedRunLimit = 256
     private var methods: [String: MethodEntry]
     private var resolvers: [GatewayMethodResolver] = []
     var eventSubscribers: [UUID: EventSubscriber] = [:]

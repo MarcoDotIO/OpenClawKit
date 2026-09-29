@@ -105,10 +105,68 @@ extension GatewayServer {
         )
     }
 
+    /// Tracks a built-in run until its task finishes, then keeps the terminal result for late waits.
     func trackRun(_ execution: GatewayAgentExecution, sessionKey: String, agentID: String, startedAt: Int64) {
-        self.agentRuns[execution.runID] = execution.task
+        let runID = execution.runID
+        let token = UUID()
+        self.agentRuns[runID] = execution.task
         self.runOrder += 1
-        self.trackedRuns[execution.runID] = TrackedRun(sessionKey: sessionKey, agentID: agentID, startedAt: startedAt, order: self.runOrder)
+        self.trackedRuns[runID] = TrackedRun(sessionKey: sessionKey, agentID: agentID, startedAt: startedAt, order: self.runOrder, token: token)
+        if self.completedRuns.removeValue(forKey: runID) != nil {
+            self.completedRunOrder.removeAll { $0 == runID }
+        }
+        let task = execution.task
+        Task { [weak self] in
+            let result: GatewayAgentWaitResult
+            do {
+                result = try await task.value
+            } catch {
+                result = GatewayAgentWaitResult(
+                    runID: runID,
+                    status: "error",
+                    sessionKey: sessionKey,
+                    error: error is CancellationError ? "aborted" : error.localizedDescription
+                )
+            }
+            await self?.finishTrackedRun(runID, token: token, result: result)
+        }
+    }
+
+    /// Moves a finished run from the active tables to ``completedRuns`` and resumes its waiters.
+    private func finishTrackedRun(_ runID: String, token: UUID, result: GatewayAgentWaitResult) {
+        guard let tracked = self.trackedRuns[runID], tracked.token == token else { return }
+        self.agentRuns.removeValue(forKey: runID)
+        self.trackedRuns.removeValue(forKey: runID)
+        let terminal = GatewayAgentWaitResult(
+            runID: runID,
+            status: result.status,
+            sessionKey: result.sessionKey ?? tracked.sessionKey,
+            output: result.output,
+            error: result.error,
+            startedAt: result.startedAt,
+            endedAt: result.endedAt
+        ).stamped(startedAt: tracked.startedAt, endedAt: gatewayNowMs())
+        self.completedRuns[runID] = terminal
+        self.completedRunOrder.append(runID)
+        if self.completedRunOrder.count > Self.completedRunLimit {
+            let overflow = self.completedRunOrder.count - Self.completedRunLimit
+            for id in self.completedRunOrder.prefix(overflow) {
+                self.completedRuns.removeValue(forKey: id)
+            }
+            self.completedRunOrder.removeFirst(overflow)
+        }
+        for waiter in (self.runWaiters.removeValue(forKey: runID) ?? [:]).values {
+            waiter.resume(returning: terminal)
+        }
+    }
+
+    /// Resumes one `agent.wait` caller with `timeout` once its wait deadline passes.
+    private func expireRunWaiter(_ runID: String, token: UUID, sessionKey: String?, startedAt: Int64?) {
+        guard let continuation = self.runWaiters[runID]?.removeValue(forKey: token) else { return }
+        if self.runWaiters[runID]?.isEmpty == true {
+            self.runWaiters[runID] = nil
+        }
+        continuation.resume(returning: GatewayAgentWaitResult(runID: runID, status: "timeout", sessionKey: sessionKey, startedAt: startedAt))
     }
 
     /// Decodes the legacy `GatewayAgentRequest` shape, falling back to (or enriching from) upstream `AgentParams`.
@@ -121,7 +179,8 @@ extension GatewayServer {
     public static func agentRequest(from request: GatewayMethodRequest) throws -> GatewayAgentRequest {
         let legacy = Result { try GatewayPayloadCodec.decode(GatewayAgentRequest.self, from: request.rawParams) }
         let upstream = try? GatewayPayloadCodec.decode(AgentParams.self, from: request.rawParams)
-        let upstreamTimeoutMs = upstream?.timeout.map { min(max($0, 0), Int.max / 1000) * 1000 }
+        // Upstream `timeout` is seconds; both it and `timeoutMs` clamp to the upstream timer bound.
+        let upstreamTimeoutMs = upstream?.timeout.map { min(max($0, 0), Int(GatewayTimeouts.maxTimeoutMs / 1000)) * 1000 }
         let params = request.params
         switch legacy {
         case .success(let legacy):
@@ -131,7 +190,7 @@ extension GatewayServer {
                 message: legacy.message ?? upstream?.message,
                 modelProviderID: legacy.modelProviderID ?? Self.normalizedText(upstream?.provider),
                 modelID: legacy.modelID ?? Self.normalizedText(upstream?.model),
-                timeoutMs: legacy.timeoutMs ?? upstreamTimeoutMs,
+                timeoutMs: GatewayTimeouts.clamped(legacy.timeoutMs) ?? upstreamTimeoutMs,
                 deliver: legacy.deliver ?? upstream?.deliver,
                 agentID: Self.normalizedText(legacy.agentID),
                 sessionID: Self.normalizedText(legacy.sessionID),
@@ -170,36 +229,31 @@ extension GatewayServer {
     }
 
     /// `agent.wait {runId, timeoutMs?}` → `{runId, status: ok|error|timeout, startedAt, endedAt?, error?}`
-    /// (plus the SDK extras `sessionKey` and `output`). A timed-out wait keeps tracking the run.
+    /// (plus the SDK extras `sessionKey` and `output`).
+    ///
+    /// Answers `timeout` once `timeoutMs` elapses (the run keeps going and stays tracked); without a
+    /// positive `timeoutMs` it waits for the run to finish. A run whose task throws answers
+    /// `{status: "error", error}`. Finished runs stay answerable for the newest
+    /// ``completedRunLimit`` runs.
     private func handleAgentWait(_ request: GatewayMethodRequest) async throws -> GatewayAgentWaitResult {
         let params = try request.decodeParams(GatewayAgentWaitParams.self)
-        guard let task = self.agentRuns[params.runID] else {
-            throw GatewayMethodError.unavailable("Agent run '\(params.runID)' is not tracked by this gateway server")
+        let runID = params.runID
+        if let completed = self.completedRuns[runID] {
+            return completed
         }
-        let tracked = self.trackedRuns[params.runID]
-        let result: GatewayAgentWaitResult
-        if let timeoutMs = params.timeoutMs, timeoutMs > 0 {
-            result = try await withThrowingTaskGroup(of: GatewayAgentWaitResult.self) { group in
-                group.addTask {
-                    try await task.value
-                }
-                group.addTask {
-                    try await Task.sleep(nanoseconds: UInt64(timeoutMs) * 1_000_000)
-                    return GatewayAgentWaitResult(runID: params.runID, status: "timeout", sessionKey: tracked?.sessionKey)
-                }
-                let first = try await group.next() ?? GatewayAgentWaitResult(runID: params.runID, status: "timeout")
-                group.cancelAll()
-                return first
+        guard self.agentRuns[runID] != nil, let tracked = self.trackedRuns[runID] else {
+            throw GatewayMethodError.unavailable("Agent run '\(runID)' is not tracked by this gateway server")
+        }
+        let timeoutMs = GatewayTimeouts.clamped(params.timeoutMs) ?? 0
+        let waiter = UUID()
+        return await withCheckedContinuation { continuation in
+            self.runWaiters[runID, default: [:]][waiter] = continuation
+            guard timeoutMs > 0 else { return }
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: GatewayTimeouts.nanoseconds(milliseconds: timeoutMs))
+                await self?.expireRunWaiter(runID, token: waiter, sessionKey: tracked.sessionKey, startedAt: tracked.startedAt)
             }
-        } else {
-            result = try await task.value
         }
-        let terminal = result.status == "ok" || result.status == "error"
-        if terminal {
-            self.agentRuns.removeValue(forKey: params.runID)
-            self.trackedRuns.removeValue(forKey: params.runID)
-        }
-        return result.stamped(startedAt: tracked?.startedAt, endedAt: terminal ? gatewayNowMs() : nil)
     }
 
     // MARK: - Sessions
