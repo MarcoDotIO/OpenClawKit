@@ -291,7 +291,10 @@ struct SpotlightMemoryTests {
         let agentID = "tests-\(UUID().uuidString)"
         let indexer = Self.live
             ? SpotlightMemoryIndexer(agentID: agentID, protection: nil)
-            : SpotlightMemoryIndexer(agentID: agentID, index: Self.index(store: FakeSpotlightStore(), prefix: SpotlightMemoryIndexer.domainPrefix(agentID: agentID)))
+            : SpotlightMemoryIndexer(
+                agentID: agentID,
+                index: Self.index(store: FakeSpotlightStore(), prefix: SpotlightMemoryIndexer.domainPrefix(agentID: agentID))
+            )
         try await indexer.sync(from: engine)
         let hits = try await indexer.search(query: "quokka")
         #expect(hits.first?.path == "memory/trip.md")

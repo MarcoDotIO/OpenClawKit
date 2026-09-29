@@ -268,7 +268,8 @@ public actor SpotlightMemoryIndex: MemorySearchBackend {
     private func deleteDomains(_ domains: [String]) async throws {
         guard self.store.isAvailable else { return }
         let store = self.store
-        try await SpotlightTimeoutRace.completion(timeoutSeconds: self.writeTimeoutSeconds, operation: "deleteSearchableItems(withDomainIdentifiers:)") { completion in
+        let operation = "deleteSearchableItems(withDomainIdentifiers:)"
+        try await SpotlightTimeoutRace.completion(timeoutSeconds: self.writeTimeoutSeconds, operation: operation) { completion in
             store.deleteItems(domains: domains, completion: completion)
         }
     }
@@ -276,7 +277,8 @@ public actor SpotlightMemoryIndex: MemorySearchBackend {
     private func deleteIdentifiers(_ ids: [String]) async throws {
         guard !ids.isEmpty, self.store.isAvailable else { return }
         let store = self.store
-        try await SpotlightTimeoutRace.completion(timeoutSeconds: self.writeTimeoutSeconds, operation: "deleteSearchableItems(withIdentifiers:)") { completion in
+        let operation = "deleteSearchableItems(withIdentifiers:)"
+        try await SpotlightTimeoutRace.completion(timeoutSeconds: self.writeTimeoutSeconds, operation: operation) { completion in
             store.deleteItems(identifiers: ids, completion: completion)
         }
     }

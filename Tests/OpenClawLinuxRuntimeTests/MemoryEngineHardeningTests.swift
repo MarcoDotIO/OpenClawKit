@@ -69,9 +69,10 @@ struct MemoryEngineHardeningTests {
         #expect(MemoryEngine.chunkID(path: "MEMORY.md", startLine: 2, endLine: 2, parts: &parts) == "MEMORY.md#L2-2~1")
         #expect(MemoryEngine.chunkID(path: "MEMORY.md", startLine: 2, endLine: 3, parts: &parts) == "MEMORY.md#L2-3")
         #expect(MemoryEngine.chunkID(path: "MEMORY.md", startLine: 2, endLine: 2, parts: &parts) == "MEMORY.md#L2-2~2")
-        let chunk = MemoryEngine.IndexedChunk(id: "memory/~odd~3.md#L1-1~4", path: "memory/~odd~3.md", startLine: 1, endLine: 1, text: "x", hash: "h", datedAt: nil)
+        let path = "memory/~odd~3.md"
+        let chunk = MemoryEngine.IndexedChunk(id: "\(path)#L1-1~4", path: path, startLine: 1, endLine: 1, text: "x", hash: "h", datedAt: nil)
         #expect(chunk.part == 4)
-        let plain = MemoryEngine.IndexedChunk(id: "memory/~odd~3.md#L1-1", path: "memory/~odd~3.md", startLine: 1, endLine: 1, text: "x", hash: "h", datedAt: nil)
+        let plain = MemoryEngine.IndexedChunk(id: "\(path)#L1-1", path: path, startLine: 1, endLine: 1, text: "x", hash: "h", datedAt: nil)
         #expect(plain.part == 0)
     }
 
@@ -83,7 +84,9 @@ struct MemoryEngineHardeningTests {
         let data = try Data(contentsOf: root.appendingPathComponent("MEMORY.md"))
         var legacy = MemoryEngine.PersistedIndex()
         legacy.files["MEMORY.md"] = OpenClawCrypto.sha256Hex(data)
-        let duplicate = MemoryEngine.IndexedChunk(id: "MEMORY.md#L1-1", path: "MEMORY.md", startLine: 1, endLine: 1, text: "falcon notes", hash: "h", datedAt: nil)
+        let duplicate = MemoryEngine.IndexedChunk(
+            id: "MEMORY.md#L1-1", path: "MEMORY.md", startLine: 1, endLine: 1, text: "falcon notes", hash: "h", datedAt: nil
+        )
         legacy.chunks = [duplicate, duplicate]
         try FileManager.default.createDirectory(at: indexURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try JSONEncoder().encode(legacy).write(to: indexURL)
@@ -111,7 +114,9 @@ struct MemoryEngineHardeningTests {
         let far = try await registry.invoke(AgentToolCall(name: "memory_get", arguments: ["path": AnyCodable("memory/log.md"), "from": AnyCodable(1e300)]))
         #expect(!far.isError)
         #expect(far.value.dictionaryValue?["lines"]?.intValue == 0)
-        let infinite = try await registry.invoke(AgentToolCall(name: "memory_get", arguments: ["path": AnyCodable("memory/log.md"), "lines": AnyCodable(Double.infinity)]))
+        let infinite = try await registry.invoke(
+            AgentToolCall(name: "memory_get", arguments: ["path": AnyCodable("memory/log.md"), "lines": AnyCodable(Double.infinity)])
+        )
         #expect(infinite.isError)
 
         for maxResults in [AnyCodable(Int.max), AnyCodable(1e19)] {
