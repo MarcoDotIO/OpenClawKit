@@ -97,12 +97,14 @@ public struct AutomationRule: Codable, Sendable, Equatable, Identifiable {
             return nil
         }
         let anchor = self.lastExecutedAt.map(AutomationClock.ms)
+        let (intervalMs, overflow) = Int64(seconds).multipliedReportingOverflow(by: 1_000)
+        let everyMs = overflow ? AutomationClock.maxTimestampMs : min(intervalMs, AutomationClock.maxTimestampMs)
         return AutomationJob(
             id: self.id,
             name: self.name,
             enabled: self.enabled,
             sessionKey: self.sessionKey,
-            schedule: .every(everyMs: Int64(seconds) * 1_000, anchorMs: anchor),
+            schedule: .every(everyMs: everyMs, anchorMs: anchor),
             payload: .agentTurn(CronAgentTurnPayload(message: self.prompt, model: self.modelProviderID)),
             sessionTarget: .session(self.sessionKey),
             state: CronJobState(lastRunAtMs: anchor)

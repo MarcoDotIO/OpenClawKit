@@ -285,9 +285,9 @@ public enum AutomationJobDraft {
         guard let unit = trimmed.last else { return nil }
         let multipliers: [Character: Double] = ["s": 1_000, "m": 60_000, "h": 3_600_000, "d": 86_400_000]
         if let multiplier = multipliers[unit], let value = Double(trimmed.dropLast()), value > 0 {
-            return Int64(value * multiplier)
+            return AutomationClock.durationMs(value * multiplier)
         }
-        if let seconds = Double(trimmed), seconds > 0 { return Int64(seconds * 1_000) }
+        if let seconds = Double(trimmed), seconds > 0 { return AutomationClock.durationMs(seconds * 1_000) }
         return nil
     }
 

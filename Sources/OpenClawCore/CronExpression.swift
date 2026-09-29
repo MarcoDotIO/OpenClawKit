@@ -1,6 +1,7 @@
 import Foundation
 
-/// Five-field cron expression (`minute hour day-of-month month day-of-week`).
+/// Five-field (`minute hour day-of-month month day-of-week`) or six-field
+/// (`second minute hour day-of-month month day-of-week`, as accepted by upstream croner) cron expression.
 ///
 /// Supports `*`, `?`, lists, ranges, steps (`*/15`, `1-30/5`), month names (`jan`–`dec`), weekday
 /// names (`sun`–`sat`, `0` and `7` both Sunday) and the macros `@yearly`, `@annually`, `@monthly`,
@@ -10,6 +11,8 @@ import Foundation
 /// Next-fire computation runs on wall-clock time in the job's time zone: nonexistent local times
 /// (spring-forward gaps) fire at the transition, and repeated local times (fall-back) fire once.
 public struct CronExpression: Sendable, Equatable {
+    /// Allowed seconds (`[0]` for five-field expressions).
+    public let seconds: [Int]
     /// Allowed minutes.
     public let minutes: [Int]
     /// Allowed hours.
@@ -45,9 +48,14 @@ public struct CronExpression: Sendable, Equatable {
     public init(_ expression: String) throws {
         let trimmed = expression.trimmingCharacters(in: .whitespacesAndNewlines)
         let expanded = Self.macros[trimmed.lowercased()] ?? trimmed
-        let fields = expanded.split(whereSeparator: \.isWhitespace).map(String.init)
-        guard fields.count == 5 else {
-            throw OpenClawCoreError.invalidConfiguration("cron expression must have 5 fields: \(expression)")
+        var fields = expanded.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard fields.count == 5 || fields.count == 6 else {
+            throw OpenClawCoreError.invalidConfiguration("cron expression must have 5 or 6 fields: \(expression)")
+        }
+        if fields.count == 6 {
+            self.seconds = try Self.parseField(fields.removeFirst(), range: 0...59, names: nil).sorted()
+        } else {
+            self.seconds = [0]
         }
         self.source = trimmed
         self.minutes = try Self.parseField(fields[0], range: 0...59, names: nil).sorted()
@@ -86,6 +94,8 @@ public struct CronExpression: Sendable, Equatable {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = timeZone
         guard var day = calendar.dateInterval(of: .day, for: date)?.start else { return nil }
+        let referenceDay = day
+        let reference = calendar.dateComponents([.hour, .minute, .second], from: date)
         let limit = horizonYears * 366
         var visited = 0
         while visited <= limit {
@@ -100,11 +110,22 @@ public struct CronExpression: Sendable, Equatable {
                 continue
             }
             if self.matchesDay(day: dayOfMonth, month: month, weekday: weekday - 1) {
+                // On the reference day, wall-clock times before the reference can only resolve to earlier
+                // instants (gaps resolve forward to the transition, repeats to the first instant), so skip
+                // them instead of resolving up to 86,400 candidates for a six-field expression.
+                let sameDay = day == referenceDay
                 for hour in self.hours {
+                    if sameDay, let referenceHour = reference.hour, hour < referenceHour { continue }
                     for minute in self.minutes {
-                        guard let candidate = self.resolveWallTime(hour: hour, minute: minute, on: day, calendar: calendar) else { continue }
-                        if candidate > date {
-                            return candidate
+                        if sameDay, hour == reference.hour, let referenceMinute = reference.minute, minute < referenceMinute { continue }
+                        for second in self.seconds {
+                            if sameDay, hour == reference.hour, minute == reference.minute, let referenceSecond = reference.second, second < referenceSecond {
+                                continue
+                            }
+                            if let candidate = self.resolveWallTime(hour: hour, minute: minute, second: second, on: day, calendar: calendar),
+                               candidate > date {
+                                return candidate
+                            }
                         }
                     }
                 }
@@ -116,11 +137,11 @@ public struct CronExpression: Sendable, Equatable {
     }
 
     /// Wall-clock time on a local day; gaps resolve to the transition, repeats to the first instant.
-    private func resolveWallTime(hour: Int, minute: Int, on day: Date, calendar: Calendar) -> Date? {
+    private func resolveWallTime(hour: Int, minute: Int, second: Int, on day: Date, calendar: Calendar) -> Date? {
         var components = calendar.dateComponents([.year, .month, .day], from: day)
         components.hour = hour
         components.minute = minute
-        components.second = 0
+        components.second = second
         guard let exact = calendar.date(from: components) else { return nil }
         let resolved = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: exact)
         if resolved.hour == hour && resolved.minute == minute && resolved.day == components.day {
@@ -136,6 +157,7 @@ public struct CronExpression: Sendable, Equatable {
         var transition = components
         transition.hour = hour + 1
         transition.minute = 0
+        transition.second = 0
         guard let afterGap = calendar.date(from: transition) else { return exact }
         let gapStart = calendar.dateComponents([.hour, .minute], from: afterGap)
         if gapStart.minute == 0 {

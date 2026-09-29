@@ -214,6 +214,19 @@ public actor CronScheduler {
         var version = 1
         var jobs: [AutomationJob] = []
         var runs: [String: [AutomationRunRecord]] = [:]
+
+        init(jobs: [AutomationJob], runs: [String: [AutomationRunRecord]]) {
+            self.jobs = jobs
+            self.runs = runs
+        }
+
+        /// Upstream stores are `{version, jobs}` without `runs`.
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.version = try container.decodeIfPresent(Int.self, forKey: .version) ?? 1
+            self.jobs = try container.decodeIfPresent([AutomationJob].self, forKey: .jobs) ?? []
+            self.runs = try container.decodeIfPresent([String: [AutomationRunRecord]].self, forKey: .runs) ?? [:]
+        }
     }
 
     private var jobs: [String: CronJob] = [:]
@@ -227,6 +240,7 @@ public actor CronScheduler {
     private var executor: AutomationJobExecutor?
     private var changeHandlers: [@Sendable (CronChangedHookEvent) async -> Void] = []
     private var loop: Task<Void, Never>?
+    private var sleeper: Task<Void, Never>?
     private var running: Set<String> = []
 
     /// Creates an empty in-memory scheduler.
@@ -303,6 +317,18 @@ public actor CronScheduler {
         let store = try JSONDecoder().decode(Store.self, from: Data(contentsOf: storeURL))
         self.automationJobs = Dictionary(store.jobs.map { ($0.id, $0) }, uniquingKeysWith: { $1 })
         self.runLogs = store.runs
+        // A job the scheduler cannot run (for example a hand-edited or imported schedule) would otherwise
+        // stay enabled with no next run and never fire silently; surface why.
+        for (id, job) in self.automationJobs where job.isRunnable {
+            do {
+                try Self.validate(job)
+            } catch {
+                var flagged = job
+                flagged.state.nextRunAtMs = nil
+                flagged.state.lastError = error.localizedDescription
+                self.automationJobs[id] = flagged
+            }
+        }
     }
 
     /// Saves automation jobs and run logs.
@@ -417,10 +443,10 @@ public actor CronScheduler {
         return Array(records.sorted { $0.ts > $1.ts }.dropFirst(max(0, offset)).prefix(max(0, limit)))
     }
 
-    /// Earliest next run among enabled jobs.
+    /// Earliest next run among enabled jobs that are not running right now.
     public var nextWakeDate: Date? {
         self.automationJobs.values
-            .filter { $0.enabled && $0.isRunnable }
+            .filter { $0.enabled && $0.isRunnable && !self.running.contains($0.id) }
             .compactMap(\.state.nextRunAtMs)
             .min()
             .map { Date(timeIntervalSince1970: Double($0) / 1_000) }
@@ -491,7 +517,7 @@ public actor CronScheduler {
     public func runDueJobs(now: Date? = nil) async -> [AutomationRunRecord] {
         let nowMs = AutomationClock.ms(now ?? self.now())
         let due = self.automationJobs.values
-            .filter { $0.enabled && $0.isRunnable && ($0.state.nextRunAtMs.map { $0 <= nowMs } ?? false) }
+            .filter { $0.enabled && $0.isRunnable && !self.running.contains($0.id) && ($0.state.nextRunAtMs.map { $0 <= nowMs } ?? false) }
             .sorted { ($0.state.nextRunAtMs ?? 0, $0.id) < ($1.state.nextRunAtMs ?? 0, $1.id) }
         var records: [AutomationRunRecord] = []
         for job in due {
@@ -503,13 +529,17 @@ public actor CronScheduler {
     }
 
     /// Starts the timer loop (sleeps until the next due job, capped at one minute between checks).
+    ///
+    /// Adding, updating or removing a job only wakes the sleeping loop; it never cancels the loop task,
+    /// which runs due jobs inline (so a job that edits jobs, for example an agent turn scheduling its
+    /// next check-in, keeps running).
     public func start() {
         guard self.loop == nil else { return }
         self.loop = Task.detached { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
                 let delay = await self.secondsUntilNextWake()
-                try? await Task.sleep(nanoseconds: UInt64(max(0.05, min(60, delay)) * 1_000_000_000))
+                await self.sleep(nanoseconds: UInt64(max(0.05, min(60, delay)) * 1_000_000_000))
                 if Task.isCancelled { return }
                 await self.runDueJobs()
             }
@@ -520,6 +550,8 @@ public actor CronScheduler {
     public func stop() {
         self.loop?.cancel()
         self.loop = nil
+        self.sleeper?.cancel()
+        self.sleeper = nil
     }
 
     // MARK: - Internals
@@ -529,11 +561,19 @@ public actor CronScheduler {
         return next.timeIntervalSince(self.now())
     }
 
+    /// Sleeps in a separate task that ``reschedule()`` can cancel to wake the loop early.
+    private func sleep(nanoseconds: UInt64) async {
+        let sleeper = Task<Void, Never> { try? await Task.sleep(nanoseconds: nanoseconds) }
+        self.sleeper = sleeper
+        await sleeper.value
+        if self.sleeper == sleeper { self.sleeper = nil }
+    }
+
+    /// Wakes the loop so it recomputes the next due time. The loop task itself is never cancelled here:
+    /// it may be executing a job (the caller can be that very job).
     private func reschedule() {
         guard self.loop != nil else { return }
-        self.loop?.cancel()
-        self.loop = nil
-        self.start()
+        self.sleeper?.cancel()
     }
 
     private func execute(_ job: AutomationJob, trigger: String) async -> AutomationRunRecord? {
@@ -635,8 +675,11 @@ public actor CronScheduler {
             throw OpenClawCoreError.invalidConfiguration(
                 "schedule kind \"\(kind)\" is not supported by the embedded scheduler; use at, every or cron"
             )
-        case .cron(let expr, let tz, _):
+        case .cron(let expr, let tz, let staggerMs):
             _ = try CronExpression(expr)
+            if let staggerMs, !AutomationClock.timestampRange.contains(staggerMs) {
+                throw OpenClawCoreError.invalidConfiguration("cron schedule staggerMs must be in 0...\(AutomationClock.maxTimestampMs)")
+            }
             if let tz, TimeZone(identifier: tz) == nil {
                 throw OpenClawCoreError.invalidConfiguration("unknown time zone \(tz)")
             }
@@ -644,8 +687,13 @@ public actor CronScheduler {
             guard AutomationClock.parseAbsoluteTimeMs(raw) != nil else {
                 throw OpenClawCoreError.invalidConfiguration("at schedule must be an ISO-8601 time: \(raw)")
             }
-        case .every:
-            break
+        case .every(let everyMs, let anchorMs):
+            guard AutomationClock.intervalRange.contains(everyMs) else {
+                throw OpenClawCoreError.invalidConfiguration("every schedule requires everyMs in 1...\(AutomationClock.maxTimestampMs)")
+            }
+            if let anchorMs, !AutomationClock.timestampRange.contains(anchorMs) {
+                throw OpenClawCoreError.invalidConfiguration("every schedule anchorMs must be in 0...\(AutomationClock.maxTimestampMs)")
+            }
         }
         if case .unsupported(let kind, _) = job.payload {
             throw OpenClawCoreError.invalidConfiguration(
