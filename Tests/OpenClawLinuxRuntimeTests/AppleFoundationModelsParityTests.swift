@@ -53,8 +53,15 @@ struct AppleFoundationModelsIdentityTests {
         }
         #expect(!FoundationModelsProvider.handles(providerID: "openai"))
         #expect(FoundationModelsProvider.isNonSecretAuthMarker("apple-fm-local"))
+        #expect(FoundationModelsProvider.isNonSecretAuthMarker(" apple-fm-local "))
         #expect(!FoundationModelsProvider.isNonSecretAuthMarker("sk-real"))
         #expect(!FoundationModelsProvider.isNonSecretAuthMarker(nil))
+        #expect(!FoundationModelsProvider.isNonSecretAuthMarker(""))
+        // One marker list: the provider agrees with the core security-audit markers.
+        #expect(FoundationModelsProvider.localAuthMarker == ModelAuthMarkers.appleFoundationModelsLocal)
+        for marker in ["oauth:anthropic", "secretref-managed", "ollama-local", "sk-live-123", "GOOGLE_API_KEY"] {
+            #expect(FoundationModelsProvider.isNonSecretAuthMarker(marker) == ModelAuthMarkers.isNonSecretMarker(marker), "\(marker)")
+        }
     }
 
     @Test
@@ -222,6 +229,27 @@ struct AppleFoundationModelsErrorTests {
     }
 
     @Test
+    func errorsAfterInProcessToolsCarryTheCallsAndNeverInviteRetries() {
+        let executed = [
+            FoundationModelsExecutedToolCall(
+                call: ModelToolCall(id: "c1", name: "message.send", arguments: ["to": AnyCodable("ops")]),
+                output: FoundationModelsToolOutput(text: "sent")
+            ),
+        ]
+        let limited = FoundationModelsError(code: .networkFailure, message: "offline").recordingExecutedToolCalls(executed)
+        #expect(limited.code == .networkFailure)
+        #expect(!limited.retryable)
+        #expect(limited.executedToolCalls == executed)
+        #expect(limited.message.contains("message.send"))
+        // A context overflow after side effects must not trigger the loop's compact-and-retry.
+        let overflow = FoundationModelsError(code: .contextOverflow, message: "too long", executedToolCalls: executed)
+        #expect(!overflow.retryable)
+        #expect(!overflow.isContextOverflow)
+        #expect(FoundationModelsError(code: .contextOverflow, message: "too long").isContextOverflow)
+        #expect(FoundationModelsError(code: .timeout, message: "slow").recordingExecutedToolCalls([]).retryable)
+    }
+
+    @Test
     func mapperPassesThroughKnownErrorsAndSniffsSandboxFailures() {
         let original = OpenClawCoreError.unavailable("x")
         #expect(FoundationModelsErrorMapper.map(original) is OpenClawCoreError)
@@ -332,6 +360,55 @@ struct AppleFoundationModelsSchemaConverterTests {
                 _ = try FoundationModelsSchemaConverter.parse(parsed, name: "tool")
             }
         }
+    }
+
+    @Test
+    func integerBoundsBeyondThePlatformIntAreUnboundedNotErrors() throws {
+        // JSON integers that do not fit `Int` decode as `.double` (on arm64_32 watchOS already above
+        // Int32.max, e.g. zod's ±(2^53-1)); bounds looser than every Int become "no guide".
+        let wide = try FoundationModelsSchemaConverter.parse(
+            try json(#"{"type":"integer","minimum":-18446744073709551615,"maximum":18446744073709551615}"#),
+            name: "id"
+        )
+        #expect(wide == .integer(minimum: nil, maximum: nil))
+        let direct = try FoundationModelsSchemaConverter.parse(
+            ["type": AnyCodable("integer"), "minimum": AnyCodable(-1e19), "maximum": AnyCodable(1e19)],
+            name: "id"
+        )
+        #expect(direct == .integer(minimum: nil, maximum: nil))
+        let zod = try FoundationModelsSchemaConverter.parse(
+            try json(#"{"type":"integer","minimum":-9007199254740991,"maximum":9007199254740991}"#),
+            name: "n"
+        )
+        if MemoryLayout<Int>.size == 8 {
+            #expect(zod == .integer(minimum: -9_007_199_254_740_991, maximum: 9_007_199_254_740_991))
+        } else {
+            #expect(zod == .integer(minimum: nil, maximum: nil))
+        }
+        let unboundedCounts = try FoundationModelsSchemaConverter.parse(
+            try json(#"{"type":"array","items":{"type":"string","maxLength":18446744073709551615},"maxItems":18446744073709551615}"#),
+            name: "list"
+        )
+        #expect(unboundedCounts == .array(item: .string, minimumElements: nil, maximumElements: nil))
+        // Fractional and unsatisfiable bounds still fail like upstream.
+        for schema in [
+            #"{"type":"integer","minimum":1.5}"#,
+            #"{"type":"integer","minimum":18446744073709551615}"#,
+            #"{"type":"integer","maximum":-18446744073709551615}"#,
+            #"{"type":"array","items":{"type":"string"},"minItems":18446744073709551615}"#,
+        ] {
+            let parsed = try json(schema)
+            expectFoundationModelsError("Expected integer", code: .invalidSchema) {
+                _ = try FoundationModelsSchemaConverter.parse(parsed, name: "tool")
+            }
+        }
+        // The sanitizer keeps wide bounds instead of dropping them as invalid.
+        let (sanitized, notices) = FoundationModelsSchemaConverter.sanitize(
+            try json(#"{"type":"integer","maximum":18446744073709551615}"#),
+            path: "n"
+        )
+        #expect(notices.isEmpty)
+        #expect(sanitized["maximum"] != nil)
     }
 
     @Test
@@ -585,7 +662,16 @@ struct AppleFoundationModelsTranscriptTests {
         #expect(without.entries == [.prompt([.text("q")]), .response("a")])
         #expect(without.prompt == [.text("[Attachment n.txt]\nnotes")])
         let with = try FoundationModelsTranscriptPlanner.plan(systemPrompt: nil, messages: messages, allowImages: false, allowReasoning: true)
-        #expect(with.entries == [.prompt([.text("q")]), .reasoning("plan", signature: nil), .response("a")])
+        #expect(with.entries == [.prompt([.text("q")]), .reasoning("plan"), .response("a")])
+        // Another provider's signature (for example an Anthropic thinking signature after a model
+        // switch) is never handed to Foundation Models.
+        let signed = try FoundationModelsTranscriptPlanner.plan(
+            systemPrompt: nil,
+            messages: [.user("q"), .assistant(content: [.thinking("plan", signature: "RXJBbnRocm9waWNTaWc="), .text("a")]), .user("next")],
+            allowImages: false,
+            allowReasoning: true
+        )
+        #expect(signed.entries == [.prompt([.text("q")]), .reasoning("plan"), .response("a")])
         expectFoundationModelsError("Only text content is supported") {
             _ = try FoundationModelsTranscriptPlanner.plan(
                 systemPrompt: nil,

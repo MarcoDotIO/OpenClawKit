@@ -193,9 +193,11 @@ public struct FoundationModelsToolOptions: Sendable {
     /// How host tools from ``ModelGenerationRequest/tools`` run.
     public var execution: FoundationModelsToolExecutionMode
     /// Offer Vision's barcode-reader and OCR tools (OS 27) when the request carries images and
-    /// the model can call tools. They run inside the session and never reach the host.
+    /// the model can call tools. They run inside the session and never reach the host, and are only
+    /// offered with `toolChoice: .auto` (a forced tool choice must be satisfied by a host tool).
     public var visionTools: Bool
-    /// Offer the Spotlight search tool (OS 27, iOS/macOS/visionOS) when set.
+    /// Offer the Spotlight search tool (OS 27, iOS/macOS/visionOS) when set; like the Vision tools it
+    /// is only offered with `toolChoice: .auto`.
     public var spotlightSearch: FoundationModelsSpotlightSearchOptions?
 
     /// Creates tool options.

@@ -532,6 +532,11 @@ public actor EmbeddedAgentRuntime {
         self.hooks = hooks
     }
 
+    /// Current loop hooks (Foundation Models sessions gate their tool calls with them).
+    func currentHooks() -> AgentLoopHooks {
+        self.hooks
+    }
+
     /// Adds a system-prompt contributor evaluated for every model turn (for example a tool directory).
     /// - Parameter contributor: Returns a section for the session, or `nil`.
     public func addSystemPromptContributor(_ contributor: @escaping @Sendable (_ sessionKey: String, _ session: SessionRecord?) async -> String?) {

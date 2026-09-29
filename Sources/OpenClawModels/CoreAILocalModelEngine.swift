@@ -150,7 +150,12 @@ public actor CoreAILocalModelEngine: LocalModelEngine {
     private let executorFactory: ExecutorFactory
     private var executor: (any CoreAITensorExecuting)?
     private var isStateful = false
-    private var cancelRequested = false
+    // Generations run one at a time (FIFO): a stateful model has one KV cache, so interleaved steps
+    // of two generations would decode against each other's state.
+    private var generationActive = false
+    private var generationWaiters: [CheckedContinuation<Void, Never>] = []
+    private var activeGeneration: UInt64 = 0
+    private var cancelledGeneration: UInt64?
 
     /// Creates a CoreAI decoding engine.
     /// - Parameters:
@@ -230,13 +235,43 @@ public actor CoreAILocalModelEngine: LocalModelEngine {
         self.executor != nil
     }
 
-    /// Requests cancellation of the running generation.
+    /// Requests cancellation of the running generation; queued generations are not affected.
     /// - Parameter token: Ignored; the engine runs one generation at a time.
     public func cancelGeneration(token _: String?) async {
-        self.cancelRequested = true
+        if self.generationActive {
+            self.cancelledGeneration = self.activeGeneration
+        }
+    }
+
+    /// Waits for earlier generations to finish, then marks a new one active and returns its identifier.
+    private func beginGeneration() async -> UInt64 {
+        if self.generationActive {
+            // `endGeneration` hands the slot over without clearing `generationActive`, keeping FIFO order.
+            await withCheckedContinuation { continuation in
+                self.generationWaiters.append(continuation)
+            }
+        }
+        self.generationActive = true
+        self.activeGeneration &+= 1
+        return self.activeGeneration
+    }
+
+    /// Releases the slot to the next queued generation.
+    private func endGeneration() {
+        if self.cancelledGeneration == self.activeGeneration {
+            self.cancelledGeneration = nil
+        }
+        if self.generationWaiters.isEmpty {
+            self.generationActive = false
+        } else {
+            self.generationWaiters.removeFirst().resume()
+        }
     }
 
     /// Generates text token by token.
+    ///
+    /// Concurrent calls are queued and run one at a time, so a stateful model's state (reset at the
+    /// start of each generation) is never shared between them.
     /// - Parameters:
     ///   - prompt: User prompt.
     ///   - systemPrompt: Optional system prompt.
@@ -249,10 +284,12 @@ public actor CoreAILocalModelEngine: LocalModelEngine {
         configuration: LocalModelConfig,
         onToken: (@Sendable (String) -> Bool)?
     ) async throws -> String {
+        let generation = await self.beginGeneration()
+        defer { self.endGeneration() }
+        try Task.checkCancellation()
         guard let executor = self.executor else {
             throw CoreAIRuntimeError.notLoaded
         }
-        self.cancelRequested = false
         let promptTokens = self.tokenizer.encode(self.promptFormatter(systemPrompt, prompt))
         guard !promptTokens.isEmpty else {
             throw CoreAIRuntimeError.emptyPrompt
@@ -277,7 +314,7 @@ public actor CoreAILocalModelEngine: LocalModelEngine {
 
         for _ in 0..<maxNewTokens {
             try Task.checkCancellation()
-            if self.cancelRequested {
+            if self.cancelledGeneration == generation {
                 throw CoreAIRuntimeError.cancelled
             }
             if stateful, consumed >= contextLimit {

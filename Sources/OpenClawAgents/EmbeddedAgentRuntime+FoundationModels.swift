@@ -9,7 +9,8 @@ import FoundationModels
 
 // Apple Foundation Models sessions built from the embedded runtime's configuration. The default
 // OpenClaw path keeps tool execution host-owned (FoundationModelsProvider proposes calls and the agent
-// loop approves them); these sessions run the runtime's tools inside the framework loop instead.
+// loop approves them); these sessions run the runtime's tools inside the framework loop instead, behind
+// a FoundationModelsAgentToolGate that applies the loop's policy, hooks and approvals to every call.
 
 /// Inputs shared by Foundation Models session builders (platform-neutral so they can be tested).
 struct FoundationModelsSessionPlan: Sendable {
@@ -70,6 +71,22 @@ extension EmbeddedAgentRuntime {
         sections.append(contentsOf: await self.promptContributions(for: context))
         return FoundationModelsSessionPlan(systemPrompt: sections.joined(separator: "\n\n"), registry: registry, toolNames: names)
     }
+
+    /// Gate that applies this runtime's tool policy, closure hooks, typed hooks and approvals to tool
+    /// calls running inside a Foundation Models session (snapshot of the policy and closure hooks).
+    func foundationModelsToolGate(registry: AgentToolRegistry, agentID: String?, sessionKey: String?) -> FoundationModelsAgentToolGate {
+        FoundationModelsAgentToolGate(
+            registry: registry,
+            context: AgentToolInvocationContext(
+                sessionKey: sessionKey,
+                agentID: SessionKey.normalizeAgentID(agentID ?? self.defaultAgentID)
+            ),
+            policy: self.currentToolsConfiguration().policy,
+            hooks: self.currentHooks(),
+            hookRegistry: self.hookRegistry,
+            approvals: self.approvals
+        )
+    }
 }
 
 #if canImport(FoundationModels) && !os(tvOS) && (!os(watchOS) || compiler(>=6.4))
@@ -78,8 +95,14 @@ extension EmbeddedAgentRuntime {
 public extension EmbeddedAgentRuntime {
     /// Builds a Foundation Models session for an agent from this runtime: instructions from the base
     /// system prompt, workspace bootstrap, skill catalog and prompt contributors (skills and memory
-    /// reach the model through ``OpenClawAgentProfile/systemPrompt``), tools filtered by the runtime
-    /// tool policy, and ``hookRegistry`` receiving `after_tool_call`.
+    /// reach the model through ``OpenClawAgentProfile/systemPrompt``) and tools filtered by the runtime
+    /// tool policy.
+    ///
+    /// Tools run inside the framework loop, but every call first passes the same checks as the agent
+    /// loop (``FoundationModelsAgentToolGate``): the tool policy, the argument schema, the runtime's
+    /// closure `beforeToolCall` hook and typed `before_tool_call` handlers in ``hookRegistry`` (which
+    /// can block, rewrite or require approval through ``approvals``). `after_tool_call` fires after each
+    /// call. The closure hooks and policy are captured when the session is built.
     /// - Parameters:
     ///   - agentID: Agent identifier (defaults to ``defaultAgentID``).
     ///   - sessionKey: Session key for tool invocations and hooks.
@@ -104,13 +127,8 @@ public extension EmbeddedAgentRuntime {
         )
         return await FoundationModelsAgentSession.make(
             systemPrompt: plan.systemPrompt,
-            registry: plan.registry,
-            context: AgentToolInvocationContext(
-                sessionKey: sessionKey,
-                agentID: SessionKey.normalizeAgentID(agentID ?? self.defaultAgentID)
-            ),
+            gate: self.foundationModelsToolGate(registry: plan.registry, agentID: agentID, sessionKey: sessionKey),
             route: route,
-            hooks: self.hookRegistry,
             maxHistoryEntries: maxHistoryEntries
         )
     }

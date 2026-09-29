@@ -322,13 +322,24 @@ struct MediaUnderstandingTests {
     @Test
     func pipelineRecognizesAppleAudioAndVideoContainers() async throws {
         let pipeline = MediaPipeline(maxBytes: 1_024, storageDirectory: Self.makeTemporaryDirectory("mu-sniff"))
-        func header(_ brand: String) -> Data {
-            Data([0x00, 0x00, 0x00, 0x20]) + Data("ftyp".utf8) + Data(brand.utf8) + Data(repeating: 0, count: 8)
+        func header(_ brand: String, compatible: [String] = []) -> Data {
+            let size = UInt8(16 + 4 * compatible.count)
+            return Data([0x00, 0x00, 0x00, size]) + Data("ftyp".utf8) + Data(brand.utf8) + Data(repeating: 0, count: 4)
+                + Data(compatible.joined().utf8) + Data(repeating: 0, count: 8)
         }
         let cases: [(Data, String?, String, MediaKind, String)] = [
             (header("M4A "), nil, "audio/mp4", .audio, "m4a"),
             (header("qt  "), nil, "video/quicktime", .video, "mov"),
             (header("isom"), nil, "video/mp4", .video, "mp4"),
+            (header("mp42", compatible: ["isom", "mp42"]), nil, "video/mp4", .video, "mp4"),
+            // HEIF-family still images are ISO base media too and must stay images.
+            (header("heic", compatible: ["mif1", "heic"]), nil, "image/heic", .image, "heic"),
+            (header("hevc"), nil, "image/heic", .image, "heic"),
+            (header("avif", compatible: ["avif", "mif1", "miaf"]), nil, "image/avif", .image, "avif"),
+            (header("mif1"), nil, "image/heif", .image, "heif"),
+            (header("mif1", compatible: ["mif1", "avif"]), nil, "image/avif", .image, "avif"),
+            (header("mif1", compatible: ["mif1", "heic"]), nil, "image/heic", .image, "heic"),
+            (Data([0xFF, 0xFB, 0x90]), "photo.heic", "image/heic", .image, "heic"),
             (Data("FORM".utf8) + Data([0, 0, 0, 4]) + Data("AIFF".utf8), nil, "audio/aiff", .audio, "aiff"),
             (Data([0xFF, 0xFB, 0x90]), "memo.m4a", "audio/mp4", .audio, "m4a"),
             (Data([0xFF, 0xFB, 0x90]), "take.caf", "audio/x-caf", .audio, "caf"),
@@ -341,6 +352,18 @@ struct MediaUnderstandingTests {
             #expect(prepared.handle.kind == kind)
             #expect(prepared.handle.fileName.hasSuffix(".\(ext)"))
         }
+
+        // An iPhone photo keeps its declared image type and name.
+        let photo = try await pipeline.prepare(
+            MediaAttachment(mimeType: "image/heic", data: header("heic", compatible: ["mif1", "heic"]), fileName: "camera.heic")
+        )
+        #expect(photo.attachment.mimeType == "image/heic")
+        #expect(photo.handle.kind == .image)
+        #expect(photo.handle.fileName == "camera.heic")
+        // Unknown brands no longer default to video: the declared MIME type wins.
+        let unknown = try await pipeline.prepare(MediaAttachment(mimeType: "image/heic", data: header("crx "), fileName: nil))
+        #expect(unknown.attachment.mimeType == "image/heic")
+        #expect(unknown.handle.kind == .image)
     }
 
     static func makeTemporaryDirectory(_ name: String) -> URL {

@@ -41,6 +41,40 @@ private struct ScriptedProvider: ModelProvider {
     }
 }
 
+/// Provider whose script may throw (call index -> response or error).
+private struct FailingScriptedProvider: ModelProvider {
+    let id = "scripted"
+    let log = RequestLog()
+    let script: @Sendable (ModelGenerationRequest, Int) throws -> ModelGenerationResponse
+
+    var capabilities: ModelProviderCapabilities {
+        ModelProviderCapabilities(supportsStreaming: true, supportsTools: true, supportsJSONSchema: true, supportsTranscript: true)
+    }
+
+    func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
+        let index = await self.log.append(request)
+        return try self.script(request, index)
+    }
+}
+
+private actor InvocationCounter {
+    private(set) var calls = 0
+
+    func increment() {
+        self.calls += 1
+    }
+}
+
+/// In-process executor that counts how often each call actually ran.
+private struct CountingExecutor: FoundationModelsToolExecuting {
+    let counter = InvocationCounter()
+
+    func executeTool(_ call: ModelToolCall) async throws -> FoundationModelsToolOutput {
+        await self.counter.increment()
+        return FoundationModelsToolOutput(text: "sent")
+    }
+}
+
 private struct FixedExecutor: FoundationModelsToolExecuting {
     let text: String
 
@@ -311,6 +345,140 @@ struct AppleFoundationModelsBridgeTests {
     }
 
     @Test
+    func privateCloudFallbackNeverRepeatsInProcessTools() async throws {
+        guard #available(macOS 27.0, iOS 27.0, visionOS 27.0, *) else { return }
+        try await Self.checkFallbackAfterInProcessTools()
+    }
+
+    @available(macOS 27.0, iOS 27.0, visionOS 27.0, *)
+    private static func checkFallbackAfterInProcessTools() async throws {
+        // The model sends a message through an in-process tool, then the next turn hits a transient
+        // (fallback-eligible) failure.
+        let provider = FailingScriptedProvider { _, index in
+            if index == 0 {
+                return ModelGenerationResponse(
+                    text: "",
+                    providerID: "scripted",
+                    toolCalls: [ModelToolCall(id: "p1", name: "send", arguments: ["to": AnyCodable("ops")])]
+                )
+            }
+            throw FoundationModelsError(code: .rateLimited, message: "quota reached")
+        }
+        let executor = CountingExecutor()
+        let options = FoundationModelsProviderOptions(tools: FoundationModelsToolOptions(execution: .executeInProcess(executor)))
+        let request = ModelGenerationRequest(
+            sessionKey: "s",
+            prompt: "Tell ops.",
+            tools: [
+                ModelToolDefinition(
+                    name: "send",
+                    parameters: ["type": AnyCodable("object"), "properties": AnyCodable(["to": AnyCodable(["type": AnyCodable("string")])])]
+                ),
+            ]
+        )
+        let recorder = FoundationModelsToolCallRecorder()
+        let context = AppleFMRunContext(
+            request: request,
+            options: options,
+            providerID: "apple-fm",
+            target: .privateCloudCompute,
+            sink: nil,
+            recorder: recorder
+        )
+        let fallbacks = InvocationCounter()
+        do {
+            _ = try await AppleFoundationModelsEngine.attemptWithFallback(recorder: recorder, sink: nil) {
+                try await AppleFMGeneration27.run(model: OpenClawLanguageModel(provider: provider), context: context, tokenCounter: nil)
+            } fallback: { _ in
+                await fallbacks.increment()
+                return FoundationModelsGenerationResult(response: ModelGenerationResponse(text: "again", providerID: "apple-fm"), target: .system)
+            }
+            Issue.record("expected the failure to propagate instead of falling back")
+        } catch {
+            let failure = await AppleFoundationModelsEngine.failure(error, recorder: recorder)
+            let modelError = try #require(failure as? FoundationModelsError)
+            #expect(modelError.code == .rateLimited)
+            #expect(!modelError.retryable)
+            #expect(modelError.executedToolCalls.map(\.call.name) == ["send"])
+            #expect(modelError.executedToolCalls.first?.output.text == "sent")
+        }
+        #expect(await fallbacks.calls == 0)
+        #expect(await executor.counter.calls == 1)
+
+        // Without side effects the same failure still falls back to the on-device model.
+        let clean = FoundationModelsToolCallRecorder()
+        let result = try await AppleFoundationModelsEngine.attemptWithFallback(recorder: clean, sink: nil) {
+            throw FoundationModelsError(code: .networkFailure, message: "offline")
+        } fallback: { error in
+            #expect(error.code == .networkFailure)
+            return FoundationModelsGenerationResult(response: ModelGenerationResponse(text: "on device", providerID: "apple-fm"), target: .system)
+        }
+        #expect(result.response.text == "on device")
+        // A non-transient failure never falls back.
+        await #expect(throws: FoundationModelsError.self) {
+            _ = try await AppleFoundationModelsEngine.attemptWithFallback(recorder: clean, sink: nil) {
+                throw FoundationModelsError(code: .guardrail, message: "blocked")
+            } fallback: { _ in
+                Issue.record("guardrail failures must not fall back")
+                return FoundationModelsGenerationResult(response: ModelGenerationResponse(text: "", providerID: "apple-fm"), target: .system)
+            }
+        }
+    }
+
+    @Test
+    func bridgeKeepsProviderReasoningSignaturesAcrossToolTurns() async throws {
+        guard #available(macOS 27.0, iOS 27.0, visionOS 27.0, *) else { return }
+        try await Self.checkReasoningSignatureRoundTrip()
+    }
+
+    @available(macOS 27.0, iOS 27.0, visionOS 27.0, *)
+    private static func checkReasoningSignatureRoundTrip() async throws {
+        // Claude-style turn: signed thinking plus a tool call; the continuation must send the same
+        // signature back or Anthropic turns thinking off (or rejects the tool turn).
+        let signature = "RXJBbnRocm9waWNUaGlua2luZ1NpZw=="
+        func continuationThinking(reasoningText: String?) async throws -> [(String, String?)] {
+            let provider = ScriptedProvider { _, index in
+                if index == 0 {
+                    return ModelGenerationResponse(
+                        text: "",
+                        providerID: "scripted",
+                        toolCalls: [ModelToolCall(id: "t1", name: "lookup", arguments: ["q": AnyCodable("x")])],
+                        reasoningText: reasoningText,
+                        reasoningSignature: signature
+                    )
+                }
+                return ModelGenerationResponse(text: "done", providerID: "scripted")
+            }
+            let tool = try FoundationModelsDynamicTool(
+                definition: ModelToolDefinition(
+                    name: "lookup",
+                    parameters: ["type": AnyCodable("object"), "properties": AnyCodable(["q": AnyCodable(["type": AnyCodable("string")])])]
+                )
+            ) { _ in "42" }
+            let session = LanguageModelSession(model: OpenClawLanguageModel(provider: provider, supportsReasoning: true), tools: [tool])
+            let response = try await session.respond(to: "Look it up.")
+            #expect(response.content == "done")
+            let continuation = try #require(await provider.log.requests.last)
+            return continuation.messages.flatMap { message -> [ModelAssistantPart] in
+                guard case .assistant(let parts) = message else { return [] }
+                return parts
+            }.compactMap { part -> (String, String?)? in
+                guard case .thinking(let text, let signature) = part else { return nil }
+                return (text, signature)
+            }
+        }
+        let thinking = try await continuationThinking(reasoningText: "check the lookup")
+        #expect(thinking.map(\.0) == ["check the lookup"])
+        #expect(thinking.map(\.1) == [signature])
+        // Redacted thinking: a signature without text still survives.
+        let redacted = try await continuationThinking(reasoningText: nil)
+        #expect(redacted.map(\.1) == [signature])
+        // Foreign (framework-produced) signatures are not handed to the provider.
+        #expect(OpenClawBridgeReasoningSignature.signature(from: Data([1, 2, 3])) == nil)
+        #expect(OpenClawBridgeReasoningSignature.signature(from: OpenClawBridgeReasoningSignature.data(for: "abc")) == "abc")
+    }
+
+    @Test
     func structuredOutputIsRevalidatedAgainstTheCallerSchema() async throws {
         guard #available(macOS 27.0, iOS 27.0, visionOS 27.0, *) else { return }
         try await Self.checkStructuredOutput()
@@ -423,6 +591,36 @@ struct AppleFoundationModelsBridgeTests {
         await #expect(throws: OpenClawCoreError.self) {
             _ = try await AppleFMGeneration27.run(model: model, context: context, tokenCounter: nil)
         }
+    }
+
+    @Test
+    func nativeToolsAreOfferedOnlyWithAutomaticToolChoice() throws {
+        guard #available(macOS 26.0, iOS 26.0, visionOS 26.0, *) else { return }
+        let native = try FoundationModelsDynamicTool(definition: ModelToolDefinition(name: "ocr")) { _ in "text" }
+        let parameters: [String: AnyCodable] = ["type": AnyCodable("object"), "properties": AnyCodable([String: AnyCodable]())]
+        func toolNames(_ choice: ModelToolChoice) throws -> [String] {
+            let request = ModelGenerationRequest(
+                sessionKey: "s",
+                prompt: "Record the invoice.",
+                tools: [ModelToolDefinition(name: "record_invoice", parameters: parameters), ModelToolDefinition(name: "other", parameters: parameters)],
+                toolChoice: choice
+            )
+            let context = AppleFMRunContext(request: request, options: FoundationModelsProviderOptions(), providerID: "apple-fm", target: .system, sink: nil)
+            let prepared = try AppleFMPreparation.prepare(
+                context,
+                allowImages: false,
+                allowReasoning: false,
+                keepToolsWhenDisallowed: true,
+                nativeTools: { _ in [native] }
+            )
+            #expect(prepared.hostToolCount == prepared.tools.count || choice == .auto)
+            return prepared.tools.map(\.name)
+        }
+        #expect(try toolNames(.auto) == ["record_invoice", "other", "ocr"])
+        // A forced choice (OS 27 `.required`) must not be satisfiable by a framework-executed tool.
+        #expect(try toolNames(.named("record_invoice")) == ["record_invoice"])
+        #expect(try toolNames(.required) == ["record_invoice", "other"])
+        #expect(try toolNames(.none) == ["record_invoice", "other"])
     }
 
     @Test
@@ -559,6 +757,21 @@ struct FoundationModelsAgentToolBridgeTests {
         let missing = try await executor.executeTool(ModelToolCall(id: "c2", name: "nope", argumentsJSON: "{}"))
         #expect(missing.isError)
         #expect(missing.text == "Tool not found: nope")
+    }
+
+    @Test
+    func gatedAdaptersApplyBeforeToolCallHooks() async throws {
+        guard #available(macOS 26.0, iOS 26.0, visionOS 26.0, *) else { return }
+        let hooks = HookRegistry()
+        await hooks.register(.beforeToolCall, priority: 1, event: BeforeToolCallEvent.self) { event, _ in
+            event.params["city"]?.stringValue == "Paris" ? BeforeToolCallDecision(block: true, blockReason: "vetoed") : nil
+        }
+        let registry = AgentToolRegistry(tools: [WeatherTool()])
+        let gate = FoundationModelsAgentToolGate(registry: registry, hookRegistry: hooks)
+        let (tools, _) = await FoundationModelsAgentTools.adapters(for: registry, invoke: { call in try await gate.invoke(call) })
+        let weather = try #require(tools.first)
+        #expect(try await weather.call(arguments: GeneratedContent(json: #"{"city":"Paris"}"#)) == "Tool error: Tool call blocked: vetoed")
+        #expect(try await weather.call(arguments: GeneratedContent(json: #"{"city":"Oslo"}"#)) == "Sunny in Oslo")
     }
 
     @Test

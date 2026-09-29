@@ -22,6 +22,7 @@ public actor CoreAIModelRuntime: CoreAITensorExecuting {
     // 27-only types (the CoreAI framework stays weak-linked).
     private var storage: (any Sendable)?
     private var runningStatefulFunctions: Set<String> = []
+    private var stateEpochs = CoreAIStateEpochs()
 
     /// Creates an empty runtime; call ``load(url:computeUnit:appGroup:persistentCache:)`` next.
     public init() {}
@@ -202,8 +203,10 @@ public actor CoreAIModelRuntime: CoreAITensorExecuting {
             self.runningStatefulFunctions.insert(function)
             defer { self.runningStatefulFunctions.remove(function) }
             var states = try loaded.states[function] ?? CoreAIBridge.makeStates(for: inferenceFunction)
+            let epoch = self.stateEpochs.token(for: function)
             let outputs = try await CoreAIBridge.invoke(inferenceFunction, inputs: arrays, stateNames: stateNames, states: &states)
-            if var current = self.storage as? CoreAILoadedModel, current.id == loaded.id {
+            // A reset that arrived while CoreAI ran wins: writing back would restore the pre-reset state.
+            if var current = self.storage as? CoreAILoadedModel, current.id == loaded.id, self.stateEpochs.token(for: function) == epoch {
                 current.states[function] = states
                 self.storage = current
             }
@@ -214,8 +217,12 @@ public actor CoreAIModelRuntime: CoreAITensorExecuting {
     }
 
     /// Clears the mutable state of one function, or of every function when `function` is `nil`.
+    ///
+    /// A reset that arrives while a stateful run of that function is in flight also discards the
+    /// states that run would have stored.
     /// - Parameter function: Function name, or `nil` for all.
     public func resetStates(function: String?) {
+        self.stateEpochs.reset(function)
         #if compiler(>=6.4) && canImport(CoreAI)
         if #available(iOS 27.0, macOS 27.0, tvOS 27.0, watchOS 27.0, visionOS 27.0, *) {
             guard var loaded = self.storage as? CoreAILoadedModel else {
@@ -233,6 +240,33 @@ public actor CoreAIModelRuntime: CoreAITensorExecuting {
 
     private static var unavailableError: CoreAIRuntimeError {
         .unavailable("CoreAI needs iOS, macOS, tvOS, watchOS, or visionOS 27")
+    }
+}
+
+/// Reset counters for stateful CoreAI functions: a run stores its updated states only when no reset
+/// of its function (or of every function) happened while it was suspended in CoreAI.
+struct CoreAIStateEpochs: Sendable, Equatable {
+    /// Snapshot compared before and after a run.
+    struct Token: Sendable, Equatable {
+        let all: UInt64
+        let function: UInt64
+    }
+
+    private var all: UInt64 = 0
+    private var functions: [String: UInt64] = [:]
+
+    /// Current token for a function.
+    func token(for function: String) -> Token {
+        Token(all: self.all, function: self.functions[function] ?? 0)
+    }
+
+    /// Records a reset of one function, or of every function when `function` is `nil`.
+    mutating func reset(_ function: String?) {
+        if let function {
+            self.functions[function, default: 0] &+= 1
+        } else {
+            self.all &+= 1
+        }
     }
 }
 
@@ -505,9 +539,8 @@ enum CoreAIBridge {
     // MARK: Tensor conversion
 
     static func ndArray(from tensor: CoreAITensor) throws -> NDArray {
-        guard tensor.data.count == tensor.elementCount * tensor.scalarType.byteWidth else {
-            throw CoreAIRuntimeError.invalidTensor("tensor bytes do not match shape \(tensor.shape)")
-        }
+        // Decoded or mutated tensors may be inconsistent; NDArray traps on negative dimensions.
+        try tensor.validate()
         var array = NDArray(shape: tensor.shape, scalarType: Self.ndScalarType(tensor.scalarType))
         let width = tensor.scalarType.byteWidth
         let shape = tensor.shape

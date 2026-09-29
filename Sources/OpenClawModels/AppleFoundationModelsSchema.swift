@@ -162,13 +162,13 @@ public enum FoundationModelsSchemaConverter {
             }
             return .array(
                 item: try Self.parse(items, name: "\(name)_item"),
-                minimumElements: try Self.integer(schema["minItems"], "\(name).minItems"),
-                maximumElements: try Self.integer(schema["maxItems"], "\(name).maxItems")
+                minimumElements: try Self.countBound(schema["minItems"], "\(name).minItems", isMinimum: true),
+                maximumElements: try Self.countBound(schema["maxItems"], "\(name).maxItems", isMinimum: false)
             )
         case "integer":
             return .integer(
-                minimum: try Self.integer(schema["minimum"], "\(name).minimum"),
-                maximum: try Self.integer(schema["maximum"], "\(name).maximum")
+                minimum: try Self.integerBound(schema["minimum"], "\(name).minimum", isMinimum: true),
+                maximum: try Self.integerBound(schema["maximum"], "\(name).maximum", isMinimum: false)
             )
         case "number":
             return .number(
@@ -180,8 +180,8 @@ public enum FoundationModelsSchemaConverter {
         case "null":
             return .null
         case "string":
-            let minimum = try Self.integer(schema["minLength"], "\(name).minLength") ?? 0
-            let maximum = try Self.integer(schema["maxLength"], "\(name).maxLength")
+            let minimum = try Self.countBound(schema["minLength"], "\(name).minLength", isMinimum: true) ?? 0
+            let maximum = try Self.countBound(schema["maxLength"], "\(name).maxLength", isMinimum: false)
             guard minimum >= 0, maximum.map({ $0 >= minimum }) ?? true else {
                 throw FoundationModelsError.invalidSchema("Invalid string length bounds: \(name)")
             }
@@ -300,14 +300,25 @@ public enum FoundationModelsSchemaConverter {
                 notices.append("\(path): array items defaulted to string")
             }
         }
+        // The bound helpers return `nil` for valid-but-unbounded values, so check for a throw.
+        func accepts(_ check: () throws -> Void) -> Bool {
+            do {
+                try check()
+                return true
+            } catch {
+                return false
+            }
+        }
         for key in ["minItems", "maxItems", "minLength", "maxLength"] where schema[key] != nil {
-            if (try? Self.integer(schema[key], key)) == nil {
+            if !accepts({ _ = try Self.countBound(schema[key], key, isMinimum: key.hasPrefix("min")) }) {
                 schema[key] = nil
                 notices.append("\(path): dropped non-integer \(key)")
             }
         }
         for key in ["minimum", "maximum"] where schema[key] != nil {
-            let valid = types.contains("integer") ? (try? Self.integer(schema[key], key)) != nil : (try? Self.number(schema[key], key)) != nil
+            let valid = types.contains("integer")
+                ? accepts({ _ = try Self.integerBound(schema[key], key, isMinimum: key == "minimum") })
+                : accepts({ _ = try Self.number(schema[key], key) })
             if !valid {
                 schema[key] = nil
                 notices.append("\(path): dropped invalid \(key)")
@@ -367,6 +378,36 @@ public enum FoundationModelsSchemaConverter {
         default:
             throw FoundationModelsError.invalidSchema("Expected integer: \(label)")
         }
+    }
+
+    /// Integer-schema `minimum`/`maximum`: ``integer(_:_:)``, except that an integral bound outside the
+    /// platform `Int` range that is looser than every `Int` (a minimum below `Int.min` or a maximum above
+    /// `Int.max`) means no guide instead of an error.
+    ///
+    /// JSON integers that do not fit `Int` decode as `.double`, so zod's `±(2^53-1)` bounds would
+    /// otherwise fail the whole request on 32-bit watchOS (arm64_32) while working on 64-bit
+    /// platforms. Host-side validation against the original schema still enforces the bound.
+    /// Fractional, non-finite and unsatisfiable (a minimum above `Int.max`, a maximum below `Int.min`)
+    /// bounds still throw.
+    static func integerBound(_ value: AnyCodable?, _ label: String, isMinimum: Bool) throws -> Int? {
+        if let value, case .double(let double) = value.value, double.isFinite, double.rounded() == double, Int(exactly: double) == nil {
+            guard isMinimum ? double < 0 : double > 0 else {
+                throw FoundationModelsError.invalidSchema("Expected integer: \(label)")
+            }
+            return nil
+        }
+        return try Self.integer(value, label)
+    }
+
+    /// Count bounds (`minItems`, `maxItems`, `minLength`, `maxLength`): ``integer(_:_:)``, except that an
+    /// integral maximum above `Int.max` means unbounded (see ``integerBound(_:_:isMinimum:)``).
+    static func countBound(_ value: AnyCodable?, _ label: String, isMinimum: Bool) throws -> Int? {
+        if !isMinimum, let value, case .double(let double) = value.value,
+           double.isFinite, double.rounded() == double, double > 0, Int(exactly: double) == nil
+        {
+            return nil
+        }
+        return try Self.integer(value, label)
     }
 
     /// Upstream `number(_:_:)`: absent -> `nil`; otherwise a finite, non-Boolean number.

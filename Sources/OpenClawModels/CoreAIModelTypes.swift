@@ -101,6 +101,12 @@ public struct CoreAITensor: Codable, Sendable, Equatable {
     /// Packed element bytes (`elementCount * scalarType.byteWidth` bytes).
     public var data: Data
 
+    private enum CodingKeys: String, CodingKey {
+        case shape
+        case scalarType
+        case data
+    }
+
     /// Creates a tensor from packed bytes.
     /// - Parameters:
     ///   - shape: Dimensions; every dimension must be non-negative.
@@ -108,19 +114,54 @@ public struct CoreAITensor: Codable, Sendable, Equatable {
     ///   - data: Packed row-major bytes.
     /// - Throws: ``CoreAIRuntimeError/invalidTensor(_:)`` when the byte count does not match the shape.
     public init(shape: [Int], scalarType: CoreAIScalarType, data: Data) throws {
-        guard shape.allSatisfy({ $0 >= 0 }) else {
-            throw CoreAIRuntimeError.invalidTensor("shape \(shape) has a negative dimension")
-        }
-        let count = Self.elementCount(of: shape)
-        let (expected, overflow) = count.multipliedReportingOverflow(by: scalarType.byteWidth)
-        guard !overflow, data.count == expected else {
-            throw CoreAIRuntimeError.invalidTensor(
-                "shape \(shape) of \(scalarType.rawValue) needs \(overflow ? "too many" : String(expected)) bytes, got \(data.count)"
-            )
-        }
         self.shape = shape
         self.scalarType = scalarType
         self.data = data
+        try self.validate()
+    }
+
+    /// Decodes a tensor and validates it like ``init(shape:scalarType:data:)``.
+    /// - Parameter decoder: Decoder.
+    /// - Throws: `DecodingError.dataCorrupted` (underlying ``CoreAIRuntimeError/invalidTensor(_:)``) for a
+    ///   negative dimension, an overflowing size, or a byte count that does not match the shape.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let shape = try container.decode([Int].self, forKey: .shape)
+        let scalarType = try container.decode(CoreAIScalarType.self, forKey: .scalarType)
+        let data = try container.decode(Data.self, forKey: .data)
+        do {
+            try self.init(shape: shape, scalarType: scalarType, data: data)
+        } catch {
+            throw DecodingError.dataCorrupted(
+                DecodingError.Context(codingPath: decoder.codingPath, debugDescription: "Invalid CoreAI tensor", underlyingError: error)
+            )
+        }
+    }
+
+    /// Checks that every dimension is non-negative and that ``data`` holds exactly
+    /// `elementCount * scalarType.byteWidth` bytes, without overflowing `Int` (32 bits on watchOS).
+    ///
+    /// ``shape``, ``scalarType`` and ``data`` are mutable, so ``CoreAIModelRuntime`` re-validates every
+    /// input before handing it to CoreAI.
+    /// - Throws: ``CoreAIRuntimeError/invalidTensor(_:)`` describing the first problem.
+    public func validate() throws {
+        guard self.shape.allSatisfy({ $0 >= 0 }) else {
+            throw CoreAIRuntimeError.invalidTensor("shape \(self.shape) has a negative dimension")
+        }
+        var count = 1
+        for dimension in self.shape {
+            let (product, overflow) = count.multipliedReportingOverflow(by: dimension)
+            guard !overflow else {
+                throw CoreAIRuntimeError.invalidTensor("shape \(self.shape) has too many elements")
+            }
+            count = product
+        }
+        let (expected, overflow) = count.multipliedReportingOverflow(by: self.scalarType.byteWidth)
+        guard !overflow, self.data.count == expected else {
+            throw CoreAIRuntimeError.invalidTensor(
+                "shape \(self.shape) of \(self.scalarType.rawValue) needs \(overflow ? "too many" : String(expected)) bytes, got \(self.data.count)"
+            )
+        }
     }
 
     /// Creates an `int32` tensor.

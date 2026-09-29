@@ -59,6 +59,10 @@ public struct FoundationModelsError: Error, LocalizedError, CustomStringConverti
     public var tokenCount: Int?
     /// Missing capability name (`vision`, `reasoning`, `toolCalling`, `guidedGeneration`).
     public var capability: String?
+    /// In-process tool calls (``FoundationModelsToolExecutionMode/executeInProcess(_:)``) that already
+    /// ran before the request failed, in order. Record them in the transcript before retrying: a
+    /// retry would run their side effects again. Non-empty values make the error non-retryable.
+    public var executedToolCalls: [FoundationModelsExecutedToolCall]
 
     /// Creates an error.
     /// - Parameters:
@@ -69,6 +73,7 @@ public struct FoundationModelsError: Error, LocalizedError, CustomStringConverti
     ///   - contextSize: Context window for overflow errors.
     ///   - tokenCount: Overflowing token count.
     ///   - capability: Missing capability name.
+    ///   - executedToolCalls: In-process tool calls that ran before the failure.
     public init(
         code: Code,
         message: String,
@@ -76,15 +81,30 @@ public struct FoundationModelsError: Error, LocalizedError, CustomStringConverti
         resetDate: Date? = nil,
         contextSize: Int? = nil,
         tokenCount: Int? = nil,
-        capability: String? = nil
+        capability: String? = nil,
+        executedToolCalls: [FoundationModelsExecutedToolCall] = []
     ) {
         self.code = code
         self.message = message
-        self.retryable = retryable ?? Self.defaultRetryable(code)
+        self.retryable = executedToolCalls.isEmpty ? (retryable ?? Self.defaultRetryable(code)) : false
         self.resetDate = resetDate
         self.contextSize = contextSize
         self.tokenCount = tokenCount
         self.capability = capability
+        self.executedToolCalls = executedToolCalls
+    }
+
+    /// A copy that records in-process tool calls which already ran; such errors are not retryable.
+    /// - Parameter calls: Executed calls (no change when empty).
+    /// - Returns: The error.
+    func recordingExecutedToolCalls(_ calls: [FoundationModelsExecutedToolCall]) -> FoundationModelsError {
+        guard !calls.isEmpty else { return self }
+        var copy = self
+        copy.executedToolCalls = calls
+        copy.retryable = false
+        let names = calls.map(\.call.name).joined(separator: ", ")
+        copy.message += " In-process tools already ran (\(names)); record them before retrying."
+        return copy
     }
 
     /// Localized description (the message).

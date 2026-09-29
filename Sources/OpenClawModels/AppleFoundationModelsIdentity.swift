@@ -259,7 +259,8 @@ public extension FoundationModelsProvider {
     /// Private Cloud Compute model reference `apple-fm/private-cloud-compute`.
     static let privateCloudComputeModelRef = "\(providerID)/\(privateCloudComputeModelID)"
     /// Synthetic non-secret auth marker (upstream `APPLE_FM_LOCAL_AUTH_MARKER`); never a credential.
-    static let localAuthMarker = "apple-fm-local"
+    /// Defined once in ``ModelAuthMarkers/appleFoundationModelsLocal``.
+    static let localAuthMarker = ModelAuthMarkers.appleFoundationModelsLocal
     /// Minimum context window for the setup/utility role (upstream `APPLE_FM_MIN_CONTEXT_WINDOW`).
     static let minimumUtilityContextWindow = 8_192
     /// Default maximum response tokens (upstream model `maxTokens`).
@@ -283,11 +284,15 @@ public extension FoundationModelsProvider {
         self.providerIDAliases.contains(providerID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
     }
 
-    /// Whether a configured API key is the synthetic non-secret marker rather than a secret.
+    /// Whether a configured API key is a non-secret marker rather than a secret.
+    ///
+    /// Delegates to ``ModelAuthMarkers/isNonSecretMarker(_:includeEnvVarNames:)`` so the marker list
+    /// has one source (``localAuthMarker`` plus the other core and plugin markers, for example
+    /// `oauth:<provider>` or SecretRef placeholders).
     /// - Parameter apiKey: Configured key.
-    /// - Returns: `true` for ``localAuthMarker``.
+    /// - Returns: `true` for a known non-secret marker.
     static func isNonSecretAuthMarker(_ apiKey: String?) -> Bool {
-        apiKey?.trimmingCharacters(in: .whitespacesAndNewlines) == self.localAuthMarker
+        ModelAuthMarkers.isNonSecretMarker(apiKey)
     }
 
     /// Whether facts qualify for the setup/utility role (available and at least 8,192 context tokens).

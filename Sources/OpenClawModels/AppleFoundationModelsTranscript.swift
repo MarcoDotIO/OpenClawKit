@@ -25,8 +25,10 @@ struct FoundationModelsTranscriptPlan: Sendable, Equatable {
         case prompt([Part])
         /// Earlier assistant text.
         case response(String)
-        /// Earlier assistant reasoning (OS 27 only; dropped otherwise).
-        case reasoning(String, signature: String?)
+        /// Earlier assistant reasoning text (OS 27 only; dropped otherwise). Signatures are never
+        /// replayed (upstream parity): this provider records none, so any signature in the
+        /// transcript was produced by another provider and is opaque to Foundation Models.
+        case reasoning(String)
         /// Earlier assistant tool call; `argumentsJSON` is a JSON object.
         case toolCall(ModelToolCall)
         /// Result answering an earlier tool call.
@@ -130,9 +132,9 @@ enum FoundationModelsTranscriptPlanner {
                     switch part {
                     case .text(let text):
                         entries.append(.response(text))
-                    case .thinking(let text, let signature):
+                    case .thinking(let text, _):
                         if allowReasoning {
-                            entries.append(.reasoning(text, signature: signature))
+                            entries.append(.reasoning(text))
                         }
                     case .toolCall(let call):
                         guard pending[call.id] == nil else {

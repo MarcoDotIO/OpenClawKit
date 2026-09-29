@@ -32,21 +32,77 @@ struct AppleFoundationModelsEngine: Sendable {
         target: AppleFoundationModelTarget,
         sink: FoundationModelsTextSink?
     ) async throws -> FoundationModelsGenerationResult {
+        // One recorder spans every attempt (including an on-device fallback), so in-process tool
+        // executions are never forgotten when a request fails after running them.
+        let recorder = FoundationModelsToolCallRecorder()
         do {
             switch target {
             case .system:
-                return try await self.runSystem(request, sink: sink)
+                return try await self.runSystem(request, sink: sink, recorder: recorder)
             case .privateCloudCompute:
-                return try await self.runPrivateCloud(request, sink: sink)
+                return try await self.runPrivateCloud(request, sink: sink, recorder: recorder)
             }
         } catch {
-            throw FoundationModelsErrorMapper.map(error)
+            throw await Self.failure(error, recorder: recorder)
+        }
+    }
+
+    /// Maps a failure and attaches in-process tool calls that already ran (the error then becomes
+    /// non-retryable, see ``FoundationModelsError/executedToolCalls``).
+    static func failure(_ error: any Error, recorder: FoundationModelsToolCallRecorder) async -> any Error {
+        let mapped = FoundationModelsErrorMapper.map(error)
+        guard let modelError = mapped as? FoundationModelsError else {
+            return mapped
+        }
+        return modelError.recordingExecutedToolCalls(await recorder.executed)
+    }
+
+    /// Private Cloud Compute error codes that may fall back to the on-device model.
+    static let fallbackCodes: Set<FoundationModelsError.Code> = [.rateLimited, .networkFailure, .serviceUnavailable, .unavailable]
+
+    /// Runs `attempt` and, when it fails with a transient Private Cloud Compute error before emitting
+    /// text or running any in-process tool, runs `fallback` instead.
+    ///
+    /// A fallback after in-process tools ran would execute their side effects a second time (the
+    /// fallback replays the original request, which does not contain the first attempt's calls), so
+    /// such failures are rethrown with the executed calls attached by ``run(_:target:sink:)``.
+    /// - Parameters:
+    ///   - recorder: Recorder shared by the attempt and the fallback.
+    ///   - sink: Streaming sink of the attempt.
+    ///   - attempt: The Private Cloud Compute attempt.
+    ///   - fallback: The on-device fallback (or a throw when it is unavailable).
+    /// - Returns: The attempt's or the fallback's result.
+    static func attemptWithFallback(
+        recorder: FoundationModelsToolCallRecorder,
+        sink: FoundationModelsTextSink?,
+        attempt: () async throws -> FoundationModelsGenerationResult,
+        fallback: (FoundationModelsError) async throws -> FoundationModelsGenerationResult
+    ) async throws -> FoundationModelsGenerationResult {
+        do {
+            return try await attempt()
+        } catch {
+            let mapped = FoundationModelsErrorMapper.map(error)
+            guard let modelError = mapped as? FoundationModelsError,
+                  Self.fallbackCodes.contains(modelError.code),
+                  sink?.didEmit != true,
+                  !Task.isCancelled,
+                  await recorder.executed.isEmpty
+            else {
+                throw mapped
+            }
+            // Proposed calls have no side effects; drop them so the fallback reports only its own.
+            await recorder.discardProposed()
+            return try await fallback(modelError)
         }
     }
 
     // MARK: On-device system model
 
-    private func runSystem(_ request: ModelGenerationRequest, sink: FoundationModelsTextSink?) async throws -> FoundationModelsGenerationResult {
+    private func runSystem(
+        _ request: ModelGenerationRequest,
+        sink: FoundationModelsTextSink?,
+        recorder: FoundationModelsToolCallRecorder
+    ) async throws -> FoundationModelsGenerationResult {
         #if os(watchOS)
         throw OpenClawCoreError.unavailable(
             FoundationModelsRuntimeAvailability.unavailable(.systemModelUnsupportedOnPlatform).message
@@ -62,12 +118,26 @@ struct AppleFoundationModelsEngine: Sendable {
         #if compiler(>=6.4)
         if #available(iOS 27.0, macOS 27.0, visionOS 27.0, *) {
             let model = AppleFMSystemModel.make(self.options)
-            let context = AppleFMRunContext(request: request, options: self.options, providerID: self.providerID, target: .system, sink: sink)
+            let context = AppleFMRunContext(
+                request: request,
+                options: self.options,
+                providerID: self.providerID,
+                target: .system,
+                sink: sink,
+                recorder: recorder
+            )
             return try await AppleFMGeneration27.run(model: model, context: context, tokenCounter: AppleFMTokenCounter.system(model))
         }
         #endif
         if #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) {
-            let context = AppleFMRunContext(request: request, options: self.options, providerID: self.providerID, target: .system, sink: sink)
+            let context = AppleFMRunContext(
+                request: request,
+                options: self.options,
+                providerID: self.providerID,
+                target: .system,
+                sink: sink,
+                recorder: recorder
+            )
             return try await AppleFMSystem26.run(context: context)
         }
         throw OpenClawCoreError.unavailable(FoundationModelsRuntimeAvailability.unavailable(.unsupportedOS).message)
@@ -76,7 +146,11 @@ struct AppleFoundationModelsEngine: Sendable {
 
     // MARK: Private Cloud Compute
 
-    private func runPrivateCloud(_ request: ModelGenerationRequest, sink: FoundationModelsTextSink?) async throws -> FoundationModelsGenerationResult {
+    private func runPrivateCloud(
+        _ request: ModelGenerationRequest,
+        sink: FoundationModelsTextSink?,
+        recorder: FoundationModelsToolCallRecorder
+    ) async throws -> FoundationModelsGenerationResult {
         #if compiler(>=6.4)
         if #available(iOS 27.0, macOS 27.0, visionOS 27.0, watchOS 27.0, *) {
             let model = PrivateCloudComputeLanguageModel()
@@ -98,27 +172,20 @@ struct AppleFoundationModelsEngine: Sendable {
                 preflight = nil
             }
             if let preflight {
-                return try await self.fallBackOrThrow(preflight, request: request, sink: sink)
+                return try await self.fallBackOrThrow(preflight, request: request, sink: sink, recorder: recorder)
             }
-            do {
-                let context = AppleFMRunContext(
-                    request: request,
-                    options: self.options,
-                    providerID: self.providerID,
-                    target: .privateCloudCompute,
-                    sink: sink
-                )
-                return try await AppleFMGeneration27.run(model: model, context: context, tokenCounter: nil)
-            } catch {
-                let mapped = FoundationModelsErrorMapper.map(error)
-                guard let modelError = mapped as? FoundationModelsError,
-                      [.rateLimited, .networkFailure, .serviceUnavailable, .unavailable].contains(modelError.code),
-                      sink?.didEmit != true,
-                      !Task.isCancelled
-                else {
-                    throw mapped
-                }
-                return try await self.fallBackOrThrow(modelError, request: request, sink: sink)
+            let context = AppleFMRunContext(
+                request: request,
+                options: self.options,
+                providerID: self.providerID,
+                target: .privateCloudCompute,
+                sink: sink,
+                recorder: recorder
+            )
+            return try await Self.attemptWithFallback(recorder: recorder, sink: sink) {
+                try await AppleFMGeneration27.run(model: model, context: context, tokenCounter: nil)
+            } fallback: { modelError in
+                try await self.fallBackOrThrow(modelError, request: request, sink: sink, recorder: recorder)
             }
         }
         #endif
@@ -128,7 +195,8 @@ struct AppleFoundationModelsEngine: Sendable {
     private func fallBackOrThrow(
         _ error: FoundationModelsError,
         request: ModelGenerationRequest,
-        sink: FoundationModelsTextSink?
+        sink: FoundationModelsTextSink?,
+        recorder: FoundationModelsToolCallRecorder
     ) async throws -> FoundationModelsGenerationResult {
         guard self.options.fallbackToOnDevice,
               FoundationModelsProvider.runtimeAvailability(
@@ -138,7 +206,7 @@ struct AppleFoundationModelsEngine: Sendable {
         else {
             throw error
         }
-        var result = try await self.runSystem(request, sink: sink)
+        var result = try await self.runSystem(request, sink: sink, recorder: recorder)
         result.fellBackToOnDevice = true
         return result
     }
@@ -153,6 +221,8 @@ struct AppleFMRunContext: Sendable {
     let providerID: String
     let target: AppleFoundationModelTarget
     let sink: FoundationModelsTextSink?
+    /// Records proposed and executed tool calls; shared across a request's attempts.
+    var recorder = FoundationModelsToolCallRecorder()
 
     var modelID: String {
         self.target.modelID
@@ -220,7 +290,7 @@ enum AppleFMPreparation {
         default:
             break
         }
-        let recorder = FoundationModelsToolCallRecorder()
+        let recorder = context.recorder
         let executor: (any FoundationModelsToolExecuting)?
         if case .executeInProcess(let inProcess) = context.options.tools.execution {
             executor = inProcess
@@ -231,7 +301,15 @@ enum AppleFMPreparation {
             try FoundationModelsHostTool(definition: definition, recorder: recorder, executor: executor)
         }
         let hostNames = Set(hostTools.map(\.name))
-        let extras = nativeTools(plan).filter { !hostNames.contains($0.name) }
+        // Framework-executed tools (Vision, Spotlight) are offered only with `toolChoice: .auto`: OS 27
+        // emulates `.named`/`.required` with `ToolCallingMode.required` over the whole tool set, so a
+        // native tool could satisfy it and the forced host tool would never be proposed.
+        let extras: [any Tool]
+        if case .auto = request.toolChoice {
+            extras = nativeTools(plan).filter { !hostNames.contains($0.name) }
+        } else {
+            extras = []
+        }
         let tools: [any Tool] = hostTools + extras
         let callerSchema = request.responseFormatJSONSchema
         let schema = try callerSchema.map {
@@ -329,20 +407,14 @@ enum AppleFMTranscriptBuilder {
                 entries.append(.prompt(Transcript.Prompt(segments: try Self.segments(parts))))
             case .response(let text):
                 entries.append(.response(Transcript.Response(assetIDs: [], segments: [.text(Transcript.TextSegment(content: text))])))
-            case .reasoning(let text, let signature):
+            case .reasoning(let text):
                 #if compiler(>=6.4)
                 if #available(iOS 27.0, macOS 27.0, visionOS 27.0, *) {
-                    entries.append(
-                        .reasoning(
-                            Transcript.Reasoning(
-                                segments: [.text(Transcript.TextSegment(content: text))],
-                                signature: signature.flatMap { Data(base64Encoded: $0) }
-                            )
-                        )
-                    )
+                    // Upstream replays reasoning text only; foreign signatures are opaque to the framework.
+                    entries.append(.reasoning(Transcript.Reasoning(segments: [.text(Transcript.TextSegment(content: text))])))
                 }
                 #else
-                _ = (text, signature)
+                _ = text
                 #endif
             case .toolCall(let call):
                 let arguments = try GeneratedContent(json: call.argumentsJSON)
