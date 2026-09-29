@@ -198,7 +198,7 @@ public struct OpenClawChatView: View {
     @State private var isSearchPresented = false
     @State private var composerFocusRequest = 0
     @State private var fullMessageRequest: ChatFullMessageReaderRequest?
-    #if os(iOS)
+    #if os(iOS) || os(visionOS)
     @State private var selectTextMessage: OpenClawChatMessage?
     #endif
     @State private var turnRecapResolver = ChatTurnRecapResolver()
@@ -385,7 +385,7 @@ public struct OpenClawChatView: View {
                 request: request,
                 markdownVariant: self.markdownVariant)
         }
-        #if os(iOS)
+        #if os(iOS) || os(visionOS)
         .sheet(item: self.$selectTextMessage) {
             ChatSelectableTextSheet(text: ChatMessageVisibleText.copyText(in: $0))
         }
@@ -873,7 +873,7 @@ public struct OpenClawChatView: View {
     @ViewBuilder
     private func messageMenuActions(for message: OpenClawChatMessage) -> some View {
         self.copyMessageButton(for: message)
-        #if os(iOS)
+        #if os(iOS) || os(visionOS)
         self.selectTextButton(for: message)
         #endif
         self.replyMessageButton(for: message)
@@ -1486,7 +1486,7 @@ extension OpenClawChatView {
         }
     }
 
-    #if os(iOS)
+    #if os(iOS) || os(visionOS)
     @ViewBuilder
     private func selectTextButton(for message: OpenClawChatMessage) -> some View {
         if !ChatMessageVisibleText.copyText(in: message).isEmpty {
