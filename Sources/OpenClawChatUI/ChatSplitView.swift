@@ -131,6 +131,7 @@ public struct OpenClawChatSplitView: View {
                 .navigationTitle(self.activeSessionTitle)
                 #if os(iOS)
                 .navigationBarTitleDisplayMode(.inline)
+                .modifier(ChatTranscriptToolbarMinimization())
                 #endif
                 .toolbar { self.detailToolbar }
         }
@@ -247,4 +248,21 @@ public struct OpenClawChatSplitView: View {
     }
     #endif
 }
+
+#if os(iOS)
+/// iOS 27 minimizes the navigation bar while the reader scrolls down the transcript; earlier iOS keeps it fixed.
+private struct ChatTranscriptToolbarMinimization: ViewModifier {
+    func body(content: Content) -> some View {
+        #if compiler(>=6.4)
+        if #available(iOS 27.0, *) {
+            content.toolbarMinimizationBehavior(.onScrollDown, for: .navigationBar)
+        } else {
+            content
+        }
+        #else
+        content
+        #endif
+    }
+}
+#endif
 #endif
