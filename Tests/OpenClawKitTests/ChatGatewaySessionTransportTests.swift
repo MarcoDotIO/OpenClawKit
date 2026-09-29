@@ -99,9 +99,9 @@ struct ChatGatewaySessionTransportTests {
     @Test func `strict mode parks queued replay on gateways without the routing contract`() async throws {
         let session = transportTestSession(capabilities: [])
         let gateway = GatewayNodeSession()
-        try await gateway.connectForChatTransportTest(session: session)
+        try await gateway.connectForChatTransportTest(session: session, gatewayID: "gw-a")
         defer { Task { await gateway.disconnect() } }
-        let transport = OpenClawGatewaySessionChatTransport(gateway: gateway)
+        let transport = OpenClawGatewaySessionChatTransport(gateway: gateway, gatewayStableID: "gw-a")
 
         guard case let .unavailable(reason, allowsLiveSend) = await transport.acquireOutboxRouteLease() else {
             Issue.record("Strict mode must not replay without chat-send-routing-contract")
@@ -129,9 +129,9 @@ struct ChatGatewaySessionTransportTests {
     @Test func `strict lease binds sends and history to the captured route`() async throws {
         let session = transportTestSession(capabilities: ["chat-send-routing-contract", "session-settings-cas-v1"])
         let gateway = GatewayNodeSession()
-        try await gateway.connectForChatTransportTest(session: session)
+        try await gateway.connectForChatTransportTest(session: session, gatewayID: "gw-a")
         defer { Task { await gateway.disconnect() } }
-        let transport = OpenClawGatewaySessionChatTransport(gateway: gateway)
+        let transport = OpenClawGatewaySessionChatTransport(gateway: gateway, gatewayStableID: "gw-a")
 
         guard case let .available(lease) = await transport.acquireOutboxRouteLease() else {
             Issue.record("A routing-contract gateway must offer an outbox lease")
@@ -159,7 +159,10 @@ struct ChatGatewaySessionTransportTests {
         // Replacing the connection (new endpoint) retires the lease: the queued send must fail
         // as not dispatched instead of reaching the replacement gateway.
         let replacement = transportTestSession(capabilities: ["chat-send-routing-contract"])
-        try await gateway.connectForChatTransportTest("ws://replacement.example.invalid", session: replacement)
+        try await gateway.connectForChatTransportTest(
+            "ws://replacement.example.invalid",
+            session: replacement,
+            gatewayID: "gw-a")
         await #expect(throws: OpenClawChatTransportSendError.self) {
             _ = try await lease.sendMessage(
                 sessionKey: "agent:main:main",
@@ -176,9 +179,12 @@ struct ChatGatewaySessionTransportTests {
     @Test func `best effort mode replays on one route without a routing contract`() async throws {
         let session = transportTestSession(capabilities: [])
         let gateway = GatewayNodeSession()
-        try await gateway.connectForChatTransportTest(session: session)
+        try await gateway.connectForChatTransportTest(session: session, gatewayID: "gw-a")
         defer { Task { await gateway.disconnect() } }
-        let transport = OpenClawGatewaySessionChatTransport(gateway: gateway, outboxRouteSafety: .bestEffort)
+        let transport = OpenClawGatewaySessionChatTransport(
+            gateway: gateway,
+            gatewayStableID: "gw-a",
+            outboxRouteSafety: .bestEffort)
         #expect(!transport.outboxRequiresSessionRoutingContract)
 
         guard case let .available(lease) = await transport.acquireOutboxRouteLease() else {
@@ -199,6 +205,129 @@ struct ChatGatewaySessionTransportTests {
         #expect(send["expectedSessionRoutingContract"] == nil)
         #expect(send["expectedPermissionMode"] == nil)
         #expect(sentParams(socket, method: "agents.list").isEmpty)
+    }
+
+    @Test func `unpinned transport never offers an outbox lease but keeps live sends`() async throws {
+        // Default gateways all report `per-sender|main|main`, so the routing-contract fence cannot
+        // tell two gateways apart: without a pinned gateway id, queued work must stay parked.
+        for safety in [OpenClawGatewaySessionChatTransport.OutboxRouteSafety.strict, .bestEffort] {
+            let session = transportTestSession(capabilities: ["chat-send-routing-contract", "session-settings-cas-v1"])
+            let gateway = GatewayNodeSession()
+            try await gateway.connectForChatTransportTest(session: session, gatewayID: "gw-b")
+            defer { Task { await gateway.disconnect() } }
+            let transport = OpenClawGatewaySessionChatTransport(gateway: gateway, outboxRouteSafety: safety)
+
+            guard case let .unavailable(reason, allowsLiveSend) = await transport.acquireOutboxRouteLease() else {
+                Issue.record("An unpinned transport must not offer an outbox lease (\(safety))")
+                return
+            }
+            #expect(reason == nil)
+            #expect(allowsLiveSend)
+            let socket = try #require(session.latestSocket)
+            #expect(sentParams(socket, method: "agents.list").isEmpty)
+
+            let response = try await transport.sendMessage(
+                sessionKey: "main",
+                message: "live",
+                thinking: "off",
+                idempotencyKey: "live-1",
+                attachments: [])
+            #expect(response.runId == "run-1")
+            #expect(sentParams(socket, method: "chat.send").count == 1)
+        }
+    }
+
+    @Test func `pinned transport refuses reads while connected to another gateway`() async throws {
+        let session = transportTestSession(capabilities: ["chat-send-routing-contract"], requestReply: { method, _ in
+            switch method {
+            case "chat.history": .ok(["sessionKey": "agent:main:main", "messages": []])
+            case "health": .ok(["ok": true])
+            case "sessions.list": .ok(["sessions": []])
+            default: .ok([:])
+            }
+        })
+        let gateway = GatewayNodeSession()
+        try await gateway.connectForChatTransportTest(session: session, gatewayID: "gw-b")
+        defer { Task { await gateway.disconnect() } }
+        let socket = try #require(session.latestSocket)
+
+        let other = OpenClawGatewaySessionChatTransport(gateway: gateway, gatewayStableID: "gw-a")
+        await #expect(throws: OpenClawGatewaySessionChatTransportError.differentGateway) {
+            _ = try await other.requestHistory(sessionKey: "main")
+        }
+        await #expect(throws: OpenClawGatewaySessionChatTransportError.differentGateway) {
+            _ = try await other.requestHealth(timeoutMs: 1000)
+        }
+        await #expect(throws: OpenClawGatewaySessionChatTransportError.differentGateway) {
+            _ = try await other.listSessions(limit: 10, search: nil, archived: false)
+        }
+        await #expect(throws: OpenClawGatewaySessionChatTransportError.differentGateway) {
+            _ = try await other.requestChatGateway(OpenClawChatGatewayRequests.questionList())
+        }
+        #expect(sentParams(socket, method: "chat.history").isEmpty)
+        #expect(socket.sentFrames(method: "health").isEmpty)
+        #expect(sentParams(socket, method: "sessions.list").isEmpty)
+
+        // The owning gateway's transport reads normally, bound to its live route.
+        let owner = OpenClawGatewaySessionChatTransport(gateway: gateway, gatewayStableID: "gw-b")
+        let history = try await owner.requestHistory(sessionKey: "main")
+        #expect(history.messages?.isEmpty != false)
+        #expect(try await owner.requestHealth(timeoutMs: 1000))
+        #expect(sentParams(socket, method: "chat.history").count == 1)
+        #expect(socket.sentFrames(method: "health").count == 1)
+    }
+
+    @Test func `pinned transport drops events from another gateway`() async throws {
+        let homeSession = transportTestSession(capabilities: [])
+        let gateway = GatewayNodeSession()
+        try await gateway.connectForChatTransportTest(session: homeSession, gatewayID: "gw-a")
+        defer { Task { await gateway.disconnect() } }
+        let homeRecorder = GatewayCoreRecorder<String>()
+        let home = OpenClawGatewaySessionChatTransport(gateway: gateway, gatewayStableID: "gw-a")
+        let homeConsumer = Task {
+            for await event in home.events() {
+                switch event {
+                case .tick: homeRecorder.append("tick")
+                case .health(ok: false): homeRecorder.append("offline")
+                default: break
+                }
+            }
+        }
+        defer { homeConsumer.cancel() }
+
+        // The home subscription is live and delivers its own gateway's frames.
+        let homeSocket = try #require(homeSession.latestSocket)
+        try await gatewayCoreWaitUntil("home subscribed sessions") {
+            !homeSocket.sentFrames(method: "sessions.subscribe").isEmpty
+        }
+        homeSocket.emit(GatewayCoreFrames.event("tick", payload: ["ts": 1]))
+        try await gatewayCoreWaitUntil("home tick delivered") { homeRecorder.values.count == 1 }
+
+        // The shared session switches to gateway B: B's frames reach B's transport only.
+        let workSession = transportTestSession(capabilities: [])
+        try await gateway.connectForChatTransportTest(
+            "ws://work.example.invalid",
+            session: workSession,
+            gatewayID: "gw-b")
+        let workRecorder = GatewayCoreRecorder<String>()
+        let work = OpenClawGatewaySessionChatTransport(gateway: gateway, gatewayStableID: "gw-b")
+        let workConsumer = Task {
+            for await event in work.events() {
+                if case .tick = event { workRecorder.append("tick") }
+            }
+        }
+        defer { workConsumer.cancel() }
+        let workSocket = try #require(workSession.latestSocket)
+        try await gatewayCoreWaitUntil("work subscribed sessions") {
+            !workSocket.sentFrames(method: "sessions.subscribe").isEmpty
+        }
+        workSocket.emit(GatewayCoreFrames.event("tick", payload: ["ts": 2]))
+        workSocket.emit(GatewayCoreFrames.event("tick", payload: ["ts": 3]))
+        try await gatewayCoreWaitUntil("work ticks delivered") { workRecorder.values.count == 2 }
+        // The home transport reports itself offline once and never delivers B's frames.
+        try await gatewayCoreWaitUntil("home reported offline") { homeRecorder.values.contains("offline") }
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(homeRecorder.values == ["tick", "offline"])
     }
 
     @Test func `gateway stable id must match the connected gateway exactly`() async throws {

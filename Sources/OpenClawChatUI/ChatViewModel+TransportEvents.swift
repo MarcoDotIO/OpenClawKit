@@ -83,9 +83,13 @@ extension OpenClawChatViewModel {
             self.refreshSourceContext()
             self.invalidateAgentCatalog(clear: true)
             self.refreshAgentsIfRequested()
-            if case .routeChanged = evt {
+            let isRouteChange = if case .routeChanged = evt { true } else { false }
+            if isRouteChange {
                 self.questionAttentionOwnerID = UUID()
                 self.applyProgressCard(nil)
+                // Branch scopes reconciled against the previous gateway context must not
+                // authorize a replay on the new one; the flush below reconciles them again.
+                self.invalidateOutboxBranchReconciliation()
             }
             // Apple transports publish replacement sockets through either event.
             // Old known-absent state must not authorize legacy plans on the new Gateway.
@@ -114,6 +118,8 @@ extension OpenClawChatViewModel {
             Task {
                 await self.refreshHistoryAfterRun(historyRequest: context)
                 await self.pollHealthIfNeeded(force: true, sessionSnapshot: context.session)
+                // A still-healthy connection has no health transition to restart the flush.
+                if isRouteChange { self.flushOutboxIfNeeded() }
             }
         }
     }
@@ -745,7 +751,7 @@ extension OpenClawChatViewModel {
             self.applyProgressCard(ProgressCard(
                 sessionkey: self.sessionKey,
                 revision: self.legacyProgressCardRevision,
-                updatedat: evt.ts ?? 0,
+                updatedat: Int(clamping: evt.tsMilliseconds ?? 0),
                 markdown: explanation?.isEmpty == false ? explanation : nil,
                 steps: steps))
         case "item":
@@ -769,7 +775,7 @@ extension OpenClawChatViewModel {
                 toolCallId: toolCallId,
                 name: name,
                 args: args,
-                startedAt: evt.ts.map(Double.init) ?? Date().timeIntervalSince1970 * 1000,
+                startedAt: evt.tsMilliseconds.map(Double.init) ?? Date().timeIntervalSince1970 * 1000,
                 isError: nil,
                 diffStat: nil,
                 activity: self.turnToolCallsById[toolCallId]?.activity)

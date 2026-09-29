@@ -40,6 +40,10 @@ private struct RegisteredGatewayIDs {
 /// Create one instance per installation (typically at app launch) and hand each
 /// gateway its facade with ``store(gatewayID:)``. Every facade from one container
 /// shares exactly one GRDB queue per database file.
+///
+/// Both databases observe GRDB's suspension notifications. A host that stores them in a shared
+/// (app-group) container must call ``suspend()`` before the app is suspended and ``resume()`` when
+/// it becomes active again (see ``defaultDirectoryURL(appGroupIdentifier:)``).
 public final class OpenClawClientDatabases: @unchecked Sendable {
     /// File name of the disposable gateway snapshot cache.
     public static let gatewayCacheFilename = "gateway-cache.sqlite"
@@ -76,15 +80,40 @@ public final class OpenClawClientDatabases: @unchecked Sendable {
         try Self.securePrivateDirectory(directoryURL)
 
         let stateURL = directoryURL.appendingPathComponent(Self.clientStateFilename, isDirectory: false)
-        self.stateQueue = try Self.openStateDatabase(at: stateURL)
-        self.watchMessages = OpenClawWatchMessageJournal(queue: self.stateQueue)
         let cacheURL = directoryURL.appendingPathComponent(Self.gatewayCacheFilename, isDirectory: false)
-        self.cacheQueue = try Self.openRepairableCacheDatabase(at: cacheURL)
+        // Another process sharing the directory (an app extension using the same app group) may
+        // open and migrate the same files concurrently; coordinate first open and migration.
+        let (stateQueue, cacheQueue) = try Self.coordinatingFirstOpen(of: directoryURL) {
+            try (Self.openStateDatabase(at: stateURL), Self.openRepairableCacheDatabase(at: cacheURL))
+        }
+        self.stateQueue = stateQueue
+        self.watchMessages = OpenClawWatchMessageJournal(queue: stateQueue)
+        self.cacheQueue = cacheQueue
         Self.securePrivateDatabaseFiles(stateURL)
         Self.securePrivateDatabaseFiles(cacheURL)
         let exactRegisteredGatewayIDs = registeredGatewayIDs.map(RegisteredGatewayIDs.init)
         self.resolvePendingGatewayRemovals(registeredGatewayIDs: exactRegisteredGatewayIDs)
         importLegacyDatabases(registeredGatewayIDs: exactRegisteredGatewayIDs)
+    }
+
+    /// Suspends every GRDB database in this process that observes suspension notifications,
+    /// including this container's two databases (GRDB's `Database.suspendNotification`).
+    ///
+    /// Required when the databases live in a shared app-group container: iOS terminates an app
+    /// (`0xDEAD10CC`) that is suspended while holding a lock on a shared-container SQLite file.
+    /// Call it when the app enters the background and before a background task expires. While
+    /// suspended, reads keep working and writes fail without changing durable state, the same way
+    /// an interrupted process does: queued commands stay queued and a later flush picks them up.
+    public static func suspend() {
+        NotificationCenter.default.post(name: Database.suspendNotification, object: nil)
+    }
+
+    /// Resumes databases suspended by ``suspend()`` (GRDB's `Database.resumeNotification`).
+    ///
+    /// Call it when the app becomes active and at the start of every background-mode callback
+    /// (background fetch, Watch delivery, push handling) that may use the chat store.
+    public static func resume() {
+        NotificationCenter.default.post(name: Database.resumeNotification, object: nil)
     }
 
     /// Returns the gateway-scoped transcript cache and command outbox facade.
@@ -454,6 +483,9 @@ extension OpenClawClientDatabases {
         configuration.label = label
         configuration.journalMode = .wal
         configuration.busyMode = .timeout(5)
+        // No effect until a host posts GRDB's suspend notification (see `suspend()`); required so
+        // app-group hosts can release shared-container locks before iOS suspends the process.
+        configuration.observesSuspensionNotifications = true
         configuration.prepareDatabase { db in
             try db.execute(sql: "PRAGMA secure_delete = ON")
         }
@@ -472,6 +504,35 @@ extension OpenClawClientDatabases {
         return queue
     }
 
+    /// Runs `open` under a coordinated write of `directoryURL`, so processes sharing the
+    /// directory never create or migrate the same databases at the same time.
+    static func coordinatingFirstOpen<T>(of directoryURL: URL, _ open: () throws -> T) throws -> T {
+        let coordinator = NSFileCoordinator(filePresenter: nil)
+        var coordinationError: NSError?
+        var result: Result<T, Error>?
+        coordinator.coordinate(
+            writingItemAt: directoryURL,
+            options: .forMerging,
+            error: &coordinationError)
+        { _ in
+            result = Result { try open() }
+        }
+        if let result { return try result.get() }
+        throw coordinationError ?? CocoaError(.fileWriteUnknown)
+    }
+
+    /// Lock contention or suspension from another connection (possibly another process sharing
+    /// the directory): the cache is healthy, so it must not be deleted as a repair.
+    static func isContentionError(_ error: Error) -> Bool {
+        guard let error = error as? DatabaseError else { return false }
+        switch error.resultCode {
+        case .SQLITE_BUSY, .SQLITE_LOCKED, .SQLITE_INTERRUPT, .SQLITE_ABORT:
+            return true
+        default:
+            return false
+        }
+    }
+
     private static func openRepairableCacheDatabase(at url: URL) throws -> DatabaseQueue {
         do {
             let queue = try DatabaseQueue(
@@ -479,6 +540,8 @@ extension OpenClawClientDatabases {
                 configuration: self.configuration(label: "OpenClaw.gateway-cache"))
             try self.prepareCacheSchema(queue)
             return queue
+        } catch where self.isContentionError(error) {
+            throw error
         } catch {
             // This file contains gateway snapshots only. A format mismatch or
             // corruption is repaired by rebuilding, never by migrating rows.

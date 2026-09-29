@@ -6,8 +6,10 @@ import OpenClawKit
 // - `apple-fm/system` (on-device) does not reason, so the thinking control stays hidden for it
 //   (`OpenClawChatViewModel.hidesThinkingControl`); Private Cloud Compute (`apple-fm/private-cloud-compute`,
 //   alias `pcc`) keeps it.
-// - When Private Cloud Compute is selected and its quota is exhausted, the composer shows a notice with the system's
-//   limit-increase offer (`FoundationModelsProvider.presentPrivateCloudQuotaIncreaseSuggestion()`).
+// - When Private Cloud Compute is selected and the host-provided quota (`privateCloudQuotaProvider`, set only when the
+//   model runs in this process) is exhausted, the composer shows a notice with the system's limit-increase offer
+//   (`FoundationModelsProvider.presentPrivateCloudQuotaIncreaseSuggestion()`). This device's own quota says nothing
+//   about a remote gateway's runs, so no notice is shown without a provider.
 // - Picked and pasted images are sent as `image` chat attachments; the agent runtime hands them to the apple-fm
 //   provider as `MediaAttachment`s (labelled image-1…N, with the Vision tools on offer).
 
@@ -31,6 +33,13 @@ extension OpenClawChatViewModel {
         guard OpenClawReferenceProviderCatalog.normalize(providerID: providerID) == FoundationModelsProvider.providerID
         else { return false }
         return AppleFoundationModelTarget(modelID: modelID) == .privateCloudCompute
+    }
+
+    /// The composer's quota notice: `nil` unless PCC is selected and the in-process quota provider
+    /// reports it exhausted. The provider is not called otherwise.
+    func privateCloudQuotaNotice(now: Date = Date()) -> ChatPrivateCloudQuotaNotice? {
+        guard self.isPrivateCloudComputeSelected, let provider = self.privateCloudQuotaProvider else { return nil }
+        return ChatPrivateCloudQuotaNotice(isPrivateCloudComputeSelected: true, quota: provider(), now: now)
     }
 }
 
@@ -56,7 +65,7 @@ struct ChatPrivateCloudQuotaNotice: Equatable {
 #if os(iOS) || os(macOS) || os(visionOS)
 import SwiftUI
 
-/// Composer row shown while the selected Private Cloud Compute model is over quota.
+/// Composer row shown while the selected Private Cloud Compute model is over its in-process quota.
 @MainActor
 struct ChatPrivateCloudQuotaRow: View {
     let viewModel: OpenClawChatViewModel
@@ -101,6 +110,7 @@ struct ChatPrivateCloudQuotaRow: View {
     private var refreshKey: String {
         [
             self.viewModel.isPrivateCloudComputeSelected ? "pcc" : "",
+            self.viewModel.privateCloudQuotaProvider == nil ? "" : "local-quota",
             self.viewModel.modelSelectionID,
             String(self.viewModel.pendingRunCount),
             self.viewModel.errorText ?? "",
@@ -108,10 +118,7 @@ struct ChatPrivateCloudQuotaRow: View {
     }
 
     private func refresh() {
-        let selected = self.viewModel.isPrivateCloudComputeSelected
-        self.notice = ChatPrivateCloudQuotaNotice(
-            isPrivateCloudComputeSelected: selected,
-            quota: selected ? FoundationModelsProvider.privateCloudQuota() : nil)
+        self.notice = self.viewModel.privateCloudQuotaNotice()
     }
 }
 #endif

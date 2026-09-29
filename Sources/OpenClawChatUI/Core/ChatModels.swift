@@ -1040,15 +1040,61 @@ public struct OpenClawSessionPreviewEntry: Codable, Sendable {
 
 /// `sessions.preview` response.
 public struct OpenClawSessionsPreviewPayload: Codable, Sendable {
-    /// Server timestamp.
-    public let ts: Int
+    /// Server timestamp in epoch milliseconds (`0` when the gateway omitted or malformed it).
+    ///
+    /// Stored as `Int64` because millisecond epochs exceed `Int32`, the width of `Int` on watchOS arm64_32.
+    public let tsMilliseconds: Int64
     /// Session previews.
     public let previews: [OpenClawSessionPreviewEntry]
 
+    /// Server timestamp as `Int`, clamped on 32-bit platforms. Prefer ``tsMilliseconds``.
+    public var ts: Int {
+        Int(clamping: self.tsMilliseconds)
+    }
+
     /// Creates a preview payload.
     public init(ts: Int, previews: [OpenClawSessionPreviewEntry]) {
-        self.ts = ts
+        self.init(tsMilliseconds: Int64(ts), previews: previews)
+    }
+
+    /// Creates a preview payload from a 64-bit millisecond timestamp.
+    public init(tsMilliseconds: Int64, previews: [OpenClawSessionPreviewEntry]) {
+        self.tsMilliseconds = tsMilliseconds
         self.previews = previews
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case ts
+        case previews
+    }
+
+    /// Decodes a preview payload; `ts` is read leniently as a 64-bit millisecond value.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.tsMilliseconds = ChatMillisecondTimestamp.decode(from: container, forKey: .ts) ?? 0
+        self.previews = try container.decode([OpenClawSessionPreviewEntry].self, forKey: .previews)
+    }
+
+    /// Encodes the payload with `ts` as a 64-bit integer.
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(self.tsMilliseconds, forKey: .ts)
+        try container.encode(self.previews, forKey: .previews)
+    }
+}
+
+/// Lenient millisecond-epoch decoding that is safe on 32-bit `Int` platforms (watchOS arm64_32).
+enum ChatMillisecondTimestamp {
+    /// Reads `key` as `Int64`, falling back to a whole `Double`; `nil` when absent or malformed.
+    static func decode<Key: CodingKey>(
+        from container: KeyedDecodingContainer<Key>,
+        forKey key: Key) -> Int64?
+    {
+        if let value = try? container.decodeIfPresent(Int64.self, forKey: key) {
+            return value
+        }
+        guard let value = try? container.decodeIfPresent(Double.self, forKey: key) else { return nil }
+        return Int64(exactly: value.rounded())
     }
 }
 
@@ -1459,14 +1505,22 @@ public struct OpenClawAgentEventPayload: Codable, Sendable, Identifiable {
     public let seq: Int?
     /// Stream (`assistant`, `tool`, `lifecycle`, `item`, `usage`, `plan`, ...).
     public let stream: String
-    /// Event timestamp in milliseconds.
-    public let ts: Int?
+    /// Event timestamp in epoch milliseconds (wire key `ts`).
+    ///
+    /// Stored as `Int64` because millisecond epochs exceed `Int32`, the width of `Int` on watchOS arm64_32.
+    public let tsMilliseconds: Int64?
     /// Stream-specific data.
     public let data: [String: AnyCodable]
     /// Session key when the gateway attaches a session snapshot (`session.tool`).
     public let sessionKey: String?
     /// Owning agent when the gateway attaches a session snapshot.
     public let agentId: String?
+
+    /// Event timestamp in milliseconds as `Int`; `nil` on 32-bit platforms where it does not fit.
+    /// Prefer ``tsMilliseconds``.
+    public var ts: Int? {
+        self.tsMilliseconds.flatMap { Int(exactly: $0) }
+    }
 
     /// Creates an agent event payload.
     public init(
@@ -1478,13 +1532,68 @@ public struct OpenClawAgentEventPayload: Codable, Sendable, Identifiable {
         sessionKey: String? = nil,
         agentId: String? = nil)
     {
+        self.init(
+            runId: runId,
+            seq: seq,
+            stream: stream,
+            tsMilliseconds: ts.map { Int64($0) },
+            data: data,
+            sessionKey: sessionKey,
+            agentId: agentId)
+    }
+
+    /// Creates an agent event payload from a 64-bit millisecond timestamp.
+    public init(
+        runId: String,
+        seq: Int?,
+        stream: String,
+        tsMilliseconds: Int64?,
+        data: [String: AnyCodable],
+        sessionKey: String? = nil,
+        agentId: String? = nil)
+    {
         self.runId = runId
         self.seq = seq
         self.stream = stream
-        self.ts = ts
+        self.tsMilliseconds = tsMilliseconds
         self.data = data
         self.sessionKey = sessionKey
         self.agentId = agentId
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case runId
+        case seq
+        case stream
+        case ts
+        case data
+        case sessionKey
+        case agentId
+    }
+
+    /// Decodes an event: `runId` and `stream` are required, every other field is lenient so one
+    /// malformed or out-of-range value (such as a millisecond `ts` on 32-bit `Int`) never drops the event.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.runId = try container.decode(String.self, forKey: .runId)
+        self.stream = try container.decode(String.self, forKey: .stream)
+        self.seq = try? container.decodeIfPresent(Int.self, forKey: .seq)
+        self.tsMilliseconds = ChatMillisecondTimestamp.decode(from: container, forKey: .ts)
+        self.data = (try? container.decodeIfPresent(Dictionary<String, AnyCodable>.self, forKey: .data)) ?? [:]
+        self.sessionKey = try? container.decodeIfPresent(String.self, forKey: .sessionKey)
+        self.agentId = try? container.decodeIfPresent(String.self, forKey: .agentId)
+    }
+
+    /// Encodes the event with `ts` as a 64-bit integer.
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(self.runId, forKey: .runId)
+        try container.encodeIfPresent(self.seq, forKey: .seq)
+        try container.encode(self.stream, forKey: .stream)
+        try container.encodeIfPresent(self.tsMilliseconds, forKey: .ts)
+        try container.encode(self.data, forKey: .data)
+        try container.encodeIfPresent(self.sessionKey, forKey: .sessionKey)
+        try container.encodeIfPresent(self.agentId, forKey: .agentId)
     }
 }
 
