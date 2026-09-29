@@ -135,8 +135,6 @@ public struct MemoryEngineConfiguration: Codable, Sendable, Equatable {
     public var chunkOverlap: Int
     /// Embedding cache capacity (LRU).
     public var cacheMaxEntries: Int
-    /// Opt-in: mirror memory chunks into the system Spotlight index (Apple platforms).
-    public var appleSpotlight: Bool
 
     /// Creates settings.
     /// - Parameters:
@@ -154,7 +152,6 @@ public struct MemoryEngineConfiguration: Codable, Sendable, Equatable {
     ///   - chunkTokens: Chunk tokens.
     ///   - chunkOverlap: Chunk overlap.
     ///   - cacheMaxEntries: Cache capacity.
-    ///   - appleSpotlight: Spotlight mirroring.
     public init(
         provider: String? = nil,
         model: String? = nil,
@@ -169,8 +166,7 @@ public struct MemoryEngineConfiguration: Codable, Sendable, Equatable {
         temporalHalfLifeDays: Double = 30,
         chunkTokens: Int = MemoryChunker.defaultTokens,
         chunkOverlap: Int = MemoryChunker.defaultOverlap,
-        cacheMaxEntries: Int = 50_000,
-        appleSpotlight: Bool = false
+        cacheMaxEntries: Int = 50_000
     ) {
         self.provider = provider
         self.model = model
@@ -186,7 +182,6 @@ public struct MemoryEngineConfiguration: Codable, Sendable, Equatable {
         self.chunkTokens = chunkTokens
         self.chunkOverlap = chunkOverlap
         self.cacheMaxEntries = cacheMaxEntries
-        self.appleSpotlight = appleSpotlight
     }
 
     /// Whether the provider mode is keyword-only.

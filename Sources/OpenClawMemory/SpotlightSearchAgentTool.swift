@@ -14,23 +14,35 @@ import OpenClawProtocol
 /// app's own CoreSpotlight items only; add `.files` sources explicitly when the user opts in. The
 /// tool is OpenClaw-owned (not an upstream id): section `web`, profile `coding`, risk `low`.
 /// Apple silicon only: the SDK's x86_64 overlay does not declare `SpotlightSearchTool`.
+///
+/// Invocations on one tool value (and its copies) run one at a time, because the underlying
+/// `SpotlightSearchTool` publishes structured replies on a single shared stream; each call is bounded
+/// by `callTimeoutSeconds` and reports a timeout as an error result.
 @available(iOS 27.0, macOS 27.0, visionOS 27.0, *)
 public struct SpotlightSearchAgentTool: AgentTool {
     /// Tool name.
     public let name = "spotlight_search"
     private let tool: SpotlightSearchTool
     private let replyTimeoutSeconds: Double
+    private let callTimeoutSeconds: Double
+    private let replies: SpotlightReplyCoordinator<SpotlightSearchTool.SearchReply>
 
     /// Creates the tool.
     /// - Parameters:
     ///   - configuration: Search configuration (default: app CoreSpotlight items).
-    ///   - replyTimeoutSeconds: How long to wait for structured search replies after a call.
+    ///   - replyTimeoutSeconds: How long to wait for structured search replies after a call (clamped to
+    ///     50 ms...one year; `.infinity` waits without a deadline).
+    ///   - callTimeoutSeconds: Deadline for the Spotlight search itself (same clamping); on timeout the
+    ///     tool returns an error result instead of waiting on a stalled search.
     public init(
         configuration: SpotlightSearchTool.Configuration = SpotlightSearchTool.Configuration(sources: [.coreSpotlight]),
-        replyTimeoutSeconds: Double = 2
+        replyTimeoutSeconds: Double = 2,
+        callTimeoutSeconds: Double = 30
     ) {
         self.tool = SpotlightSearchTool(configuration: configuration)
         self.replyTimeoutSeconds = replyTimeoutSeconds
+        self.callTimeoutSeconds = callTimeoutSeconds
+        self.replies = SpotlightReplyCoordinator { $0.status == .complete }
     }
 
     /// Creates the tool over CoreSpotlight items with the given fetch attributes (and optionally files).
@@ -81,41 +93,47 @@ public struct SpotlightSearchAgentTool: AgentTool {
         let arguments = try JSONEncoder().encode(AnyCodable(invocation.arguments))
         let content = try GeneratedContent(json: String(decoding: arguments, as: UTF8.self))
         let tool = self.tool
-        let timeout = self.replyTimeoutSeconds
-        // Subscribe before calling so the structured reply of this call is observed.
-        let replies = Task { () -> SpotlightSearchTool.SearchReply? in
-            var last: SpotlightSearchTool.SearchReply?
+        let replies = self.replies
+        let replyTimeout = self.replyTimeoutSeconds
+        let callTimeout = self.callTimeoutSeconds
+        // One long-lived consumer of the shared reply stream; invocations never iterate it themselves.
+        replies.ensurePump { deliver in
             for await reply in tool.searchResults {
-                last = reply
-                if reply.status == .complete { break }
+                deliver(reply)
             }
-            return last
         }
-        let output: String
-        do {
-            output = String(describing: try await tool.call(arguments: content))
-        } catch {
-            replies.cancel()
-            throw error
+        return try await replies.withExclusiveAccess {
+            // Open the slot before calling so the structured reply of this call is observed.
+            replies.openSlot()
+            let called = await SpotlightTimeoutRace.first(timeoutSeconds: callTimeout) { () -> Result<String, any Error>? in
+                do {
+                    return .success(String(describing: try await tool.call(arguments: content)))
+                } catch {
+                    return .failure(error)
+                }
+            }
+            let output: String
+            switch called {
+            case .success(let text)?:
+                output = text
+            case .failure(let error)?:
+                replies.closeSlot()
+                throw error
+            case nil:
+                replies.closeSlot()
+                return AgentToolOutput(content: [.text("spotlight_search timed out after \(callTimeout)s")], isError: true)
+            }
+            let reply = await replies.completeReply(timeoutSeconds: replyTimeout)
+            replies.closeSlot()
+            guard let reply else {
+                return .text(output)
+            }
+            let rendered = Self.render(reply)
+            return AgentToolOutput(content: [.text(rendered.text.isEmpty ? output : rendered.text)], details: rendered.details)
         }
-        let reply = await Self.firstReply(replies, timeoutSeconds: timeout)
-        guard let reply else {
-            return .text(output)
-        }
-        let rendered = Self.render(reply)
-        return AgentToolOutput(content: [.text(rendered.text.isEmpty ? output : rendered.text)], details: rendered.details)
     }
 
     // MARK: - Helpers
-
-    static func firstReply(_ task: Task<SpotlightSearchTool.SearchReply?, Never>, timeoutSeconds: Double) async -> SpotlightSearchTool.SearchReply? {
-        // Non-joining race: a reply stream that ignores cancellation must not keep the tool call waiting.
-        await SpotlightTimeoutRace.first(
-            timeoutSeconds: timeoutSeconds,
-            onTimeout: { task.cancel() },
-            operation: { await task.value }
-        )
-    }
 
     /// Converts a `GenerationSchema` (Codable) into the JSON Schema subset tools accept.
     static func parameters(from schema: GenerationSchema) -> [String: AnyCodable] {
