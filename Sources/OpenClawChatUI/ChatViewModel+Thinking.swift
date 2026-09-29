@@ -376,7 +376,9 @@ extension OpenClawChatViewModel {
                session: currentSession, defaults: self.sessionDefaults, modelChoice: modelChoice)
         {
             return ThinkingLevelOptionsResolution(
-                options: catalog.levels.map { OpenClawChatThinkingLevelOption(id: $0.rawValue, label: $0.rawValue) },
+                options: catalog.levels.map {
+                    OpenClawChatThinkingLevelOption(id: $0.rawValue, label: Self.catalogThinkingLabel($0))
+                },
                 isGatewayMetadata: false,
                 defaultLevel: catalog.defaultLevel?.rawValue)
         }
@@ -436,6 +438,21 @@ extension OpenClawChatViewModel {
             modelID: reference.modelID,
             agentRuntime: reference.agentRuntime)
         return profile.levels.contains(where: { $0 != .off }) ? profile : nil
+    }
+
+    /// Display label for a catalog thinking level (gateway metadata carries its own labels).
+    nonisolated static func catalogThinkingLabel(_ level: ThinkLevel) -> String {
+        switch level {
+        case .off: String(localized: "Off")
+        case .minimal: String(localized: "Minimal")
+        case .low: String(localized: "Low")
+        case .medium: String(localized: "Medium")
+        case .high: String(localized: "High")
+        case .xhigh: String(localized: "Extra High")
+        case .adaptive: String(localized: "Adaptive")
+        case .max: String(localized: "Max")
+        case .ultra: String(localized: "Ultra")
+        }
     }
 
     /// Apple Foundation Models' on-device model does not reason, so its thinking control stays hidden even when

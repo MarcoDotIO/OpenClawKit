@@ -112,6 +112,12 @@ struct ChatSessionSidebar: View {
                     .listRowSeparator(.hidden)
                     .selectionDisabled()
             }
+            if self.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                // SDK addition: paging for truncated sessions.list responses.
+                ChatSessionPagingFooter(viewModel: self.viewModel)
+                    .listRowSeparator(.hidden)
+                    .selectionDisabled()
+            }
         }
         .listStyle(.sidebar)
         .listItemTint(.monochrome)

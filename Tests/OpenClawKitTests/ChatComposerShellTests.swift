@@ -145,6 +145,7 @@ struct ChatThinkingCatalogFallbackTests {
         let expected = OpenClawReferenceProviderCatalog.thinkingProfile(providerID: "openai", modelID: "gpt-5.4")
         #expect(!expected.levels.isEmpty)
         #expect(viewModel.thinkingLevelOptions.map(\.id) == expected.levels.map(\.rawValue))
+        #expect(viewModel.thinkingLevelOptions.first { $0.id == "xhigh" }?.label == "Extra High")
         #expect(viewModel.showsThinkingPicker)
     }
 
