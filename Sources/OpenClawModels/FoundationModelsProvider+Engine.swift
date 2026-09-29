@@ -301,7 +301,15 @@ enum AppleFMPreparation {
             try FoundationModelsHostTool(definition: definition, recorder: recorder, executor: executor)
         }
         let hostNames = Set(hostTools.map(\.name))
-        let extras = nativeTools(plan).filter { !hostNames.contains($0.name) }
+        // Framework-executed tools (Vision, Spotlight) are offered only with `toolChoice: .auto`: OS 27
+        // emulates `.named`/`.required` with `ToolCallingMode.required` over the whole tool set, so a
+        // native tool could satisfy it and the forced host tool would never be proposed.
+        let extras: [any Tool]
+        if case .auto = request.toolChoice {
+            extras = nativeTools(plan).filter { !hostNames.contains($0.name) }
+        } else {
+            extras = []
+        }
         let tools: [any Tool] = hostTools + extras
         let callerSchema = request.responseFormatJSONSchema
         let schema = try callerSchema.map {

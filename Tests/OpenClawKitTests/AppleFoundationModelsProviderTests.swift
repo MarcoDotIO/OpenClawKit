@@ -541,6 +541,36 @@ struct AppleFoundationModelsBridgeTests {
     }
 
     @Test
+    func nativeToolsAreOfferedOnlyWithAutomaticToolChoice() throws {
+        guard #available(macOS 26.0, iOS 26.0, visionOS 26.0, *) else { return }
+        let native = try FoundationModelsDynamicTool(definition: ModelToolDefinition(name: "ocr")) { _ in "text" }
+        let parameters: [String: AnyCodable] = ["type": AnyCodable("object"), "properties": AnyCodable([String: AnyCodable]())]
+        func toolNames(_ choice: ModelToolChoice) throws -> [String] {
+            let request = ModelGenerationRequest(
+                sessionKey: "s",
+                prompt: "Record the invoice.",
+                tools: [ModelToolDefinition(name: "record_invoice", parameters: parameters), ModelToolDefinition(name: "other", parameters: parameters)],
+                toolChoice: choice
+            )
+            let context = AppleFMRunContext(request: request, options: FoundationModelsProviderOptions(), providerID: "apple-fm", target: .system, sink: nil)
+            let prepared = try AppleFMPreparation.prepare(
+                context,
+                allowImages: false,
+                allowReasoning: false,
+                keepToolsWhenDisallowed: true,
+                nativeTools: { _ in [native] }
+            )
+            #expect(prepared.hostToolCount == prepared.tools.count || choice == .auto)
+            return prepared.tools.map(\.name)
+        }
+        #expect(try toolNames(.auto) == ["record_invoice", "other", "ocr"])
+        // A forced choice (OS 27 `.required`) must not be satisfiable by a framework-executed tool.
+        #expect(try toolNames(.named("record_invoice")) == ["record_invoice"])
+        #expect(try toolNames(.required) == ["record_invoice", "other"])
+        #expect(try toolNames(.none) == ["record_invoice", "other"])
+    }
+
+    @Test
     func mapsOptionsOntoFoundationModels27Controls() {
         guard #available(macOS 27.0, iOS 27.0, visionOS 27.0, *) else { return }
         #expect(AppleFMGeneration27.toolCallingMode(.auto) == .allowed)
