@@ -78,6 +78,34 @@ struct GatewayConnectRecoveryTests {
         await channel.shutdown()
     }
 
+    @Test
+    func successfulHandshakeClearsAPinMismatchPauseAndItsRotationRequest() async throws {
+        let session = GatewayCoreFakeSession(script: { index in
+            index == 0 ? GatewayCoreSocketScript(challenge: nil) : GatewayCoreSocketScript()
+        })
+        let channel = try recoveryChannel(url: "wss://gateway.example.com", session: session)
+        await channel._test_setConnectTimeoutSeconds(5)
+        session.setTLSFailure(pinMismatch)
+        let failed = Task { try await channel.connect() }
+        try await gatewayCoreWaitUntil("socket opened") { session.makeCount == 1 }
+        session.latestSocket?.emitReceiveFailure(URLError(.cancelled))
+        await #expect(throws: GatewayTLSValidationError.self) { try await failed.value }
+        #expect(await channel.reconnectPauseReason() == .tlsPinMismatch)
+
+        // An explicit connect (for example from a request) succeeds against the pinned certificate.
+        try await channel.connect()
+        #expect(await channel.reconnectPauseReason() == nil)
+        #expect(await channel.pendingTLSPinRotationRequest() == nil)
+
+        // Automatic reconnect works again after a later drop.
+        session.latestSocket?.emitReceiveFailure(URLError(.networkConnectionLost))
+        try await gatewayCoreWaitUntil("reconnected automatically") {
+            session.makeCount == 3
+        }
+        try await gatewayCoreWaitUntil("readmitted") { await channel.currentConnectionGeneration() != nil }
+        await channel.shutdown()
+    }
+
     @Test(arguments: [
         (URLError.Code.serverCertificateUntrusted, GatewayTLSFailureClassification.untrustedChain),
         (.serverCertificateHasBadDate, .expired),

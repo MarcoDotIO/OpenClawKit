@@ -664,6 +664,10 @@ public actor GatewayChannelActor {
         self.connected = true
         self.automaticReconnectRequested = false
         self.reconnectPausedForAuthFailure = false
+        // The TLS layer accepted the current certificate, so an earlier pin mismatch is resolved for
+        // this route: automatic reconnects resume and its rotation request must not stay acceptable.
+        self.reconnectPausedForTLSFailure = false
+        self.pendingTLSPinRotation = nil
         self.backoffMs = 500
         self.connectFailureBackoff.reset()
         self.lastSeq = nil
