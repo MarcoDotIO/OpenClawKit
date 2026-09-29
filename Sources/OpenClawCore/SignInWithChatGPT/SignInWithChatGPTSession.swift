@@ -172,7 +172,7 @@ public actor SignInWithChatGPTSession: ChatGPTPlanAccessTokenProvider {
         return accounts.first { $0.isSignedIn }
     }
 
-    /// Selects the account used by ``accessToken(for:)`` and ``chatGPTPlanAccessToken(rejectedAccessToken:)``.
+    /// Selects the account used by ``accessToken(for:requirePlanUsage:)`` and ``chatGPTPlanAccessToken(rejectedAccessToken:)``.
     /// - Parameter subject: Account subject.
     public func setActiveAccount(subject: String) async throws {
         guard try await self.store.account(subject: subject) != nil else {

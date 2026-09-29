@@ -55,9 +55,9 @@ public struct ChatGPTPlanModel: Sendable, Equatable, Codable, Identifiable {
 ///   function calls carry that namespace; a named tool choice sends only that tool with
 ///   `tool_choice: "required"`.
 ///
-/// A `401` refreshes the token once through the ``ChatGPTPlanAccessTokenProvider`` and retries.
+/// A `401` refreshes the token once through the `ChatGPTPlanAccessTokenProvider` and retries.
 /// Plan errors (`subscription_sharing_*`, `chatpass_v2_*`, direct admission) are thrown as
-/// ``ChatGPTPlanError`` — show the usage-limit UI when ``ChatGPTPlanError/isUsageLimit`` is set.
+/// `ChatGPTPlanError` — show the usage-limit UI when `ChatGPTPlanError.isUsageLimit` is set.
 public struct ChatGPTPlanModelProvider: ModelProvider {
     /// Default provider identifier.
     public static let providerID = "chatgpt-plan"
@@ -106,8 +106,8 @@ public struct ChatGPTPlanModelProvider: ModelProvider {
     /// Creates a provider.
     /// - Parameters:
     ///   - id: Provider identifier.
-    ///   - tokenProvider: Source of plan access tokens (for example a ``SignInWithChatGPTSession``).
-    ///   - defaultModelID: Model used when a request does not name one (pick from ``listModels()``).
+    ///   - tokenProvider: Source of plan access tokens (for example a `SignInWithChatGPTSession`).
+    ///   - defaultModelID: Model used when a request does not name one (pick from ``listModels(includeHidden:)``).
     ///   - options: Endpoint and tool options.
     ///   - transport: HTTP transport.
     public init(
