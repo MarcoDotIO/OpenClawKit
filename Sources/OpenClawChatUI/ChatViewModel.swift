@@ -67,6 +67,13 @@ public final class OpenClawChatViewModel {
     public var usesCatalogThinkingFallback = true {
         didSet { self.syncThinkingLevelOptions() }
     }
+    /// Reads the Private Cloud Compute quota that governs this chat's runs, when the model runs in
+    /// this process (for example an embedded runtime): set it to `FoundationModelsProvider.privateCloudQuota`.
+    ///
+    /// `nil` (the default) hides the composer's quota notice and its limit-increase button. With a
+    /// remote gateway the gateway's quota decides whether a run succeeds, not this device's, and an
+    /// exhausted gateway quota already surfaces as the run's error.
+    public var privateCloudQuotaProvider: (@Sendable () -> FoundationModelsQuotaSnapshot?)?
     /// Preferred verbose level.
     public internal(set) var preferredVerboseLevel: String
     var prefersExplicitVerboseLevel: Bool

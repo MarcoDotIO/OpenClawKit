@@ -218,6 +218,49 @@ struct ChatPrivateCloudQuotaNoticeTests {
         #expect(notice?.message.hasPrefix("Private Cloud Compute limit reached") == true)
         #expect(notice?.message.contains("resets") == true)
     }
+
+    @MainActor
+    private func privateCloudViewModel() throws -> OpenClawChatViewModel {
+        let viewModel = OpenClawChatViewModel(
+            sessionKey: "main",
+            transport: ShellTestTransport(sessionsResponse: .init(ts: nil, path: nil, count: 0, defaults: nil, sessions: [])))
+        viewModel.sessions = try [sessionEntry(key: "main", model: "private-cloud-compute", provider: "apple-fm")]
+        return viewModel
+    }
+
+    @MainActor
+    @Test func `remote gateway chats never read this device's quota`() throws {
+        // Default: no in-process quota provider, so an exhausted local quota must not show a notice or
+        // the local limit-increase offer for runs a remote gateway executes.
+        let viewModel = try self.privateCloudViewModel()
+        #expect(viewModel.isPrivateCloudComputeSelected)
+        #expect(viewModel.privateCloudQuotaProvider == nil)
+        #expect(viewModel.privateCloudQuotaNotice() == nil)
+    }
+
+    @MainActor
+    @Test func `in process quota provider drives the notice only while pcc is selected`() throws {
+        final class CallCounter: @unchecked Sendable {
+            private let lock = NSLock()
+            private var count = 0
+            func increment() { self.lock.withLock { self.count += 1 } }
+            var value: Int { self.lock.withLock { self.count } }
+        }
+        let calls = CallCounter()
+        let viewModel = try self.privateCloudViewModel()
+        viewModel.privateCloudQuotaProvider = {
+            calls.increment()
+            return FoundationModelsQuotaSnapshot(limitReached: true, canRequestIncrease: true)
+        }
+        let notice = try #require(viewModel.privateCloudQuotaNotice())
+        #expect(notice.canRequestIncrease)
+        #expect(calls.value == 1)
+
+        viewModel.sessions = try [sessionEntry(key: "main", model: "system", provider: "apple-fm")]
+        #expect(!viewModel.isPrivateCloudComputeSelected)
+        #expect(viewModel.privateCloudQuotaNotice() == nil)
+        #expect(calls.value == 1)
+    }
 }
 
 @MainActor
