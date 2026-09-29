@@ -109,7 +109,7 @@ struct ChatQuestionCardTests {
         let model = OpenClawQuestionCardModel(record: questionRecord())
         model.toggleOption(questionID: "meal", label: "Pizza")
         let answers = try #require(model.beginSubmission())
-        model.markAnsweredLocally(answers: QuestionAnswers(answers: answers.mapValues(AnyCodable.init)))
+        model.markAnsweredLocally(answers: QuestionAnswers(answers: answers.mapValues { AnyCodable($0) }))
 
         #expect(model.apply(record: questionRecord(createdAtMs: 2_000_000, status: .answered)))
         #expect(model.terminalSummaryText(for: model.record.questions[0]) == "Pizza")
@@ -119,7 +119,7 @@ struct ChatQuestionCardTests {
         let model = OpenClawQuestionCardModel(record: questionRecord())
         model.toggleOption(questionID: "meal", label: "Pizza")
         let answers = try #require(model.beginSubmission())
-        model.markAnsweredLocally(answers: QuestionAnswers(answers: answers.mapValues(AnyCodable.init)))
+        model.markAnsweredLocally(answers: QuestionAnswers(answers: answers.mapValues { AnyCodable($0) }))
 
         model.apply(resolved: .init(id: model.id, status: .answered))
 
@@ -161,7 +161,7 @@ struct ChatQuestionCardTests {
         let model = OpenClawQuestionCardModel(record: questionRecord())
         model.toggleOption(questionID: "meal", label: "Pizza")
         let answers = try #require(model.beginSubmission())
-        model.markAnsweredLocally(answers: QuestionAnswers(answers: answers.mapValues(AnyCodable.init)))
+        model.markAnsweredLocally(answers: QuestionAnswers(answers: answers.mapValues { AnyCodable($0) }))
 
         let data = try JSONEncoder().encode(model.record.answers)
         let json = try #require(String(data: data, encoding: .utf8))
@@ -174,7 +174,7 @@ struct ChatQuestionCardTests {
         answered.toggleOption(questionID: "meal", label: "Pizza")
         let answers = try #require(answered.beginSubmission())
         answered.markRecoveryUnavailable()
-        answered.markAnsweredLocally(answers: QuestionAnswers(answers: answers.mapValues(AnyCodable.init)))
+        answered.markAnsweredLocally(answers: QuestionAnswers(answers: answers.mapValues { AnyCodable($0) }))
         #expect(answered.status() == .answered)
 
         let skipped = OpenClawQuestionCardModel(record: questionRecord())

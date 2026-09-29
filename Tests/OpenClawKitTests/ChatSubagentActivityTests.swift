@@ -92,7 +92,7 @@ struct ChatSubagentActivityTests {
             startedat: AnyCodable(startedAt),
             endedat: endedAt.map(AnyCodable.init),
             lastactivity: lastActivity,
-            diffstat: diffStat?.mapValues(AnyCodable.init),
+            diffstat: diffStat?.mapValues { AnyCodable($0) },
             progresssummary: progressSummary,
             terminalsummary: terminalSummary)
     }

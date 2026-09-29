@@ -68,7 +68,8 @@ struct DiscordGatewayAdapterTests {
         #expect(identify["op"] as? Int == 2)
         let data = try #require(identify["d"] as? [String: Any])
         let intents = try #require(data["intents"] as? Int)
-        let expected = (1 << 0) | (1 << 3) | (1 << 9) | (1 << 10) | (1 << 12) | (1 << 13) | (1 << 15)
+        // Guilds, guild emojis, guild messages, reactions, DMs, DM reactions, message content.
+        let expected: Int = [0, 3, 9, 10, 12, 13, 15].reduce(0) { $0 | (1 << $1) }
         #expect(intents == expected)
         let presence = try #require(data["presence"] as? [String: Any])
         #expect(presence["status"] as? String == "dnd")
