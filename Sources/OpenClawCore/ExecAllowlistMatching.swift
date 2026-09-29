@@ -725,22 +725,26 @@ public enum ExecShellWords {
     ///
     /// Works on Unicode scalars, like the shell works on bytes: a combining mark after a quote never
     /// hides the quote. Words are separated by space, tab and newline only (other Unicode whitespace
-    /// belongs to the word, as in the shell).
+    /// belongs to the word, as in the shell). As in the shell, a quoted empty string (`""`, `''`) is an
+    /// empty word, and a `#` after a quote (`''#x`) is part of the word rather than a comment, so the
+    /// arguments after it are never dropped from the argv that `argPattern` rules see.
     /// - Parameter raw: Command text.
     /// - Returns: Tokens, or `nil` for unterminated quotes or a trailing escape.
     public static func split(_ raw: String) -> [String]? {
         var tokens: [String] = []
         var buffer = String.UnicodeScalarView()
+        var wordStarted = false
         var inSingle = false
         var inDouble = false
         var escaped = false
         let scalars = Array(raw.unicodeScalars)
         var index = 0
         func push() {
-            if !buffer.isEmpty {
+            if !buffer.isEmpty || wordStarted {
                 tokens.append(String(buffer))
                 buffer = String.UnicodeScalarView()
             }
+            wordStarted = false
         }
         while index < scalars.count {
             let scalar = scalars[index]
@@ -777,13 +781,15 @@ public enum ExecShellWords {
             }
             if scalar == "'" {
                 inSingle = true
+                wordStarted = true
                 continue
             }
             if scalar == "\"" {
                 inDouble = true
+                wordStarted = true
                 continue
             }
-            if scalar == "#", buffer.isEmpty {
+            if scalar == "#", buffer.isEmpty, !wordStarted {
                 break
             }
             if Self.isWordSeparator(scalar) {

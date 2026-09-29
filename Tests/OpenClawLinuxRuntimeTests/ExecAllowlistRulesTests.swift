@@ -256,6 +256,27 @@ struct ExecAllowlistRulesTests {
     }
 
     @Test
+    func quotedEmptyWordsAndHashesAfterQuotesStayInTheArgv() throws {
+        // The shell reads `''#x` as the word `#x` (not a comment) and `""` as an empty argument.
+        #expect(ExecShellWords.split("rg foo ''#x --pre=/tmp/evil") == ["rg", "foo", "#x", "--pre=/tmp/evil"])
+        #expect(ExecShellWords.split("rg foo \"\"#x --pre=/tmp/evil") == ["rg", "foo", "#x", "--pre=/tmp/evil"])
+        #expect(ExecShellWords.split("echo \"\" '' x") == ["echo", "", "", "x"])
+        #expect(ExecShellWords.split("echo a #comment ''") == ["echo", "a"])
+        #expect(ExecShellWords.split("echo a\\ #b") == ["echo", "a #b"])
+
+        // An argPattern-bound rule never sees a shortened argv.
+        let path = ["PATH": "/usr/bin:/bin"]
+        let printf = try #require(ExecCommandResolution.resolve(argv: ["printf"], environment: path)?.resolvedRealPath)
+        let evaluator = ExecAllowlistEvaluator(entries: [ExecAllowlistEntry(pattern: printf, argPattern: "^ok$")], cwd: "/", environment: path)
+        #expect(evaluator.allows(commandText: "printf ok"))
+        #expect(evaluator.allows(commandText: "printf ok # trailing comment"))
+        #expect(!evaluator.allows(commandText: "printf ok ''#x --extra"))
+        #expect(!evaluator.allows(commandText: "printf ok \"\""))
+        // A quoted empty executable resolves to nothing.
+        #expect(ExecCommandResolution.resolve(commandText: "'' printf ok", cwd: "/", environment: path) == nil)
+    }
+
+    @Test
     func lineContinuationsNeverHideCommentsOrSubstitutions() throws {
         // A comment ends at the newline even after a trailing backslash; `split` would drop the next line.
         for unsafe in [
