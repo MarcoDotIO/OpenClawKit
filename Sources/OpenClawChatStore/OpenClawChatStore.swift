@@ -16,10 +16,16 @@ import OpenClawChatUI
 ///   outbox handed to `OpenClawChatViewModel`.
 /// - ``OpenClawWatchMessageJournal``: the phone-side ledger for Watch-originated chat commands.
 ///
+/// Pin the transport to the same gateway id as the store: the outbox only replays through a
+/// transport whose `gatewayStableID` matches, so queued commands never reach another gateway.
+///
 /// ```swift
 /// let databases = try OpenClawClientDatabases(
 ///     directoryURL: OpenClawClientDatabases.defaultDirectoryURL())
 /// let store = databases.store(gatewayID: gatewayStableID)
+/// let transport = OpenClawGatewaySessionChatTransport(
+///     gateway: session,
+///     gatewayStableID: gatewayStableID)
 /// let viewModel = OpenClawChatViewModel(
 ///     sessionKey: "main",
 ///     transport: transport,

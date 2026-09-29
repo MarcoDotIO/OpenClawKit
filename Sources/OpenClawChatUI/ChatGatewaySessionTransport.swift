@@ -17,6 +17,11 @@ private let gatewaySessionChatLogger = Logger(subsystem: "ai.openclaw", category
 /// session, Swarm) captures a ``GatewayNodeSessionRoute`` lease first, so work suspended behind a
 /// reconnect or a gateway switch is cancelled instead of being retargeted to another connection.
 ///
+/// Pass ``gatewayStableID`` whenever the view model has an outbox or transcript cache: the durable
+/// outbox only replays through a transport pinned to the gateway that owns the store, and a pinned
+/// transport refuses to send to, and discards replies and events from, another gateway the shared
+/// session switches to.
+///
 /// ```swift
 /// let transport = OpenClawGatewaySessionChatTransport(gateway: session, gatewayStableID: gatewayID)
 /// let viewModel = OpenClawChatViewModel(sessionKey: "main", transport: transport)
@@ -40,7 +45,9 @@ public struct OpenClawGatewaySessionChatTransport: OpenClawChatGatewayTransport 
     public let gateway: GatewayNodeSession
     /// Normalized (trimmed, lowercased) agent that bare session keys resolve to.
     public let chatGatewayAgentID: String?
-    /// Stable gateway id route leases must match byte-exactly (`deviceAuthGatewayID`), when set.
+    /// Stable gateway id every request must match byte-exactly (`deviceAuthGatewayID`), when set.
+    ///
+    /// Required for outbox replay: without it ``acquireOutboxRouteLease()`` never offers a lease.
     public let gatewayStableID: String?
     /// Outbox replay policy.
     public let outboxRouteSafety: OutboxRouteSafety
@@ -50,9 +57,11 @@ public struct OpenClawGatewaySessionChatTransport: OpenClawChatGatewayTransport 
     /// - Parameters:
     ///   - gateway: Connected (or connecting) operator session.
     ///   - agentID: Agent bare session keys resolve to; `nil` uses the gateway default.
-    ///   - gatewayStableID: When set, route leases (and therefore outbox flushes) are only taken
-    ///     while the session is connected to the gateway with this `deviceAuthGatewayID`. Pass the
-    ///     same id you use for ``OpenClawChatTranscriptCache``/outbox storage.
+    ///   - gatewayStableID: The `deviceAuthGatewayID` of the gateway this chat belongs to. Route
+    ///     leases, live sends and reads only use the session while it is connected to that gateway.
+    ///     Required for outbox replay (upstream fails closed the same way): pass the same id you use
+    ///     for ``OpenClawChatTranscriptCache``/outbox storage (`OpenClawClientDatabases.store(gatewayID:)`).
+    ///     Without it queued commands stay parked and only live sends are allowed.
     ///   - outboxRouteSafety: ``OutboxRouteSafety/strict`` unless the gateway predates
     ///     `chat-send-routing-contract` and the app accepts unfenced replays.
     public init(
@@ -71,9 +80,10 @@ public struct OpenClawGatewaySessionChatTransport: OpenClawChatGatewayTransport 
 
     // MARK: - OpenClawChatGatewayTransport
 
-    /// Sends a request on the session's current connection.
+    /// Sends a request on the session's current connection (only the pinned gateway's when
+    /// ``gatewayStableID`` is set).
     public func requestChatGateway(_ request: OpenClawChatGatewayRequest) async throws -> Data {
-        try await self.gateway.request(request)
+        try await self.requestUnleased(request)
     }
 
     /// Resolves bare keys to ``chatGatewayAgentID`` (`agent:<id>:<key>`), keeping qualified keys.
@@ -123,12 +133,21 @@ public struct OpenClawGatewaySessionChatTransport: OpenClawChatGatewayTransport 
     }
 
     /// Captures one connection for a whole outbox flush.
+    ///
+    /// Fails closed without ``gatewayStableID``: the durable outbox is scoped to one gateway, and an
+    /// unpinned lease could replay that gateway's queued commands (attachments included) to whatever
+    /// gateway the shared session connects to next. Live sends stay allowed.
     public func acquireOutboxRouteLease() async -> OpenClawChatTransportRouteLeaseResult {
         guard let route = await self.currentRoute(),
               let supportsRoutingContract = await self.gateway.supportsServerCapability(
                   .chatSendRoutingContract,
                   ifCurrentRoute: route)
         else { return .unavailable(reason: nil) }
+        guard self.gatewayStableID != nil else {
+            gatewaySessionChatLogger.notice(
+                "outbox replay needs gatewayStableID; queued commands stay parked")
+            return .unavailable(reason: nil, allowsLiveSend: true)
+        }
         let supportsSettingsCAS = await self.gateway.supportsServerCapability(
             .sessionSettingsCAS,
             ifCurrentRoute: route) == true
@@ -324,7 +343,7 @@ public struct OpenClawGatewaySessionChatTransport: OpenClawChatGatewayTransport 
             search: search,
             archived: archived,
             agentID: agentID)
-        let data = try await self.gateway.request(request)
+        let data = try await self.requestUnleased(request)
         return try OpenClawChatGatewayPayloadCodec.decodeSessionsList(data, agentID: agentID)
     }
 
@@ -335,19 +354,19 @@ public struct OpenClawGatewaySessionChatTransport: OpenClawChatGatewayTransport 
 
     /// Lists agents (`agents.list`).
     public func listAgents() async throws -> OpenClawChatAgentsListResponse? {
-        let data = try await self.gateway.request(OpenClawChatGatewayRequests.agentsList())
+        let data = try await self.requestUnleased(OpenClawChatGatewayRequests.agentsList())
         return try OpenClawChatGatewayPayloadCodec.decodeAgentsList(data)
     }
 
     /// Lists session groups (`sessions.groups.list`).
     public func listSessionGroups() async throws -> OpenClawChatSessionGroupsResponse? {
-        let data = try await self.gateway.request(OpenClawChatGatewayRequests.sessionGroupsList())
+        let data = try await self.requestUnleased(OpenClawChatGatewayRequests.sessionGroupsList())
         return try JSONDecoder().decode(OpenClawChatSessionGroupsResponse.self, from: data)
     }
 
     /// Replaces the session group catalog (`sessions.groups.put`).
     public func putSessionGroups(names: [String]) async throws -> OpenClawChatSessionGroupsMutationResponse {
-        let data = try await self.gateway.request(OpenClawChatGatewayRequests.sessionGroupsPut(names: names))
+        let data = try await self.requestUnleased(OpenClawChatGatewayRequests.sessionGroupsPut(names: names))
         return try JSONDecoder().decode(OpenClawChatSessionGroupsMutationResponse.self, from: data)
     }
 
@@ -356,13 +375,13 @@ public struct OpenClawGatewaySessionChatTransport: OpenClawChatGatewayTransport 
         name: String,
         to newName: String) async throws -> OpenClawChatSessionGroupsMutationResponse
     {
-        let data = try await self.gateway.request(OpenClawChatGatewayRequests.sessionGroupsRename(name: name, to: newName))
+        let data = try await self.requestUnleased(OpenClawChatGatewayRequests.sessionGroupsRename(name: name, to: newName))
         return try JSONDecoder().decode(OpenClawChatSessionGroupsMutationResponse.self, from: data)
     }
 
     /// Deletes a session group (`sessions.groups.delete`).
     public func deleteSessionGroup(name: String) async throws -> OpenClawChatSessionGroupsMutationResponse {
-        let data = try await self.gateway.request(OpenClawChatGatewayRequests.sessionGroupsDelete(name: name))
+        let data = try await self.requestUnleased(OpenClawChatGatewayRequests.sessionGroupsDelete(name: name))
         return try JSONDecoder().decode(OpenClawChatSessionGroupsMutationResponse.self, from: data)
     }
 
@@ -382,7 +401,7 @@ public struct OpenClawGatewaySessionChatTransport: OpenClawChatGatewayTransport 
             parentSessionKey: parentSessionKey,
             worktree: worktree,
             worktreeBaseRef: worktreeBaseRef)
-        let data = try await self.gateway.request(request)
+        let data = try await self.requestUnleased(request)
         return try JSONDecoder().decode(OpenClawChatCreateSessionResponse.self, from: data)
     }
 
@@ -429,7 +448,7 @@ public struct OpenClawGatewaySessionChatTransport: OpenClawChatGatewayTransport 
             parentSessionKey: target.sessionKey,
             agentID: childAgentID,
             fromLastCompleted: fromLastCompleted)
-        let data = try await self.gateway.request(request)
+        let data = try await self.requestUnleased(request)
         return try JSONDecoder().decode(OpenClawChatCreateSessionResponse.self, from: data).key
     }
 
@@ -439,7 +458,7 @@ public struct OpenClawGatewaySessionChatTransport: OpenClawChatGatewayTransport 
         let request = OpenClawChatGatewayRequests.compactSession(
             sessionKey: target.sessionKey,
             agentID: target.agentID)
-        let data = try await self.gateway.request(request)
+        let data = try await self.requestUnleased(request)
         try OpenClawSessionsCompactResponse.requireSuccess(from: data)
     }
 
@@ -447,7 +466,7 @@ public struct OpenClawGatewaySessionChatTransport: OpenClawChatGatewayTransport 
 
     /// Lists model choices (`models.list`).
     public func listModels(agentID: String?) async throws -> [OpenClawChatModelChoice] {
-        let data = try await self.gateway.request(OpenClawChatGatewayRequests.modelsList(agentID: agentID))
+        let data = try await self.requestUnleased(OpenClawChatGatewayRequests.modelsList(agentID: agentID))
         return try OpenClawChatGatewayPayloadCodec.decodeModelChoices(data)
     }
 
@@ -503,7 +522,7 @@ public struct OpenClawGatewaySessionChatTransport: OpenClawChatGatewayTransport 
     /// Reads the untruncated row for a truncated message (`chat.message.get`).
     public func requestFullMessage(sessionKey: String, messageID: String) async throws -> OpenClawChatMessage? {
         let target = self.sessionTarget(for: sessionKey)
-        let data = try await self.gateway.request(Self.fullMessageRequest(
+        let data = try await self.requestUnleased(Self.fullMessageRequest(
             sessionKey: target.sessionKey,
             agentID: target.agentID,
             messageID: messageID))
@@ -603,7 +622,7 @@ public struct OpenClawGatewaySessionChatTransport: OpenClawChatGatewayTransport 
 
     /// Checks gateway health (`health`).
     public func requestHealth(timeoutMs: Int) async throws -> Bool {
-        let data = try await self.gateway.request(OpenClawChatGatewayRequests.health(timeoutMs: timeoutMs))
+        let data = try await self.requestUnleased(OpenClawChatGatewayRequests.health(timeoutMs: timeoutMs))
         return (try? JSONDecoder().decode(OpenClawGatewayHealthOK.self, from: data))?.ok ?? true
     }
 
@@ -666,7 +685,8 @@ public struct OpenClawGatewaySessionChatTransport: OpenClawChatGatewayTransport 
     /// On subscription and after every reconnect the transport re-sends `sessions.subscribe`
     /// (subscriptions are per socket). A reconnect onto a different connection context (endpoint,
     /// credentials or gateway) is reported as ``OpenClawChatTransportEvent/routeChanged``; a
-    /// reconnect of the same context as ``OpenClawChatTransportEvent/seqGap``.
+    /// reconnect of the same context as ``OpenClawChatTransportEvent/seqGap``. A transport pinned
+    /// to ``gatewayStableID`` drops frames while the session is connected to another gateway.
     public func events() -> AsyncStream<OpenClawChatTransportEvent> {
         let transport = self
         return AsyncStream(bufferingPolicy: .bufferingNewest(200)) { continuation in
@@ -681,6 +701,13 @@ public struct OpenClawGatewaySessionChatTransport: OpenClawChatGatewayTransport 
                 for await frame in subscription.events {
                     if Task.isCancelled { break }
                     guard var mapped = OpenClawChatGatewayPayloadCodec.event(from: frame) else { continue }
+                    // A pinned transport ignores frames while the shared session serves another
+                    // gateway, so that gateway's transcripts and sessions never reach this store.
+                    if let gatewayStableID = transport.gatewayStableID,
+                       await transport.gateway.currentRoute(ifGatewayID: gatewayStableID) == nil
+                    {
+                        continue
+                    }
                     if tracker.shouldCheckRoute(after: mapped), let route = await transport.currentRoute() {
                         switch tracker.observe(route) {
                         case .unchanged:
@@ -762,6 +789,40 @@ public struct OpenClawGatewaySessionChatTransport: OpenClawChatGatewayTransport 
 // MARK: - Route-bound implementations
 
 extension OpenClawGatewaySessionChatTransport {
+    /// Sends a request outside a lease.
+    ///
+    /// Unpinned transports use the session's current connection (reconnecting if needed). A transport
+    /// pinned to ``gatewayStableID`` binds the request to the pinned gateway's live route, refuses it
+    /// while the session is connected to another gateway, and while the session is (re)connecting
+    /// waits like an unpinned request but only returns the reply when the connection it landed on
+    /// belongs to the pinned gateway. So another gateway's transcripts, sessions and health never
+    /// reach this gateway's cache or outbox branch state.
+    func requestUnleased(_ request: OpenClawChatGatewayRequest) async throws -> Data {
+        guard let gatewayStableID else { return try await self.gateway.request(request) }
+        if let route = await self.gateway.currentRoute(ifGatewayID: gatewayStableID) {
+            return try await self.gateway.request(request, ifCurrentRoute: route)
+        }
+        guard await self.gateway.currentRoute() == nil else {
+            throw OpenClawGatewaySessionChatTransportError.differentGateway
+        }
+        let data = try await self.gateway.request(request)
+        guard await self.gateway.currentRoute(ifGatewayID: gatewayStableID) != nil else {
+            throw OpenClawGatewaySessionChatTransportError.differentGateway
+        }
+        return data
+    }
+
+    /// Sends `request` bound to `route` when one was captured, otherwise through ``requestUnleased(_:)``.
+    func request(
+        _ request: OpenClawChatGatewayRequest,
+        ifCurrentRoute route: GatewayNodeSessionRoute?) async throws -> Data
+    {
+        if let route {
+            return try await self.gateway.request(request, ifCurrentRoute: route)
+        }
+        return try await self.requestUnleased(request)
+    }
+
     /// Sends a chat request bound to `route`; a route change before dispatch throws
     /// ``GatewayNodeSessionRequestError/routeChangedBeforeDispatch``.
     func requestRouted(
@@ -817,7 +878,7 @@ extension OpenClawGatewaySessionChatTransport {
                 spawnedBy: parentKey,
                 offset: offset,
                 configuredAgentsOnly: true)
-            let data = try await self.gateway.request(request, ifCurrentRoute: route)
+            let data = try await self.request(request, ifCurrentRoute: route)
             return try JSONDecoder().decode(OpenClawChatSessionsListResponse.self, from: data)
         }
     }
@@ -826,7 +887,7 @@ extension OpenClawGatewaySessionChatTransport {
         let request = OpenClawChatGatewayRequests.chatMetadata(
             sessionKey: sessionKey,
             fallbackAgentID: self.chatGatewayAgentID)
-        let data = try await self.gateway.request(request, ifCurrentRoute: route)
+        let data = try await self.request(request, ifCurrentRoute: route)
         return try JSONDecoder().decode(OpenClawChatMetadataCapabilities.self, from: data).swarmEnabled
     }
 
@@ -875,7 +936,7 @@ extension OpenClawGatewaySessionChatTransport {
         let data = if let settingsRoute {
             try await self.requestRouted(request, ifCurrentRoute: settingsRoute)
         } else {
-            try await self.gateway.request(request)
+            try await self.requestUnleased(request)
         }
         return try JSONDecoder().decode(OpenClawChatModelPatchResult.self, from: data)
     }
@@ -887,7 +948,7 @@ extension OpenClawGatewaySessionChatTransport {
     {
         let target = self.sessionTarget(for: sessionKey, overrideAgentID: agentID)
         let request = OpenClawChatGatewayRequests.history(sessionKey: target.sessionKey, agentID: target.agentID)
-        let data = try await self.gateway.request(request, ifCurrentRoute: expectedRoute)
+        let data = try await self.request(request, ifCurrentRoute: expectedRoute)
         return try JSONDecoder().decode(OpenClawChatHistoryPayload.self, from: data)
     }
 
@@ -979,6 +1040,18 @@ extension OpenClawGatewaySessionChatTransport {
         } catch {
             return .failed
         }
+    }
+}
+
+/// Errors ``OpenClawGatewaySessionChatTransport`` raises instead of reaching another gateway.
+public enum OpenClawGatewaySessionChatTransportError: LocalizedError, Sendable, Equatable {
+    /// The shared session is connected to a gateway other than the transport's
+    /// ``OpenClawGatewaySessionChatTransport/gatewayStableID``; nothing from it was used.
+    case differentGateway
+
+    /// Localized description.
+    public var errorDescription: String? {
+        String(localized: "Connected to a different gateway than this chat belongs to.")
     }
 }
 
