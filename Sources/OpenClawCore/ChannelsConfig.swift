@@ -221,6 +221,7 @@ public struct ChannelsConfig: Codable, Sendable, Equatable {
         case "imessage": policy = self.imessage.effectivePolicy(accountID: accountID)
         case "msteams": policy = self.msteams.effectivePolicy(accountID: accountID)
         case "webchat": policy = self.webchat.effectivePolicy(accountID: accountID)
+        case "a2a": policy = self.a2a.effectivePolicy
         default:
             policy = self.rawSection(named: channelID).map { raw in
                 Self.rawPolicy(raw, accountID: accountID)

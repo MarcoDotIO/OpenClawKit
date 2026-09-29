@@ -132,6 +132,16 @@ public struct A2AChannelConfig: Codable, Sendable, Equatable {
         !self.validPeers.isEmpty
     }
 
+    /// Ingress policy for A2A: peers authenticate by bearer token, so direct messages use
+    /// `allowlist` over the configured peer names (upstream `dmPolicy: "allowlist"`), never pairing.
+    public var effectivePolicy: ChannelMessagingPolicyConfig {
+        var policy = ChannelMessagingPolicyConfig()
+        policy.dmPolicy = .allowlist
+        policy.allowFrom = self.validPeers.keys.sorted()
+        policy.requireMention = false
+        return policy
+    }
+
     /// Decodes upstream-shaped A2A settings leniently.
     /// - Parameter decoder: Source decoder.
     public init(from decoder: Decoder) throws {
