@@ -155,7 +155,7 @@ enum OpenAIResponsesWire {
             payload["store"] = false
             payload["include"] = ["reasoning.encrypted_content"]
             payload["text"] = ["verbosity": "low"]
-            payload["prompt_cache_key"] = String(request.sessionKey.prefix(64))
+            payload["prompt_cache_key"] = request.promptCacheKey
         } else if let store = request.policy.storeResponse {
             if store ? policy.allowsStore : policy.supportsStoreField {
                 payload["store"] = store
@@ -201,7 +201,7 @@ enum OpenAIResponsesWire {
             payload["reasoning"] = reasoning
         }
         if let cache = request.policy.promptCache, cache.enabled, !context.isChatGPTRoute {
-            payload["prompt_cache_key"] = String(request.sessionKey.prefix(64))
+            payload["prompt_cache_key"] = request.promptCacheKey
             if cache.longRetention, context.model?.compat?.supportsLongCacheRetention != false {
                 payload["prompt_cache_retention"] = "24h"
             }
@@ -769,17 +769,17 @@ struct OpenAIResponsesEngine: Sendable {
         if chatGPT {
             headers["originator"] = headers["originator"] ?? "openclaw"
             headers["OpenAI-Beta"] = "responses=experimental"
-            headers["session_id"] = headers["session_id"] ?? request.sessionKey
-            headers["x-client-request-id"] = headers["x-client-request-id"] ?? request.sessionKey
+            headers["session_id"] = headers["session_id"] ?? request.promptCacheKey
+            headers["x-client-request-id"] = headers["x-client-request-id"] ?? request.promptCacheKey
         } else if let cache = request.policy.promptCache, cache.enabled {
             let compat = model?.compat
             if compat?.sendSessionIdHeader != false, policy.usesKnownNativeOpenAIRoute {
-                headers["session_id"] = headers["session_id"] ?? request.sessionKey
+                headers["session_id"] = headers["session_id"] ?? request.promptCacheKey
             }
             if compat?.sendSessionAffinityHeaders == true {
-                headers["session_id"] = headers["session_id"] ?? request.sessionKey
-                headers["x-client-request-id"] = headers["x-client-request-id"] ?? request.sessionKey
-                headers["x-session-affinity"] = headers["x-session-affinity"] ?? request.sessionKey
+                headers["session_id"] = headers["session_id"] ?? request.promptCacheKey
+                headers["x-client-request-id"] = headers["x-client-request-id"] ?? request.promptCacheKey
+                headers["x-session-affinity"] = headers["x-session-affinity"] ?? request.promptCacheKey
             }
         }
         ProviderRequestResolution.applyHeaders(headers, request: &urlRequest)

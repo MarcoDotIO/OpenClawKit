@@ -187,10 +187,88 @@ struct ProviderRuntimePolicyTests {
             )
         )
         let body = try #require(await transport.lastBodyObject())
-        #expect(body["prompt_cache_key"]?.stringValue == "session-42")
+        let opaqueKey = OpenClawCrypto.sha256Hex(Data("session-42".utf8))
+        #expect(body["prompt_cache_key"]?.stringValue == opaqueKey)
         #expect(body["prompt_cache_retention"]?.stringValue == "24h")
         #expect(body["temperature"]?.doubleValue == 0.5)
-        #expect(await transport.lastRequest()?.value(forHTTPHeaderField: "session_id") == "session-42")
+        #expect(await transport.lastRequest()?.value(forHTTPHeaderField: "session_id") == opaqueKey)
+    }
+
+    /// Routing session keys carry channel peer ids (phone numbers, user ids); they must never reach
+    /// the provider in `prompt_cache_key` or the session-affinity headers.
+    @Test
+    func routingSessionKeyNeverReachesTheWire() async throws {
+        let sessionKey = "agent:main:whatsapp:direct:+15551234567"
+        let chatGPTTransport = ContractV2StubTransport(body: """
+        data: {"type":"response.output_text.delta","delta":"ok"}
+
+        data: {"type":"response.completed","response":{"status":"completed"}}
+
+        """)
+        let chatGPTConfig = ModelProviderConfig(
+            enabled: true,
+            baseURL: "https://chatgpt.com/backend-api",
+            apiKey: "tok",
+            auth: .oauth,
+            api: .openAIChatGPTResponses,
+            models: [ModelDefinitionConfig(id: "gpt-5.4")]
+        )
+        let chatGPT = OpenAIResponsesModelProvider(
+            id: "openai",
+            configuration: chatGPTConfig.legacyServiceConfig(providerID: "openai"),
+            transport: chatGPTTransport,
+            runtime: ModelProviderRuntimeContext(providerConfig: chatGPTConfig, api: .openAIChatGPTResponses)
+        )
+        _ = try await chatGPT.generate(ModelGenerationRequest(sessionKey: sessionKey, prompt: "hi"))
+
+        let affinityTransport = ContractV2StubTransport(body: #"{"output_text":"ok","status":"completed"}"#)
+        let affinityConfig = ModelProviderConfig(
+            enabled: true,
+            baseURL: "https://proxy.example/v1",
+            apiKey: "k",
+            api: .openAIResponses,
+            models: [ModelDefinitionConfig(id: "gpt-5.4", compat: ModelCompatConfig(sendSessionAffinityHeaders: true))]
+        )
+        let affinity = OpenAIResponsesModelProvider(
+            id: "proxy",
+            configuration: affinityConfig.legacyServiceConfig(providerID: "proxy"),
+            transport: affinityTransport,
+            runtime: ModelProviderRuntimeContext(providerConfig: affinityConfig, api: .openAIResponses)
+        )
+        _ = try await affinity.generate(
+            ModelGenerationRequest(
+                sessionKey: sessionKey,
+                prompt: "hi",
+                policy: ModelGenerationPolicy(promptCache: ModelPromptCachePolicy(enabled: true))
+            )
+        )
+
+        for transport in [chatGPTTransport, affinityTransport] {
+            let request = try #require(await transport.lastRequest())
+            let body = String(decoding: request.httpBody ?? Data(), as: UTF8.self)
+            let headerValues = (request.allHTTPHeaderFields ?? [:]).values.joined(separator: "\n")
+            #expect(!body.contains("15551234567"))
+            #expect(!headerValues.contains("15551234567"))
+            #expect(request.value(forHTTPHeaderField: "session_id") == OpenClawCrypto.sha256Hex(Data(sessionKey.utf8)))
+        }
+        #expect(await affinityTransport.lastRequest()?.value(forHTTPHeaderField: "x-session-affinity") != nil)
+
+        // An explicit opaque key from the caller wins and is clamped to 64 characters.
+        let explicitTransport = ContractV2StubTransport(body: #"{"output_text":"ok","status":"completed"}"#)
+        let explicit = OpenAIResponsesModelProvider(
+            id: "openai",
+            configuration: ProviderServiceConfig(enabled: true, modelID: "gpt-5.4", apiKey: "k", baseURL: "https://api.openai.com/v1"),
+            transport: explicitTransport
+        )
+        _ = try await explicit.generate(
+            ModelGenerationRequest(
+                sessionKey: sessionKey,
+                prompt: "hi",
+                metadata: ["promptCacheKey": String(repeating: "a", count: 80)],
+                policy: ModelGenerationPolicy(promptCache: ModelPromptCachePolicy(enabled: true))
+            )
+        )
+        #expect(await explicitTransport.lastBodyObject()?["prompt_cache_key"]?.stringValue == String(repeating: "a", count: 64))
     }
 
     @Test

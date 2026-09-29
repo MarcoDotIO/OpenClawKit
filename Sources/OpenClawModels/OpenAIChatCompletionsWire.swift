@@ -229,7 +229,7 @@ enum OpenAIChatCompletionsWire {
         }
         let supportsKey = compat?.supportsPromptCacheKey ?? (context.compat.endpoint == .openAIPublic)
         if supportsKey {
-            payload["prompt_cache_key"] = String(request.sessionKey.prefix(64))
+            payload["prompt_cache_key"] = request.promptCacheKey
             if cache.longRetention, compat?.supportsLongCacheRetention != false, context.compat.endpoint == .openAIPublic {
                 payload["prompt_cache_retention"] = "24h"
             }

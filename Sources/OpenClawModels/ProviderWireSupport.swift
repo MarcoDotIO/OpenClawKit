@@ -218,6 +218,9 @@ enum ProviderToolCallIDs {
 /// Stream plumbing shared by the provider engines.
 enum ProviderStreamSupport {
     /// Runs `body` in a task feeding an `AsyncThrowingStream`, cancelling the task on termination.
+    ///
+    /// Errors (including transport errors raised mid-body) finish the stream through
+    /// ``ProviderErrorRedaction/sanitize(_:)`` so request URLs never reach consumers.
     static func makeStream(
         _ body: @escaping @Sendable (AsyncThrowingStream<ModelStreamChunk, Error>.Continuation) async throws -> Void
     ) -> AsyncThrowingStream<ModelStreamChunk, Error> {
@@ -227,7 +230,7 @@ enum ProviderStreamSupport {
                     try await body(continuation)
                     continuation.finish()
                 } catch {
-                    continuation.finish(throwing: error)
+                    continuation.finish(throwing: ProviderErrorRedaction.sanitize(error))
                 }
             }
             continuation.onTermination = { _ in

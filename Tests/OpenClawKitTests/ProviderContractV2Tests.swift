@@ -636,7 +636,9 @@ struct ProviderContractV2Tests {
         let url = try #require(await transport.lastRequest()?.url?.absoluteString)
         #expect(url.contains(":streamGenerateContent"))
         #expect(url.contains("alt=sse"))
-        #expect(url.contains("key=gem"))
+        // The API key travels in `x-goog-api-key`, never in the URL (upstream parity; keeps keys out of logs).
+        #expect(!url.contains("key=gem"))
+        #expect(await transport.lastRequest()?.value(forHTTPHeaderField: "x-goog-api-key") == "gem")
     }
 
     @Test

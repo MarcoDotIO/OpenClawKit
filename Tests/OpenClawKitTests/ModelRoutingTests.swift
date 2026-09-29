@@ -138,6 +138,7 @@ struct ModelRoutingTests {
         let body: Data
         private(set) var lastQuery: String?
         private(set) var lastRequestBody: Data?
+        private(set) var lastAPIKeyHeader: String?
 
         init(statusCode: Int = 200, body: Data) {
             self.statusCode = statusCode
@@ -147,6 +148,7 @@ struct ModelRoutingTests {
         func data(for request: URLRequest) async throws -> HTTPResponseData {
             self.lastQuery = request.url?.query
             self.lastRequestBody = request.httpBody
+            self.lastAPIKeyHeader = request.value(forHTTPHeaderField: "x-goog-api-key")
             return HTTPResponseData(statusCode: self.statusCode, headers: [:], body: self.body)
         }
 
@@ -672,7 +674,8 @@ struct ModelRoutingTests {
 
         #expect(response.providerID == GeminiModelProvider.providerID)
         #expect(response.text == "gemini-output")
-        #expect(await transport.query()?.contains("key=gem-key") == true)
+        #expect(await transport.query()?.contains("key=") != true)
+        #expect(await transport.lastAPIKeyHeader == "gem-key")
     }
 
     @Test

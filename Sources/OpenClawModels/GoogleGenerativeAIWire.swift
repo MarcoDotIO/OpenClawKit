@@ -452,38 +452,43 @@ struct GoogleGenerativeAIEngine: Sendable {
         if stream {
             queryItems.append(URLQueryItem(name: "alt", value: "sse"))
         }
-        var urlRequest: URLRequest
-        switch settings.authMode {
-        case .apiKey:
-            let apiKey = try ProviderRequestResolution.resolveAPIKey(configured: settings.apiKey, request: request, providerID: settings.providerID)
-            queryItems.append(URLQueryItem(name: "key", value: apiKey))
-            components?.queryItems = queryItems
-            guard let url = components?.url else {
-                throw OpenClawCoreError.invalidConfiguration("\(settings.providerID) endpoint is invalid")
-            }
-            urlRequest = settings.makeJSONRequest(url: url, request: request, model: model, streaming: stream)
-        case .bearerToken, .oauthToken:
-            components?.queryItems = queryItems.isEmpty ? nil : queryItems
-            guard let url = components?.url else {
-                throw OpenClawCoreError.invalidConfiguration("\(settings.providerID) endpoint is invalid")
-            }
-            urlRequest = settings.makeJSONRequest(url: url, request: request, model: model, streaming: stream)
-            let token = try ProviderRequestResolution.resolveAccessToken(
-                configured: settings.accessToken ?? settings.apiKey,
-                request: request,
-                providerID: settings.providerID
-            )
-            urlRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        case .awsSDK:
+        if settings.authMode == .awsSDK {
             throw OpenClawCoreError.invalidConfiguration("\(settings.providerID) does not support aws-sdk auth mode")
-        case .none:
-            components?.queryItems = queryItems.isEmpty ? nil : queryItems
-            guard let url = components?.url else {
-                throw OpenClawCoreError.invalidConfiguration("\(settings.providerID) endpoint is invalid")
-            }
-            urlRequest = settings.makeJSONRequest(url: url, request: request, model: model, streaming: stream)
         }
-        _ = settings.applyRequestAuthOverride(to: &urlRequest)
+        components?.queryItems = queryItems.isEmpty ? nil : queryItems
+        guard let url = components?.url else {
+            throw OpenClawCoreError.invalidConfiguration("\(settings.providerID) endpoint is invalid")
+        }
+        var urlRequest = settings.makeJSONRequest(url: url, request: request, model: model, streaming: stream)
+        // API keys travel in the `x-goog-api-key` header (upstream `gemini-auth.ts`), never in the URL,
+        // where proxy logs and `URLError` failing-URL strings would expose them.
+        if !settings.applyRequestAuthOverride(to: &urlRequest) {
+            switch settings.authMode {
+            case .apiKey:
+                let apiKey = try ProviderRequestResolution.resolveAPIKey(
+                    configured: settings.apiKey,
+                    request: request,
+                    providerID: settings.providerID
+                )
+                urlRequest.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
+            case .bearerToken, .oauthToken:
+                let token = try ProviderRequestResolution.resolveAccessToken(
+                    configured: settings.accessToken ?? settings.apiKey,
+                    request: request,
+                    providerID: settings.providerID
+                )
+                urlRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            case .none:
+                // Keys resolved at request time (auth profiles) still authenticate a config without `auth`.
+                if let apiKey = ModelGenerationRequest.normalized(settings.apiKey) ?? request.resolvedAPIKey {
+                    urlRequest.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
+                } else if let token = request.resolvedAccessToken {
+                    urlRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                }
+            case .awsSDK:
+                break
+            }
+        }
         ProviderRequestResolution.applyHeaders(settings.mergedHeaders(for: request, model: model), request: &urlRequest)
         let context = GoogleGenerativeAIWire.BuildContext(
             modelID: modelID,

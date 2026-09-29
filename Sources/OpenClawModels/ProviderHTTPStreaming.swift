@@ -70,7 +70,13 @@ public actor ModelStreamingHTTPClient: ModelHTTPStreamingTransport {
     /// - Parameter request: Configured URL request.
     /// - Returns: Response metadata and body.
     public func data(for request: URLRequest) async throws -> HTTPResponseData {
-        let (data, response) = try await self.session.data(for: request)
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await self.session.data(for: request)
+        } catch {
+            throw ProviderErrorRedaction.sanitize(error)
+        }
         guard let http = response as? HTTPURLResponse else {
             throw OpenClawCoreError.unavailable("Response was not HTTPURLResponse")
         }
@@ -258,8 +264,16 @@ struct ProviderHTTPExchange: Sendable {
     }
 
     /// Sends a request and returns the 2xx response or throws a normalized error.
+    ///
+    /// Transport errors are rethrown through ``ProviderErrorRedaction/sanitize(_:)`` so request URLs
+    /// never leak into error descriptions.
     func data(for request: URLRequest) async throws -> HTTPResponseData {
-        let response = try await self.send(request)
+        let response: HTTPResponseData
+        do {
+            response = try await self.send(request)
+        } catch {
+            throw ProviderErrorRedaction.sanitize(error)
+        }
         guard (200..<300).contains(response.statusCode) else {
             throw Self.statusError(providerID: self.providerID, statusCode: response.statusCode, body: response.body)
         }
@@ -269,10 +283,14 @@ struct ProviderHTTPExchange: Sendable {
     /// Sends a request and returns its body lines (incremental when the transport supports it).
     func lines(for request: URLRequest) async throws -> AsyncThrowingStream<String, Error> {
         let stream: ModelHTTPLineStream
-        if let streamingTransport {
-            stream = try await streamingTransport.lineStream(for: request)
-        } else {
-            stream = ModelHTTPLineStream.buffered(try await self.send(request))
+        do {
+            if let streamingTransport {
+                stream = try await streamingTransport.lineStream(for: request)
+            } else {
+                stream = ModelHTTPLineStream.buffered(try await self.send(request))
+            }
+        } catch {
+            throw ProviderErrorRedaction.sanitize(error)
         }
         guard (200..<300).contains(stream.statusCode) else {
             var body = ""

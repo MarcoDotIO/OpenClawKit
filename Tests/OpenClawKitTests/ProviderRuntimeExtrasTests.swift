@@ -113,7 +113,7 @@ struct ProviderRuntimeExtrasTests {
             )
         )
         let openAIBody = try #require(await openAITransport.lastBodyObject())
-        #expect(openAIBody["prompt_cache_key"]?.stringValue == "sess")
+        #expect(openAIBody["prompt_cache_key"]?.stringValue == OpenClawCrypto.sha256Hex(Data("sess".utf8)))
         #expect(openAIBody["prompt_cache_retention"]?.stringValue == "24h")
         #expect(openAIBody["max_completion_tokens"]?.intValue == 64)
     }
