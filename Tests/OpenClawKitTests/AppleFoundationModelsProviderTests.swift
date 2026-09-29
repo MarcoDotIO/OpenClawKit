@@ -677,6 +677,21 @@ struct FoundationModelsAgentToolBridgeTests {
     }
 
     @Test
+    func gatedAdaptersApplyBeforeToolCallHooks() async throws {
+        guard #available(macOS 26.0, iOS 26.0, visionOS 26.0, *) else { return }
+        let hooks = HookRegistry()
+        await hooks.register(.beforeToolCall, priority: 1, event: BeforeToolCallEvent.self) { event, _ in
+            event.params["city"]?.stringValue == "Paris" ? BeforeToolCallDecision(block: true, blockReason: "vetoed") : nil
+        }
+        let registry = AgentToolRegistry(tools: [WeatherTool()])
+        let gate = FoundationModelsAgentToolGate(registry: registry, hookRegistry: hooks)
+        let (tools, _) = await FoundationModelsAgentTools.adapters(for: registry, invoke: { call in try await gate.invoke(call) })
+        let weather = try #require(tools.first)
+        #expect(try await weather.call(arguments: GeneratedContent(json: #"{"city":"Paris"}"#)) == "Tool error: Tool call blocked: vetoed")
+        #expect(try await weather.call(arguments: GeneratedContent(json: #"{"city":"Oslo"}"#)) == "Sunny in Oslo")
+    }
+
+    @Test
     func agentProfileCompactsHistory() {
         guard #available(macOS 27.0, iOS 27.0, visionOS 27.0, *) else { return }
         let entries: [Transcript.Entry] = [
