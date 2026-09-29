@@ -329,6 +329,9 @@ public actor MemoryEngine {
     public static let snippetMaxChars = 700
     /// Default `memory_get` excerpt length (SDK choice).
     public static let defaultReadLines = 200
+    /// Separator between a chunk's line range and its part ordinal in chunk identifiers
+    /// (`MEMORY.md#L12-12~1`), used when one long line is split into several chunks.
+    public static let chunkPartMarker = "~"
 
     struct IndexedChunk: Codable, Equatable {
         let id: String
@@ -338,6 +341,19 @@ public actor MemoryEngine {
         let text: String
         let hash: String
         let datedAt: Date?
+
+        /// Ordinal among chunks of the same file and line range (0 for the first; a line wider than
+        /// the chunk size is split into several parts that share one range).
+        var part: Int {
+            guard let lines = self.id.range(of: "#L", options: .backwards) else { return 0 }
+            let range = self.id[lines.upperBound...]
+            guard let marker = range.range(of: MemoryEngine.chunkPartMarker),
+                  let part = Int(range[marker.upperBound...]), part > 0
+            else {
+                return 0
+            }
+            return part
+        }
     }
 
     struct PersistedIndex: Codable {
@@ -379,7 +395,12 @@ public actor MemoryEngine {
         self.embeddingProvider = configuration.isKeywordOnly ? nil : embeddingProvider
         self.indexURL = indexURL
         self.now = now
-        if let indexURL, let data = try? Data(contentsOf: indexURL), let decoded = try? JSONDecoder().decode(PersistedIndex.self, from: data) {
+        if let indexURL, let data = try? Data(contentsOf: indexURL), var decoded = try? JSONDecoder().decode(PersistedIndex.self, from: data) {
+            if Set(decoded.chunks.map(\.id)).count != decoded.chunks.count {
+                // An index written before chunk ids carried part ordinals can hold duplicate ids;
+                // forget the file digests so the next sync re-chunks every file.
+                decoded.files.removeAll()
+            }
             self.index = decoded
             var bm25 = BM25Index()
             for chunk in decoded.chunks { bm25.upsert(id: chunk.id, text: chunk.text) }
@@ -414,8 +435,9 @@ public actor MemoryEngine {
             self.removeChunks(forPath: file.path)
             let text = String(decoding: data, as: UTF8.self)
             let datedAt = Self.datedMemoryDate(file.path)
+            var parts: [String: Int] = [:]
             for chunk in chunker.chunk(text) where !chunk.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                let id = "\(file.path)#L\(chunk.startLine)-\(chunk.endLine)"
+                let id = Self.chunkID(path: file.path, startLine: chunk.startLine, endLine: chunk.endLine, parts: &parts)
                 let indexed = IndexedChunk(
                     id: id,
                     path: file.path,
@@ -455,8 +477,9 @@ public actor MemoryEngine {
         if self.dirty { await self.sync() }
         let limit = max(1, maxResults ?? self.configuration.maxResults)
         let threshold = minScore ?? self.configuration.minScore
-        let candidates = limit * max(1, self.configuration.candidateMultiplier)
-        let byID = Dictionary(uniqueKeysWithValues: self.index.chunks.map { ($0.id, $0) })
+        let (product, overflow) = limit.multipliedReportingOverflow(by: max(1, self.configuration.candidateMultiplier))
+        let candidates = overflow ? Int.max : product
+        let byID = Dictionary(self.index.chunks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
 
         // Keyword leg: BM25 over chunk text, normalized by the best score, plus filename matches.
         var textScores: [String: Double] = [:]
@@ -564,7 +587,7 @@ public actor MemoryEngine {
         guard start <= allLines.count else {
             return MemoryReadResult(status: "ok", text: "", path: path, truncated: false, from: start, lines: 0)
         }
-        let end = min(allLines.count, start + count - 1)
+        let end = count > allLines.count - start ? allLines.count : start + count - 1
         let excerpt = allLines[(start - 1)..<end].joined(separator: "\n")
         let truncated = end < allLines.count
         return MemoryReadResult(
@@ -597,9 +620,21 @@ public actor MemoryEngine {
         )
     }
 
-    /// Indexed chunks (path, lines, text) for mirroring into other backends such as Spotlight.
-    public func indexedChunks() -> [(path: String, startLine: Int, endLine: Int, text: String)] {
-        self.index.chunks.map { ($0.path, $0.startLine, $0.endLine, $0.text) }
+    /// Indexed chunks (path, lines, text, part) for mirroring into other backends such as Spotlight.
+    ///
+    /// `part` is 0 for the first chunk of a line range and counts up for further parts of a line
+    /// that was split because it exceeded the chunk size.
+    public func indexedChunks() -> [(path: String, startLine: Int, endLine: Int, text: String, part: Int)] {
+        self.index.chunks.map { ($0.path, $0.startLine, $0.endLine, $0.text, $0.part) }
+    }
+
+    /// Chunk identifier `path#Lstart-end`, with a `~k` part ordinal for the k-th further chunk that
+    /// shares the same range (a line wider than the chunk size is split into several parts).
+    static func chunkID(path: String, startLine: Int, endLine: Int, parts: inout [String: Int]) -> String {
+        let base = "\(path)#L\(startLine)-\(endLine)"
+        let part = parts[base, default: 0]
+        parts[base] = part + 1
+        return part == 0 ? base : "\(base)\(Self.chunkPartMarker)\(part)"
     }
 
     // MARK: - Ranking helpers
