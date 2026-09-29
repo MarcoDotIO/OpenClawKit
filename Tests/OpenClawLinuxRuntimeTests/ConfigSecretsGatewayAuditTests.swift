@@ -101,6 +101,38 @@ struct ConfigSecretsGatewayAuditTests {
         #expect(try await resolver.resolve(SecretInput.string("literal"), config: config) == "literal")
     }
 
+    @Test
+    func unconfiguredProviderAliasesNeverFallBackToTheBuiltInProvider() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("openclawkit-secret-alias-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = FileCredentialStore(fileURL: directory.appendingPathComponent("credentials.json"))
+        try await store.saveSecret("store-value", for: "GATEWAY_TOKEN")
+        let environment = ["OPENAI_API_KEY": "sk-env", "AWS_SECRET_ACCESS_KEY": "aws-secret"]
+        let resolver = DefaultSecretRefResolver(environment: environment, credentialStore: store)
+        let restricted = SecretsConfig(
+            providers: ["restricted": .env(EnvSecretProviderConfig(allowlist: ["OPENAI_API_KEY"]))],
+            defaults: SecretDefaultsConfig(env: "restricted")
+        )
+        // A made-up or mistyped alias does not bypass the default env provider's allowlist.
+        await #expect(throws: OpenClawCoreError.self) {
+            _ = try await resolver.resolve(SecretRef(source: .env, provider: "anything", id: "AWS_SECRET_ACCESS_KEY"), config: restricted)
+        }
+        await #expect(throws: OpenClawCoreError.self) {
+            _ = try await resolver.resolve(SecretRef(source: .store, provider: "elsewhere", id: "GATEWAY_TOKEN"), config: restricted)
+        }
+        // The implicit default alias maps to secrets.defaults.env and honors its allowlist.
+        #expect(try await resolver.resolve(SecretRef(source: .env, id: "OPENAI_API_KEY"), config: restricted) == "sk-env")
+        await #expect(throws: OpenClawCoreError.self) {
+            _ = try await resolver.resolve(SecretRef(source: .env, id: "AWS_SECRET_ACCESS_KEY"), config: restricted)
+        }
+        // Built-in env/store providers still serve the source's default alias without configuration.
+        let empty = SecretsConfig()
+        #expect(try await resolver.resolve(SecretRef(source: .env, id: "AWS_SECRET_ACCESS_KEY"), config: empty) == "aws-secret")
+        #expect(try await resolver.resolve(SecretRef(source: .store, id: "GATEWAY_TOKEN"), config: empty) == "store-value")
+        #expect(try await resolver.resolve(SecretRef(source: .store, provider: "default", id: "GATEWAY_TOKEN"), config: empty) == "store-value")
+    }
+
     #if os(macOS) || os(Linux)
     @Test
     func execResolverRunsTheJSONProtocol() async throws {

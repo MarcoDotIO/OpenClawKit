@@ -163,4 +163,104 @@ struct SecretRefHardeningTests {
         #expect(try await resolver.resolve(.ref(SecretRef(source: .env, id: "BOT_TOKEN"))) == "from-env")
         #expect(try await resolver.resolve(.string("plain")) == "plain")
     }
+
+    #if os(macOS) || os(Linux)
+    // MARK: Exec provider process limits
+
+    private func runExec(
+        _ script: String,
+        timeoutMs: Int = 3_000,
+        noOutputTimeoutMs: Int? = nil,
+        maxOutputBytes: Int = 1_048_576
+    ) async throws -> (result: Result<Data, Error>, seconds: Double) {
+        let directory = try self.makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("provider.sh")
+        try self.write("#!/bin/sh\n" + script + "\n", to: url, mode: 0o700)
+        let started = Date()
+        let limits = ExecSecretProcess.Limits(
+            providerName: "vault",
+            timeoutMs: timeoutMs,
+            noOutputTimeoutMs: noOutputTimeoutMs ?? timeoutMs,
+            maxOutputBytes: maxOutputBytes
+        )
+        let result: Result<Data, Error>
+        do {
+            result = .success(try await ExecSecretProcess.run(command: url.path, arguments: [], environment: [:], input: Data("{}".utf8), limits: limits))
+        } catch {
+            result = .failure(error)
+        }
+        return (result, Date().timeIntervalSince(started))
+    }
+
+    private func message(_ result: Result<Data, Error>) -> String {
+        if case .failure(let error) = result { return String(describing: error) }
+        return ""
+    }
+
+    @Test
+    func execProviderReturnsWhenABackgroundedHelperKeepsStdoutOpen() async throws {
+        let run = try await self.runExec("cat >/dev/null\necho '{\"protocolVersion\":1,\"values\":{\"k\":\"v\"}}'\nsleep 3 &\nexit 0")
+        #expect(run.seconds < 5)
+        let output = try run.result.get()
+        #expect(try DefaultSecretRefResolver.parseExecResponse(output, id: "k", providerName: "vault", jsonOnly: true) == "v")
+    }
+
+    @Test
+    func execProviderTimeoutKillsATermTrappingProcessTree() async throws {
+        let run = try await self.runExec("trap '' TERM\nsleep 20 &\nsleep 20", timeoutMs: 300)
+        #expect(run.seconds < 5)
+        #expect(self.message(run.result).contains("timed out after 300ms"))
+    }
+
+    @Test
+    func execProviderOutputIsCappedWhileReading() async throws {
+        let run = try await self.runExec("exec yes", maxOutputBytes: 4_096)
+        #expect(run.seconds < 5)
+        #expect(self.message(run.result).contains("exceeded maxOutputBytes (4096)"))
+    }
+
+    @Test
+    func execProviderNoOutputTimeoutFiresBeforeTheOverallTimeout() async throws {
+        let run = try await self.runExec("sleep 20", timeoutMs: 10_000, noOutputTimeoutMs: 200)
+        #expect(run.seconds < 5)
+        #expect(self.message(run.result).contains("produced no output for 200ms"))
+    }
+
+    @Test
+    func execProviderPollWaitNeverUnderflowsWhenAnEventIsOverdue() {
+        // While stdout is drained after the child exits, the deadline and the no-output timer may
+        // already lie in the past; the wait must clamp instead of trapping on UInt64 underflow.
+        #expect(ExecSecretProcess.pollWaitMs(now: 5_000_000_000, nextEvent: 1_000_000_000) == 1)
+        #expect(ExecSecretProcess.pollWaitMs(now: 5_000_000_000, nextEvent: 5_000_000_000) == 1)
+        #expect(ExecSecretProcess.pollWaitMs(now: 5_000_000_000, nextEvent: 5_020_000_000) == 20)
+        #expect(ExecSecretProcess.pollWaitMs(now: 0, nextEvent: UInt64.max) == 50)
+    }
+
+    @Test
+    func execProviderThatExitsAtTheEndOfItsSilentWindowSucceeds() async throws {
+        // Exits right as the no-output window closes, so the exit is noticed with the timer overdue.
+        for _ in 0..<3 {
+            let run = try await self.runExec(
+                "cat >/dev/null\necho '{\"protocolVersion\":1,\"values\":{\"k\":\"v\"}}'\nsleep 0.29\nexit 0",
+                timeoutMs: 3_000,
+                noOutputTimeoutMs: 300
+            )
+            if case .failure(let error) = run.result {
+                // Losing the race to the no-output timer is allowed; crashing is not.
+                #expect(String(describing: error).contains("produced no output for 300ms"))
+            } else {
+                #expect(try DefaultSecretRefResolver.parseExecResponse(try run.result.get(), id: "k", providerName: "vault", jsonOnly: true) == "v")
+            }
+        }
+    }
+
+    @Test
+    func execProviderThatNeverReadsStdinDoesNotRaiseSIGPIPE() async throws {
+        let run = try await self.runExec("exec 0<&-\necho '{\"protocolVersion\":1,\"values\":{\"k\":\"v\"}}'")
+        #expect(try DefaultSecretRefResolver.parseExecResponse(try run.result.get(), id: "k", providerName: "vault", jsonOnly: true) == "v")
+        let failing = try await self.runExec("exit 3")
+        #expect(self.message(failing.result).contains("exited with status 3"))
+    }
+    #endif
 }

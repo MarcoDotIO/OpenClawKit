@@ -137,6 +137,54 @@ struct ConfigDocumentStoreTests {
     }
 
     @Test
+    func legacyGroupRoutingMigratesInsteadOfBeingStripped() async throws {
+        let directory = try Self.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("openclaw.json")
+        try Self.write("""
+        {
+          routing: {
+            allowFrom: ["+15555550123"],
+            groupChat: { requireMention: false, mentionPatterns: ["@bot"], historyLimit: 30 },
+            queue: { mode: "collect" },
+            includePeerID: true,
+          },
+          channels: {
+            whatsapp: { enabled: true },
+            telegram: { requireMention: true, groups: { "-100": { enabled: true } } },
+            feishu: { accounts: { work: { botName: "Helper" } } },
+          },
+        }
+        """, to: url)
+        let store = OpenClawConfigDocumentStore(fileURL: url, environment: [:])
+        let loaded = try await store.load()
+        #expect(loaded.migrationChanges.contains { $0.id == "legacy-group-routing->channel-groups" })
+        // Only the leftover routing key is reported as unmigratable.
+        let unmigratable = loaded.legacyIssues.filter { $0.message.contains("without a migration path") }
+        #expect(unmigratable.map(\.path) == ["routing.queue"])
+        #expect(loaded.legacyIssues.contains { $0.path == "routing.allowFrom" && $0.message.hasPrefix("Moved") })
+        _ = try await store.save(loaded.document, expectedHash: loaded.hash)
+
+        let written = try #require(try OpenClawJSON5.parse(try Data(contentsOf: url)).dictionaryValue)
+        let channels = try #require(written["channels"]?.dictionaryValue)
+        let whatsapp = try #require(channels["whatsapp"]?.dictionaryValue)
+        #expect(whatsapp["allowFrom"] == AnyCodable(.array([AnyCodable(.string("+15555550123"))])))
+        #expect(whatsapp["groups"]?.dictionaryValue?["*"]?.dictionaryValue?["requireMention"]?.boolValue == false)
+        let telegram = try #require(channels["telegram"]?.dictionaryValue)
+        #expect(telegram["requireMention"] == nil)
+        // routing.groupChat.requireMention wins; the legacy telegram key is then dropped as already set.
+        #expect(telegram["groups"]?.dictionaryValue?["*"]?.dictionaryValue?["requireMention"]?.boolValue == false)
+        #expect(telegram["groups"]?.dictionaryValue?["-100"] != nil)
+        #expect(channels["feishu"]?.dictionaryValue?["accounts"]?.dictionaryValue?["work"]?.dictionaryValue?["name"]?.stringValue == "Helper")
+        let groupChat = try #require(written["messages"]?.dictionaryValue?["groupChat"]?.dictionaryValue)
+        #expect(groupChat["mentionPatterns"] == AnyCodable(.array([AnyCodable(.string("@bot"))])))
+        #expect(groupChat["historyLimit"]?.intValue == 30)
+        // Unmigratable legacy data stays; SDK-shaped routing keys are stripped.
+        let routing = try #require(written["routing"]?.dictionaryValue)
+        #expect(routing.keys.sorted() == ["queue"])
+    }
+
+    @Test
     func writesStripSDKOnlyKeys() async throws {
         let directory = try Self.temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

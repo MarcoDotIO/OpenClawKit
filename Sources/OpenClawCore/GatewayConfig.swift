@@ -260,6 +260,25 @@ public struct GatewayAuthRateLimitConfig: Codable, Sendable, Equatable {
         self.lockoutMs = lockoutMs
         self.exemptLoopback = exemptLoopback
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case maxAttempts
+        case windowMs
+        case lockoutMs
+        case exemptLoopback
+    }
+
+    /// Decodes each field leniently (a malformed value is recorded as an issue and dropped alone).
+    /// - Parameter decoder: Source decoder.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            maxAttempts: container.decodeLenient(Int.self, forKey: .maxAttempts),
+            windowMs: container.decodeLenient(Int.self, forKey: .windowMs),
+            lockoutMs: container.decodeLenient(Int.self, forKey: .lockoutMs),
+            exemptLoopback: container.decodeLenient(Bool.self, forKey: .exemptLoopback)
+        )
+    }
 }
 
 public struct GatewayAuthConfig: Codable, Sendable, Equatable {
@@ -321,11 +340,11 @@ public struct GatewayAuthConfig: Codable, Sendable, Equatable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.mode = container.decodeLenient(GatewayAuthMode.self, forKey: .mode) ?? .token
-        self.token = try container.decodeIfPresent(SecretInput.self, forKey: .token)
-        self.password = try container.decodeIfPresent(SecretInput.self, forKey: .password)
-        self.allowTailscale = try container.decodeIfPresent(Bool.self, forKey: .allowTailscale)
-        self.rateLimit = try container.decodeIfPresent(GatewayAuthRateLimitConfig.self, forKey: .rateLimit)
-        self.trustedProxy = try container.decodeIfPresent(GatewayTrustedProxyConfig.self, forKey: .trustedProxy)
+        self.token = container.decodeLenient(SecretInput.self, forKey: .token)
+        self.password = container.decodeLenient(SecretInput.self, forKey: .password)
+        self.allowTailscale = container.decodeLenient(Bool.self, forKey: .allowTailscale)
+        self.rateLimit = container.decodeLenient(GatewayAuthRateLimitConfig.self, forKey: .rateLimit)
+        self.trustedProxy = container.decodeLenient(GatewayTrustedProxyConfig.self, forKey: .trustedProxy)
         self.identityScopes = container.decodeLenient([String: [String]].self, forKey: .identityScopes)
     }
 
@@ -808,24 +827,79 @@ public struct GatewayHTTPEndpointsConfig: Codable, Sendable, Equatable {
     }
 }
 
+/// `gateway.http.securityHeaders` (upstream `strictTransportSecurity: string | false`).
 public struct GatewayHTTPSecurityHeadersConfig: Codable, Sendable, Equatable {
+    /// `Strict-Transport-Security` header value.
     public var strictTransportSecurity: String?
+    /// Whether HSTS is explicitly disabled (upstream `strictTransportSecurity: false`); encoded as
+    /// `false` when ``strictTransportSecurity`` is `nil`.
+    public var strictTransportSecurityDisabled: Bool
 
-    public init(strictTransportSecurity: String? = nil) {
+    /// Creates the security headers block.
+    /// - Parameters:
+    ///   - strictTransportSecurity: `Strict-Transport-Security` header value.
+    ///   - strictTransportSecurityDisabled: Whether HSTS is explicitly disabled.
+    public init(strictTransportSecurity: String? = nil, strictTransportSecurityDisabled: Bool = false) {
         self.strictTransportSecurity = strictTransportSecurity
+        self.strictTransportSecurityDisabled = strictTransportSecurityDisabled
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case strictTransportSecurity
+    }
+
+    /// Decodes a header string or `false` (other values are recorded as issues and dropped).
+    /// - Parameter decoder: Source decoder.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let value = container.decodeLenient(ConfigStringOrFalse.self, forKey: .strictTransportSecurity)
+        self.init(strictTransportSecurity: value?.stringValue, strictTransportSecurityDisabled: value == .disabled)
+    }
+
+    /// Encodes the header string, or `false` when disabled.
+    /// - Parameter encoder: Target encoder.
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        if let strictTransportSecurity {
+            try container.encode(strictTransportSecurity, forKey: .strictTransportSecurity)
+        } else if self.strictTransportSecurityDisabled {
+            try container.encode(false, forKey: .strictTransportSecurity)
+        }
     }
 }
 
+/// `gateway.http`.
 public struct GatewayHTTPConfig: Codable, Sendable, Equatable {
+    /// HTTP endpoint toggles.
     public var endpoints: GatewayHTTPEndpointsConfig?
+    /// Security headers.
     public var securityHeaders: GatewayHTTPSecurityHeadersConfig?
 
+    /// Creates the HTTP block.
+    /// - Parameters:
+    ///   - endpoints: HTTP endpoint toggles.
+    ///   - securityHeaders: Security headers.
     public init(
         endpoints: GatewayHTTPEndpointsConfig? = nil,
         securityHeaders: GatewayHTTPSecurityHeadersConfig? = nil
     ) {
         self.endpoints = endpoints
         self.securityHeaders = securityHeaders
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case endpoints
+        case securityHeaders
+    }
+
+    /// Decodes each block leniently: a malformed block is recorded as an issue and dropped alone.
+    /// - Parameter decoder: Source decoder.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            endpoints: container.decodeLenient(GatewayHTTPEndpointsConfig.self, forKey: .endpoints),
+            securityHeaders: container.decodeLenient(GatewayHTTPSecurityHeadersConfig.self, forKey: .securityHeaders)
+        )
     }
 }
 
@@ -1065,13 +1139,16 @@ public struct GatewayConfig: Codable, Sendable, Equatable {
         case handshakeTimeoutMs
     }
 
+    /// Decodes the gateway block leniently: a malformed key (including a nested block) is recorded as
+    /// an issue and dropped alone instead of failing the whole section.
+    /// - Parameter decoder: Source decoder.
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        let host = try container.decodeIfPresent(String.self, forKey: .host) ?? "127.0.0.1"
-        let port = try container.decodeIfPresent(Int.self, forKey: .port) ?? 18_789
+        let host = container.decodeLenient(String.self, forKey: .host) ?? "127.0.0.1"
+        let port = container.decodeLenient(Int.self, forKey: .port) ?? 18_789
         let mode = container.decodeLenient(GatewayMode.self, forKey: .mode) ?? .local
-        let decodedAuth = try container.decodeIfPresent(GatewayAuthConfig.self, forKey: .auth)
-        let legacyAuthMode = try container.decodeIfPresent(String.self, forKey: .authMode)
+        let decodedAuth = container.decodeLenient(GatewayAuthConfig.self, forKey: .auth)
+        let legacyAuthMode = container.decodeLenient(String.self, forKey: .authMode)
         let normalizedAuth = decodedAuth
             ?? GatewayAuthConfig(
                 mode: GatewayAuthMode(rawValue: legacyAuthMode?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "") ?? .token,
@@ -1085,16 +1162,16 @@ public struct GatewayConfig: Codable, Sendable, Equatable {
             authMode: decodedAuth?.mode.rawValue ?? legacyAuthMode ?? GatewayAuthMode.token.rawValue,
             mode: mode,
             bind: container.decodeLenient(GatewayBindMode.self, forKey: .bind),
-            customBindHost: try container.decodeIfPresent(String.self, forKey: .customBindHost),
-            controlUi: try container.decodeIfPresent(GatewayControlUIConfig.self, forKey: .controlUi),
+            customBindHost: container.decodeLenient(String.self, forKey: .customBindHost),
+            controlUi: container.decodeLenient(GatewayControlUIConfig.self, forKey: .controlUi),
             auth: normalizedAuth,
             tailscale: container.decodeLenient(GatewayTailscaleConfig.self, forKey: .tailscale),
-            remote: try container.decodeIfPresent(GatewayRemoteConfig.self, forKey: .remote),
-            http: try container.decodeIfPresent(GatewayHTTPConfig.self, forKey: .http),
-            push: try container.decodeIfPresent(GatewayPushConfig.self, forKey: .push),
-            trustedProxies: try container.decodeIfPresent([String].self, forKey: .trustedProxies) ?? [],
-            allowRealIpFallback: try container.decodeIfPresent(Bool.self, forKey: .allowRealIpFallback) ?? false,
-            channelHealthCheckMinutes: try container.decodeIfPresent(Int.self, forKey: .channelHealthCheckMinutes) ?? 5,
+            remote: container.decodeLenient(GatewayRemoteConfig.self, forKey: .remote),
+            http: container.decodeLenient(GatewayHTTPConfig.self, forKey: .http),
+            push: container.decodeLenient(GatewayPushConfig.self, forKey: .push),
+            trustedProxies: container.decodeLenient([String].self, forKey: .trustedProxies) ?? [],
+            allowRealIpFallback: container.decodeLenient(Bool.self, forKey: .allowRealIpFallback) ?? false,
+            channelHealthCheckMinutes: container.decodeLenient(Int.self, forKey: .channelHealthCheckMinutes) ?? 5,
             publicOrigin: container.decodeLenient(String.self, forKey: .publicOrigin),
             reload: Self.decodeReloadMode(container),
             nodes: container.decodeLenient(GatewayNodesConfig.self, forKey: .nodes),

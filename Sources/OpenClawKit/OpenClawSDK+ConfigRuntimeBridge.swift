@@ -216,11 +216,18 @@ extension OpenClawSDK {
 /// (`<stateDir>/state/openclaw.sqlite#exec_approvals_config`), the store `system.execApprovals.set`
 /// and the Node gateway use.
 ///
-/// Rules map to `agents.<agentId>.allowlist` (the legacy `default` agent key is read as `main`).
+/// Rules map to `agents.<agentId>.allowlist`. The legacy `default` agent is folded into `main` the
+/// way upstream normalizes the document (union of both allowlists, deduplicated by pattern and
+/// `argPattern`; `main`'s policy fields win): reads return the merged list upstream enforces, and
+/// every write stores the merged `main` and removes `default`, so a rule revoked through the SDK is
+/// revoked everywhere. Writes are read-modify-write inside one immediate transaction.
 /// `commandText` is display-only and is not persisted in the shared document (upstream behavior).
 /// Calls are synchronous and may block on SQLite locks; they throw
 /// ``ExecApprovalsLegacyMigrationRequiredError`` while a legacy `exec-approvals.json` awaits Doctor.
 public struct ExecApprovalsSQLiteAllowlistStore: ExecAllowlistPersisting {
+    /// Legacy agent key folded into ``SecurityRuntime/defaultAgentID``.
+    static let legacyDefaultAgentID = "default"
+
     /// OpenClaw state directory.
     public let stateDirectoryURL: URL
 
@@ -230,16 +237,15 @@ public struct ExecApprovalsSQLiteAllowlistStore: ExecAllowlistPersisting {
         self.stateDirectoryURL = stateDirectoryURL
     }
 
-    /// Loads an agent's allowlist.
+    /// Loads an agent's allowlist (for `main`, merged with the legacy `default` agent).
     /// - Parameter agentID: Agent id.
     /// - Returns: Rules in stored order.
     public func loadAllowlist(agentID: String) throws -> [ExecAllowlistEntry] {
         guard let record = try ExecApprovalsSQLiteStore.read(stateDirectoryURL: self.stateDirectoryURL) else {
             return []
         }
-        let agents = record.document.agents ?? [:]
-        let agent = agents[agentID] ?? (agentID == SecurityRuntime.defaultAgentID ? agents["default"] : nil)
-        return (agent?.allowlist ?? []).map(Self.entry(from:))
+        let agents = Self.foldingLegacyDefaultAgent(record.document).agents ?? [:]
+        return (agents[Self.storedAgentID(agentID)]?.allowlist ?? []).map(Self.entry(from:))
     }
 
     /// Replaces an agent's allowlist inside one immediate transaction.
@@ -247,18 +253,71 @@ public struct ExecApprovalsSQLiteAllowlistStore: ExecAllowlistPersisting {
     ///   - entries: Rules to store.
     ///   - agentID: Agent id.
     public func saveAllowlist(_ entries: [ExecAllowlistEntry], agentID: String) throws {
-        try ExecApprovalsSQLiteStore.withImmediateTransaction(
+        _ = try self.updateAllowlist(agentID: agentID) { _ in entries }
+    }
+
+    /// Reads, transforms and writes an agent's allowlist inside one immediate transaction, starting
+    /// from the stored document (so concurrent changes by other writers are preserved).
+    /// - Parameters:
+    ///   - agentID: Agent id.
+    ///   - transform: Receives the stored rules; returns the replacement, or `nil` to leave the
+    ///     document unchanged.
+    /// - Returns: The rules stored afterwards.
+    public func updateAllowlist(
+        agentID: String,
+        _ transform: ([ExecAllowlistEntry]) throws -> [ExecAllowlistEntry]?
+    ) throws -> [ExecAllowlistEntry] {
+        let key = Self.storedAgentID(agentID)
+        return try ExecApprovalsSQLiteStore.withImmediateTransaction(
             stateDirectoryURL: self.stateDirectoryURL,
             updatedAtMilliseconds: OpenClawClock.nowMs()
         ) { current in
-            var document = current?.document ?? ExecApprovalsDocument(version: 1)
+            var document = Self.foldingLegacyDefaultAgent(current?.document ?? ExecApprovalsDocument(version: 1))
             var agents = document.agents ?? [:]
-            var agent = agents[agentID] ?? ExecApprovalsAgentDocument()
+            let stored = (agents[key]?.allowlist ?? []).map(Self.entry(from:))
+            guard let entries = try transform(stored) else {
+                return ExecApprovalsSQLiteMutation(value: stored, documentToWrite: nil)
+            }
+            var agent = agents[key] ?? ExecApprovalsAgentDocument()
             agent.allowlist = entries.isEmpty ? nil : entries.map(Self.sharedEntry(from:))
-            agents[agentID] = agent.isEmpty ? nil : agent
+            agents[key] = agent.isEmpty ? nil : agent
             document.agents = agents.isEmpty ? nil : agents
-            return ExecApprovalsSQLiteMutation(value: (), documentToWrite: document)
+            return ExecApprovalsSQLiteMutation(value: entries, documentToWrite: document)
         }
+    }
+
+    /// Agent key in the shared document (`default` is the legacy spelling of `main`).
+    static func storedAgentID(_ agentID: String) -> String {
+        agentID == Self.legacyDefaultAgentID ? SecurityRuntime.defaultAgentID : agentID
+    }
+
+    /// Folds the legacy `default` agent into `main` (upstream `normalizeExecApprovals`): the
+    /// allowlists are concatenated (`main` first) and deduplicated by lowercased trimmed pattern plus
+    /// trimmed `argPattern`, entries with an empty pattern are dropped, and each policy field takes
+    /// `main`'s value when set.
+    static func foldingLegacyDefaultAgent(_ document: ExecApprovalsDocument) -> ExecApprovalsDocument {
+        guard var agents = document.agents, let legacy = agents.removeValue(forKey: Self.legacyDefaultAgentID) else {
+            return document
+        }
+        let main = agents[SecurityRuntime.defaultAgentID] ?? ExecApprovalsAgentDocument()
+        var seen = Set<String>()
+        let allowlist = ((main.allowlist ?? []) + (legacy.allowlist ?? [])).filter { entry in
+            let pattern = entry.pattern.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !pattern.isEmpty else { return false }
+            let argPattern = entry.argPattern?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return seen.insert("\(pattern)\u{0}\(argPattern)").inserted
+        }
+        let merged = ExecApprovalsAgentDocument(
+            security: main.security ?? legacy.security,
+            ask: main.ask ?? legacy.ask,
+            askFallback: main.askFallback ?? legacy.askFallback,
+            autoAllowSkills: main.autoAllowSkills ?? legacy.autoAllowSkills,
+            allowlist: allowlist.isEmpty ? nil : allowlist
+        )
+        agents[SecurityRuntime.defaultAgentID] = merged.isEmpty ? nil : merged
+        var folded = document
+        folded.agents = agents.isEmpty ? nil : agents
+        return folded
     }
 
     static func entry(from shared: ExecApprovalsAllowlistEntry) -> ExecAllowlistEntry {

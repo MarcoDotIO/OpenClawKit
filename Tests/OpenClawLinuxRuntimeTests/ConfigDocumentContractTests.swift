@@ -74,10 +74,41 @@ struct ConfigDocumentContractTests {
     // MARK: Doctor replay
 
     @Test
+    func legacyFirstAgentWorkspacePinFollowsUpstreamConditions() throws {
+        func migratedEntries(_ agents: String, environment: [String: String] = ["HOME": "/h"]) throws -> [String: AnyCodable] {
+            var tree = try #require(try OpenClawJSON5.parse(Data(#"{"agents": \#(agents)}"#.utf8)).dictionaryValue)
+            OpenClawConfigMigrator.migrate(&tree, environment: environment)
+            return try #require(tree["agents"]?.dictionaryValue?["entries"]?.dictionaryValue)
+        }
+        func workspace(_ entries: [String: AnyCodable], _ id: String) -> String? {
+            entries[id]?.dictionaryValue?["workspace"]?.stringValue
+        }
+        let list = #"{"list": [{"id": "main"}, {"id": "work"}]}"#
+        #expect(workspace(try migratedEntries(list), "main") == "/h/.openclaw/workspace")
+        #expect(workspace(try migratedEntries(list), "work") == nil)
+        // agents.defaults.workspace wins (trimmed), then the environment-derived defaults.
+        #expect(workspace(try migratedEntries(#"{"defaults": {"workspace": " /srv/ws "}, "list": [{"id": "a"}, {"id": "b"}]}"#), "a") == "/srv/ws")
+        #expect(workspace(try migratedEntries(list, environment: ["HOME": "/h", "OPENCLAW_WORKSPACE_DIR": "/custom/ws"]), "main") == "/custom/ws")
+        #expect(workspace(try migratedEntries(list, environment: ["HOME": "/h", "OPENCLAW_STATE_DIR": "/state"]), "main") == "/state/workspace")
+        #expect(workspace(try migratedEntries(list, environment: ["HOME": "/h", "OPENCLAW_PROFILE": "work"]), "main") == "/h/.openclaw-work/workspace")
+        // A blank workspace is pinned; an authored one is kept.
+        #expect(workspace(try migratedEntries(#"{"list": [{"id": "a", "workspace": "  "}, {"id": "b"}]}"#), "a") == "/h/.openclaw/workspace")
+        #expect(workspace(try migratedEntries(#"{"list": [{"id": "a", "workspace": "/mine"}, {"id": "b"}]}"#), "a") == "/mine")
+        // No pin: explicit ownership, a default marker, a single entry, or an existing roster.
+        #expect(workspace(try migratedEntries(#"{"ownership": "explicit", "list": [{"id": "a"}, {"id": "b"}]}"#), "a") == nil)
+        #expect(workspace(try migratedEntries(#"{"list": [{"id": "a"}, {"id": "b", "default": true}]}"#), "a") == nil)
+        #expect(workspace(try migratedEntries(#"{"list": [{"id": "a"}, {"id": "b", "default": "yes"}]}"#), "a") == nil)
+        #expect(workspace(try migratedEntries(#"{"list": [{"id": "a"}, {"id": "b", "default": false}]}"#), "a") == "/h/.openclaw/workspace")
+        #expect(workspace(try migratedEntries(#"{"list": [{"id": "a"}]}"#), "a") == nil)
+        #expect(workspace(try migratedEntries(#"{"entries": {"a": {}, "b": {}}, "list": [{"id": "a"}, {"id": "b"}]}"#), "a") == nil)
+    }
+
+    @Test
     func doctorFixtureMigratesLikeUpstreamDoctor() throws {
         let data = try ConfigFixtures.data("doctor-2026.7.1.json")
         var tree = try #require(try OpenClawJSON5.parse(data).dictionaryValue)
-        let changes = OpenClawConfigMigrator.migrate(&tree)
+        let environment = ["HOME": "/Users/oc-fixture"]
+        let changes = OpenClawConfigMigrator.migrate(&tree, environment: environment)
         #expect(!changes.isEmpty)
 
         let meta = tree["meta"]?.dictionaryValue
@@ -89,6 +120,9 @@ struct ConfigDocumentContractTests {
         let entries = try #require(agents["entries"]?.dictionaryValue)
         #expect(Set(entries.keys) == ["main", "research"])
         #expect(entries["main"]?.dictionaryValue?["id"] == nil)
+        // Upstream doctor pins the first markerless agent to the shared workspace.
+        #expect(entries["main"]?.dictionaryValue?["workspace"]?.stringValue == "/Users/oc-fixture/.openclaw/workspace")
+        #expect(entries["research"]?.dictionaryValue?["workspace"] == nil)
         #expect(agents["ownership"]?.stringValue == "explicit")
         #expect(agents["defaults"]?.dictionaryValue?["memorySearch"] == nil)
 
@@ -111,7 +145,7 @@ struct ConfigDocumentContractTests {
 
         // A second pass is a no-op (upstream: the second doctor pass leaves the bytes unchanged).
         var second = tree
-        #expect(OpenClawConfigMigrator.migrate(&second).isEmpty)
+        #expect(OpenClawConfigMigrator.migrate(&second, environment: environment).isEmpty)
         #expect(second == tree)
 
         // The typed view sees the canonical shape.

@@ -30,13 +30,18 @@ extension OpenClawConfig {
         func record(_ path: String, _ message: String) {
             issues?.record(ConfigDecodeIssue(path: path, message: message, kind: .invalidValue))
         }
-        func decodeSection<T: Decodable>(_ type: T.Type, _ object: [String: AnyCodable]?) -> T? {
+        func decodeSection<T: Decodable>(_ type: T.Type, _ path: String, _ object: [String: AnyCodable]?) -> T? {
             guard let object else { return nil }
-            return try? ConfigTreeCoding.decode(type, from: AnyCodable(.object(object)), issues: issues)
+            do {
+                return try ConfigTreeCoding.decode(type, from: AnyCodable(.object(object)), issues: issues)
+            } catch {
+                record(path, "The \(path) section could not be imported; kept the base value: \(error)")
+                return nil
+            }
         }
 
         // Secrets (resolution stays SDK-local).
-        if let secrets = decodeSection(SecretsConfig.self, document.secrets?.jsonObject) {
+        if let secrets = decodeSection(SecretsConfig.self, "secrets", document.secrets?.jsonObject) {
             config.secrets = SecretsConfig(
                 providers: secrets.providers,
                 defaults: secrets.defaults,
@@ -46,7 +51,7 @@ extension OpenClawConfig {
         }
 
         // Gateway (host, health interval and handshake timeout stay SDK-local).
-        if let gatewayObject = document.gateway?.jsonObject, var gateway = decodeSection(GatewayConfig.self, gatewayObject) {
+        if let gatewayObject = document.gateway?.jsonObject, var gateway = decodeSection(GatewayConfig.self, "gateway", gatewayObject) {
             gateway.host = base.gateway.host
             gateway.channelHealthCheckMinutes = base.gateway.channelHealthCheckMinutes
             gateway.handshakeTimeoutMs = base.gateway.handshakeTimeoutMs
@@ -116,11 +121,17 @@ extension OpenClawConfig {
 
     /// Projects this config onto an upstream-shaped document, merged over `original` so passthrough
     /// data survives. Only upstream-valid keys are written; SDK-only data stays out.
+    ///
+    /// For `secrets` and `gateway` authored in `original`, only the values that differ from what
+    /// `original` itself imports as are written (and values this config removed are deleted), so a
+    /// no-change round trip keeps the authored section byte-for-byte and SDK defaults never replace
+    /// authored or omitted values.
     /// - Parameter original: Document to merge into (usually the loaded `openclaw.json`).
     /// - Returns: The projected document.
     public func documentProjection(preserving original: OpenClawConfigDocument? = nil) -> OpenClawConfigDocument {
         var tree = original?.jsonObject ?? [:]
         let defaults = OpenClawConfig()
+        let reimported = original.map { OpenClawConfig(document: $0) }
 
         func merge(_ key: String, _ value: AnyCodable, onlyIfChangedFrom defaultValue: AnyCodable? = nil) {
             if let defaultValue, value == defaultValue, tree[key] == nil {
@@ -128,16 +139,25 @@ extension OpenClawConfig {
             }
             tree[key] = ConfigTree.deepMerge(tree[key], value)
         }
+        func mergeChanges(_ key: String, _ value: AnyCodable, imported: AnyCodable?, defaultValue: AnyCodable) {
+            guard let imported, tree[key] != nil else {
+                merge(key, value, onlyIfChangedFrom: defaultValue)
+                return
+            }
+            tree[key] = ConfigTree.applyingChanges(from: imported, to: value, onto: tree[key])
+        }
 
-        merge(
+        mergeChanges(
             "secrets",
             ConfigTreeCoding.encode(self.secrets, projection: true),
-            onlyIfChangedFrom: ConfigTreeCoding.encode(defaults.secrets, projection: true)
+            imported: reimported.map { ConfigTreeCoding.encode($0.secrets, projection: true) },
+            defaultValue: ConfigTreeCoding.encode(defaults.secrets, projection: true)
         )
-        merge(
+        mergeChanges(
             "gateway",
             ConfigTreeCoding.encode(self.gateway, projection: true),
-            onlyIfChangedFrom: ConfigTreeCoding.encode(defaults.gateway, projection: true)
+            imported: reimported.map { ConfigTreeCoding.encode($0.gateway, projection: true) },
+            defaultValue: ConfigTreeCoding.encode(defaults.gateway, projection: true)
         )
         if self.auth.profiles != defaults.auth.profiles || self.auth.order != defaults.auth.order || tree["auth"] != nil {
             var auth: [String: AnyCodable] = [:]
@@ -521,6 +541,45 @@ public enum ConfigTree {
         var result = baseObject
         for (key, value) in overrideObject {
             result[key] = self.deepMerge(baseObject[key], value)
+        }
+        return AnyCodable(.object(result))
+    }
+
+    /// Applies the difference between two projections of the same section onto its authored value.
+    ///
+    /// Keys whose value is the same in `imported` and `projected` keep the authored value (or stay
+    /// absent); keys `projected` removed are deleted; changed and added keys are deep-merged. Keys in
+    /// neither projection (passthrough data) are untouched.
+    /// - Parameters:
+    ///   - imported: Projection of what `authored` imports as.
+    ///   - projected: Projection of the current value.
+    ///   - authored: Authored value at the same path.
+    /// - Returns: The authored value with the changes applied.
+    public static func applyingChanges(from imported: AnyCodable, to projected: AnyCodable, onto authored: AnyCodable?) -> AnyCodable {
+        if imported == projected, let authored {
+            return authored
+        }
+        guard let importedObject = imported.dictionaryValue, let projectedObject = projected.dictionaryValue,
+              authored == nil || authored?.dictionaryValue != nil
+        else {
+            return self.deepMerge(authored, projected)
+        }
+        var result = authored?.dictionaryValue ?? [:]
+        for key in Set(importedObject.keys).union(projectedObject.keys) {
+            let before = importedObject[key]
+            let after = projectedObject[key]
+            if before == after {
+                continue
+            }
+            guard let after else {
+                result.removeValue(forKey: key)
+                continue
+            }
+            if let before {
+                result[key] = self.applyingChanges(from: before, to: after, onto: result[key])
+            } else {
+                result[key] = self.deepMerge(result[key], after)
+            }
         }
         return AnyCodable(.object(result))
     }

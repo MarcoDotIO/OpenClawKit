@@ -31,6 +31,10 @@ public struct PairingRecord: Sendable, Equatable {
 /// exec-approvals document (`state/openclaw.sqlite#exec_approvals_config`, the same store
 /// `system.execApprovals.set` writes) with the OpenClawKit bridge
 /// `ExecApprovalsSQLiteAllowlistStore`; other hosts can plug in their own store.
+///
+/// The store is authoritative: ``SecurityRuntime`` re-reads it before every evaluation and changes
+/// it only through ``updateAllowlist(agentID:_:)``, so rules added or revoked by other writers (the
+/// Node gateway, `system.execApprovals.set`) take effect immediately and are never overwritten.
 public protocol ExecAllowlistPersisting: Sendable {
     /// Loads an agent's allowlist.
     /// - Parameter agentID: Agent id (`main` by default).
@@ -42,6 +46,39 @@ public protocol ExecAllowlistPersisting: Sendable {
     ///   - entries: Rules to store.
     ///   - agentID: Agent id.
     func saveAllowlist(_ entries: [ExecAllowlistEntry], agentID: String) throws
+
+    /// Reads, transforms and writes an agent's allowlist as one atomic step (a transaction for
+    /// shared stores).
+    ///
+    /// The default implementation loads, transforms and saves without isolation; stores shared with
+    /// other processes should implement it transactionally.
+    /// - Parameters:
+    ///   - agentID: Agent id.
+    ///   - transform: Receives the current rules; returns the replacement, or `nil` to leave the
+    ///     store unchanged.
+    /// - Returns: The rules stored afterwards.
+    func updateAllowlist(
+        agentID: String,
+        _ transform: ([ExecAllowlistEntry]) throws -> [ExecAllowlistEntry]?
+    ) throws -> [ExecAllowlistEntry]
+}
+
+extension ExecAllowlistPersisting {
+    /// Loads, transforms and saves an agent's allowlist (not isolated from other writers).
+    /// - Parameters:
+    ///   - agentID: Agent id.
+    ///   - transform: Receives the current rules; returns the replacement, or `nil` to leave the
+    ///     store unchanged.
+    /// - Returns: The rules stored afterwards.
+    public func updateAllowlist(
+        agentID: String,
+        _ transform: ([ExecAllowlistEntry]) throws -> [ExecAllowlistEntry]?
+    ) throws -> [ExecAllowlistEntry] {
+        let current = try self.loadAllowlist(agentID: agentID)
+        guard let next = try transform(current) else { return current }
+        try self.saveAllowlist(next, agentID: agentID)
+        return next
+    }
 }
 
 /// Snapshot evaluator for exec allowlists (usable as an `ExecApprovalGate` allowlist hook).
@@ -66,23 +103,46 @@ public struct ExecAllowlistEvaluator: Sendable, Equatable {
 
     /// Rules matching every command of a shell command line (empty when any segment misses or the
     /// line cannot be analyzed safely).
+    ///
+    /// A `<shell> -c <payload>` segment that no rule authorizes directly is matched through the
+    /// payload's commands (see ``ExecAllowlistMatcher/matchIncludingShellPayload(entries:resolution:environment:)``).
     /// - Parameter commandText: Shell command text.
-    /// - Returns: One rule per segment, or `[]`.
+    /// - Returns: One rule per authorized command, or `[]`.
     public func matches(commandText: String) -> [ExecAllowlistEntry] {
-        guard let resolutions = ExecCommandResolution.resolve(commandText: commandText, cwd: self.cwd, environment: self.environment) else {
+        guard !self.entries.isEmpty,
+              let resolutions = ExecCommandResolution.resolve(commandText: commandText, cwd: self.cwd, environment: self.environment)
+        else {
             return []
         }
-        return ExecAllowlistMatcher.matchAll(entries: self.entries, resolutions: resolutions)
+        var matches: [ExecAllowlistEntry] = []
+        for resolution in resolutions {
+            let segmentMatches = ExecAllowlistMatcher.matchIncludingShellPayload(
+                entries: self.entries,
+                resolution: resolution,
+                environment: self.environment
+            )
+            guard !segmentMatches.isEmpty else { return [] }
+            matches.append(contentsOf: segmentMatches)
+        }
+        return matches
     }
 
-    /// The rule matching an argv command.
+    /// Rules authorizing an argv command (empty on a miss); a `<shell> -c <payload>` command is
+    /// matched through its payload when no rule authorizes the shell itself.
+    /// - Parameter argv: Command argv.
+    /// - Returns: One rule per authorized command, or `[]`.
+    public func matches(argv: [String]) -> [ExecAllowlistEntry] {
+        guard let resolution = ExecCommandResolution.resolve(argv: argv, cwd: self.cwd, environment: self.environment) else {
+            return []
+        }
+        return ExecAllowlistMatcher.matchIncludingShellPayload(entries: self.entries, resolution: resolution, environment: self.environment)
+    }
+
+    /// The rule matching an argv command (for a shell payload, the rule of its first command).
     /// - Parameter argv: Command argv.
     /// - Returns: The rule, or `nil`.
     public func match(argv: [String]) -> ExecAllowlistEntry? {
-        ExecAllowlistMatcher.match(
-            entries: self.entries,
-            resolution: ExecCommandResolution.resolve(argv: argv, cwd: self.cwd, environment: self.environment)
-        )
+        self.matches(argv: argv).first
     }
 
     /// Whether every command of a shell command line is allowlisted.
@@ -157,7 +217,7 @@ public actor SecurityRuntime {
 
     // MARK: Exec allowlists
 
-    /// An agent's allowlist (loaded from the store on first use).
+    /// An agent's allowlist (re-read from the store on every call when one is configured).
     /// - Parameter agentID: Agent id.
     /// - Returns: Rules in stored order.
     public func execAllowlist(agentID: String = SecurityRuntime.defaultAgentID) throws -> [ExecAllowlistEntry] {
@@ -173,15 +233,17 @@ public actor SecurityRuntime {
         self.allowlists[agentID] = entries
     }
 
-    /// Adds (or replaces, by id) one rule.
+    /// Adds (or replaces, by id) one rule; with a store, inside one read-modify-write.
     /// - Parameters:
     ///   - entry: Rule.
     ///   - agentID: Agent id.
     public func addExecAllowlistEntry(_ entry: ExecAllowlistEntry, agentID: String = SecurityRuntime.defaultAgentID) throws {
-        var entries = try self.loadedAllowlist(agentID)
-        entries.removeAll { $0.id == entry.id }
-        entries.append(entry)
-        try self.setExecAllowlist(entries, agentID: agentID)
+        try self.updateAllowlist(agentID) { entries in
+            var next = entries
+            next.removeAll { $0.id == entry.id }
+            next.append(entry)
+            return next
+        }
     }
 
     /// Records an "always allow" decision for an approved argv command: stores a generated grant
@@ -194,7 +256,7 @@ public actor SecurityRuntime {
     ///   - agentID: Agent id.
     ///   - environment: Environment whose `PATH` is searched.
     /// - Returns: The stored grant, or `nil` when no durable grant is allowed (blocked wrappers,
-    ///   interpreter-like targets, unresolved executables).
+    ///   shells, carriers, interpreter-like targets, unresolved executables).
     @discardableResult
     public func recordAllowAlways(
         argv: [String],
@@ -209,45 +271,70 @@ public actor SecurityRuntime {
         else {
             return nil
         }
-        var entries = try self.loadedAllowlist(agentID)
-        if let existing = entries.first(where: { $0.pattern == grant.pattern && $0.argPattern == grant.argPattern }) {
-            return existing
+        var stored = grant
+        try self.updateAllowlist(agentID) { entries in
+            if let existing = entries.first(where: { $0.pattern == grant.pattern && $0.argPattern == grant.argPattern }) {
+                stored = existing
+                return nil
+            }
+            return entries + [grant]
         }
-        entries.append(grant)
-        try self.setExecAllowlist(entries, agentID: agentID)
-        return grant
+        return stored
     }
 
-    /// Matches an argv command against an agent's allowlist and records the use on the rule.
+    /// Matches an argv command against an agent's current allowlist and records the use on the
+    /// matching rules.
+    ///
+    /// With a store, the allowlist is re-read first (a rule revoked elsewhere never matches), and the
+    /// usage write only patches `lastUsed*` on stored rules with the same pattern and `argPattern`
+    /// inside one read-modify-write; it never re-adds a rule revoked in the meantime. A
+    /// `<shell> -c <payload>` command is matched through its payload when no rule authorizes the
+    /// shell itself.
     /// - Parameters:
     ///   - argv: Command argv.
     ///   - cwd: Working directory.
     ///   - agentID: Agent id.
     ///   - environment: Environment whose `PATH` is searched.
-    /// - Returns: The matching rule (with updated usage), or `nil`.
+    /// - Returns: The (first) matching rule with updated usage, or `nil`.
     public func evaluateExec(
         argv: [String],
         cwd: String? = nil,
         agentID: String = SecurityRuntime.defaultAgentID,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> ExecAllowlistEntry? {
-        var entries = try self.loadedAllowlist(agentID)
-        let resolution = ExecCommandResolution.resolve(argv: argv, cwd: cwd ?? ExecCommandResolution.canonicalApprovalCwd(nil), environment: environment)
-        guard var match = ExecAllowlistMatcher.match(entries: entries, resolution: resolution) else {
+        let entries = try self.loadedAllowlist(agentID)
+        guard let resolution = ExecCommandResolution.resolve(
+            argv: argv,
+            cwd: cwd ?? ExecCommandResolution.canonicalApprovalCwd(nil),
+            environment: environment
+        ) else {
             return nil
         }
-        match.lastUsedAt = OpenClawClock.nowMs()
-        match.lastUsedCommand = argv.joined(separator: " ")
-        match.lastResolvedPath = resolution?.resolvedRealPath ?? resolution?.resolvedPath
-        if let index = entries.firstIndex(where: { $0.id == match.id }) {
-            entries[index] = match
-            // Usage metadata is best effort; a failed write never blocks an allowed command.
-            try? self.setExecAllowlist(entries, agentID: agentID)
+        let matches = ExecAllowlistMatcher.matchIncludingShellPayload(entries: entries, resolution: resolution, environment: environment)
+        guard var first = matches.first else {
+            return nil
         }
-        return match
+        let usedAt = OpenClawClock.nowMs()
+        let command = argv.joined(separator: " ")
+        let resolvedPath = resolution.resolvedRealPath ?? resolution.resolvedPath
+        let keys = Set(matches.map(Self.matchKey))
+        func recordingUse(_ entry: ExecAllowlistEntry) -> ExecAllowlistEntry {
+            var updated = entry
+            updated.lastUsedAt = usedAt
+            updated.lastUsedCommand = command
+            updated.lastResolvedPath = resolvedPath
+            return updated
+        }
+        // Usage metadata is best effort; a failed write never blocks an allowed command.
+        _ = try? self.updateAllowlist(agentID) { stored in
+            guard stored.contains(where: { keys.contains(Self.matchKey($0)) }) else { return nil }
+            return stored.map { keys.contains(Self.matchKey($0)) ? recordingUse($0) : $0 }
+        }
+        first = recordingUse(first)
+        return first
     }
 
-    /// A snapshot evaluator for an agent's allowlist.
+    /// A snapshot evaluator for an agent's current allowlist.
     /// - Parameters:
     ///   - agentID: Agent id.
     ///   - cwd: Working directory.
@@ -261,12 +348,35 @@ public actor SecurityRuntime {
         ExecAllowlistEvaluator(entries: try self.loadedAllowlist(agentID), cwd: cwd, environment: environment)
     }
 
+    /// Rule identity for usage recording (upstream `buildAllowlistEntryMatchKey`): ids are not
+    /// stable for stored entries without one.
+    private static func matchKey(_ entry: ExecAllowlistEntry) -> String {
+        "\(entry.pattern.utf8.count)\u{0}\(entry.pattern)\u{0}\(entry.argPattern.map { "1\($0)" } ?? "0")"
+    }
+
     private func loadedAllowlist(_ agentID: String) throws -> [ExecAllowlistEntry] {
-        if let cached = self.allowlists[agentID] {
-            return cached
+        guard let store = self.allowlistStore else {
+            return self.allowlists[agentID] ?? []
         }
-        let loaded = try self.allowlistStore?.loadAllowlist(agentID: agentID) ?? []
+        // The store is shared with other writers: never serve a stale copy.
+        let loaded = try store.loadAllowlist(agentID: agentID)
         self.allowlists[agentID] = loaded
         return loaded
+    }
+
+    @discardableResult
+    private func updateAllowlist(
+        _ agentID: String,
+        _ transform: ([ExecAllowlistEntry]) throws -> [ExecAllowlistEntry]?
+    ) throws -> [ExecAllowlistEntry] {
+        guard let store = self.allowlistStore else {
+            let current = self.allowlists[agentID] ?? []
+            guard let next = try transform(current) else { return current }
+            self.allowlists[agentID] = next
+            return next
+        }
+        let stored = try store.updateAllowlist(agentID: agentID, transform)
+        self.allowlists[agentID] = stored
+        return stored
     }
 }

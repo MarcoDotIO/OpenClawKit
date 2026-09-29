@@ -339,4 +339,115 @@ struct CoreConfigIntegrationTests {
         #expect(populatedHost?["root"]?.stringValue == legacyRoot.path)
         #expect(populatedHost?["enabled"]?.boolValue == true)
     }
+
+    // MARK: Gateway import and projection
+
+    @Test
+    func gatewayImportKeepsAuthoredValuesAndRoundTripsUnchanged() throws {
+        let json = #"""
+        {"gateway": {"port": 19001, "mode": "remote", "bind": "lan",
+                     "auth": {"mode": "password", "password": "${GW_PW}", "rateLimit": {"maxAttempts": 1.5, "windowMs": 60000}},
+                     "http": {"securityHeaders": {"strictTransportSecurity": false}},
+                     "remote": {"url": "wss://gw.example.com"}}}
+        """#
+        let original = try OpenClawConfigDocument.decode(Data(json.utf8))
+        let collector = ConfigDecodeIssueCollector()
+        let config = OpenClawConfig(document: original, issues: collector)
+        #expect(config.gateway.port == 19001)
+        #expect(config.gateway.mode == .remote)
+        #expect(config.gateway.bind == .lan)
+        #expect(config.gateway.auth.mode == .password)
+        #expect(config.gateway.http?.securityHeaders?.strictTransportSecurityDisabled == true)
+        #expect(config.gateway.http?.securityHeaders?.strictTransportSecurity == nil)
+        #expect(config.gateway.auth.rateLimit?.windowMs == 60000)
+        // Only the malformed leaf is dropped, and it is reported.
+        #expect(config.gateway.auth.rateLimit?.maxAttempts == nil)
+        #expect(collector.issues.contains { $0.path.contains("maxAttempts") })
+
+        // A no-change round trip keeps the authored gateway exactly.
+        let projected = config.documentProjection(preserving: original)
+        #expect(projected.jsonObject["gateway"] == original.jsonObject["gateway"])
+
+        // A change writes only the changed key.
+        var changed = config
+        changed.gateway.port = 19002
+        let changedGateway = try #require(changed.documentProjection(preserving: original).jsonObject["gateway"]?.dictionaryValue)
+        #expect(changedGateway["port"] == AnyCodable(.int(19002)))
+        #expect(changedGateway["mode"]?.stringValue == "remote")
+        #expect(changedGateway["bind"]?.stringValue == "lan")
+        #expect(changedGateway["auth"] == original.jsonObject["gateway"]?.dictionaryValue?["auth"])
+        #expect(changedGateway["http"]?.dictionaryValue?["securityHeaders"]?.dictionaryValue?["strictTransportSecurity"]?.boolValue == false)
+
+        // Removing a block in the SDK config removes it from the projection.
+        var removed = config
+        removed.gateway.remote = nil
+        #expect(removed.documentProjection(preserving: original).jsonObject["gateway"]?.dictionaryValue?["remote"] == nil)
+    }
+
+    @Test
+    func gatewayProjectionNeverAddsDefaultsTheDocumentOmitted() throws {
+        let original = try OpenClawConfigDocument.decode(Data(#"{"gateway": {"auth": {"mode": "token", "token": "abc"}}}"#.utf8))
+        let config = OpenClawConfig(document: original)
+        let gateway = try #require(config.documentProjection(preserving: original).jsonObject["gateway"]?.dictionaryValue)
+        #expect(gateway["mode"] == nil)
+        #expect(gateway["port"] == nil)
+        #expect(gateway["bind"] == nil)
+        #expect(gateway == original.jsonObject["gateway"]?.dictionaryValue)
+        // HSTS strings still round-trip through the SDK type.
+        let headers = GatewayHTTPSecurityHeadersConfig(strictTransportSecurity: "max-age=31536000")
+        let decoded = try JSONDecoder().decode(GatewayHTTPSecurityHeadersConfig.self, from: try JSONEncoder().encode(headers))
+        #expect(decoded == headers)
+    }
+
+    @Test
+    func malformedSectionLeavesAreReportedWithoutDroppingTheSection() throws {
+        let json = #"{"gateway": {"port": "19001x", "mode": "remote"}, "secrets": {"defaults": {"env": 7, "file": "vault"}}}"#
+        let original = try OpenClawConfigDocument.decode(Data(json.utf8))
+        let collector = ConfigDecodeIssueCollector()
+        let config = OpenClawConfig(document: original, issues: collector)
+        #expect(config.gateway.mode == .remote)
+        #expect(config.gateway.port == GatewayConfig.defaultPort)
+        #expect(config.secrets.defaults.file == "vault")
+        #expect(collector.issues.contains { $0.path.hasSuffix("port") })
+        #expect(collector.issues.contains { $0.path.hasSuffix("env") })
+        // The malformed authored port is kept on a no-change projection.
+        #expect(config.documentProjection(preserving: original).jsonObject["gateway"] == original.jsonObject["gateway"])
+    }
+
+    // MARK: SDK-native config store
+
+    @Test
+    func configStoreSaveRemovesClearedSectionsButKeepsForeignAndUndecodableOnes() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("openclawkit-configstore-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("openclaw-sdk.json")
+        try Data(#"""
+        {"meta": {"lastTouchedVersion": "2026.9.6"}, "wizard": {"lastRunMode": "local"},
+         "mcp": {"servers": {"fs": {"command": "/usr/local/bin/mcp-fs"}}},
+         "skills": {"entries": {"weather": {"enabled": true}}},
+         "memory": 7,
+         "plugins": {"entries": {"canvas": {"enabled": true}}}}
+        """#.utf8).write(to: url)
+        let store = ConfigStore(fileURL: url, cacheTTLms: 0)
+        var config = try await store.load()
+        #expect(config.mcp?.servers?["fs"] != nil)
+        #expect(config.memory == nil)
+        config.mcp = nil
+        config.plugins = nil
+        try await store.save(config)
+
+        let reloaded = try await store.load()
+        #expect(reloaded.mcp == nil)
+        #expect(reloaded.plugins == nil)
+        #expect(reloaded.skills?.entries?["weather"] != nil)
+        let written = try #require(try JSONDecoder().decode(AnyCodable.self, from: Data(contentsOf: url)).dictionaryValue)
+        #expect(written["mcp"] == nil)
+        #expect(written["plugins"] == nil)
+        #expect(written["meta"] != nil)
+        #expect(written["wizard"] != nil)
+        // A malformed section that loaded as nil is kept as written, not silently deleted.
+        #expect(written["memory"] == AnyCodable(.int(7)))
+        #expect(ConfigStore.ownedTopLevelKeys.isSuperset(of: ["mcp", "skills", "memory", "plugins", "gateway", "runtime"]))
+    }
 }
