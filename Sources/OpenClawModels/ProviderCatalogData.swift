@@ -520,7 +520,7 @@ enum ProviderCatalogGeneratedData {
       "id": "apple-fm",
       "pluginId": "apple-fm",
       "displayName": "Apple Foundation Models",
-      "aliases": ["foundation"],
+      "aliases": ["foundation","apple-foundation"],
       "capabilities": ["text"],
       "auth": null,
       "authHeader": false,
@@ -541,7 +541,7 @@ enum ProviderCatalogGeneratedData {
             "name": "Apple Foundation Models",
             "input": ["text"],
             "reasoning": false,
-            "contextWindow": 4096,
+            "contextWindow": 8192,
             "maxTokens": 1024,
             "cost": {"input":0,"output":0,"cacheRead":0,"cacheWrite":0},
             "compat": {"supportsDeveloperRole":false,"supportsUsageInStreaming":true,"supportsTools":true,"supportsJsonSchemaResponseFormat":true}
@@ -555,7 +555,8 @@ enum ProviderCatalogGeneratedData {
             "maxTokens": 1024,
             "cost": {"input":0,"output":0,"cacheRead":0,"cacheWrite":0},
             "compat": {"supportsDeveloperRole":false,"supportsUsageInStreaming":true,"supportsTools":true,"supportsJsonSchemaResponseFormat":true},
-            "tags": ["sdk-local","network-required"]
+            "tags": ["sdk-local","network-required"],
+            "params": {"network":"required"}
           }
         ]
       }
@@ -5288,9 +5289,21 @@ enum ProviderCatalogGeneratedData {
       "distribution": "bundled",
       "sdkLocal": true,
       "nativeRuntimeAvailable": true
+    },
+    {
+      "id": "apple-media-understanding",
+      "displayName": "Apple Media Understanding",
+      "aliases": [],
+      "capabilities": ["media-understanding"],
+      "authMethods": ["local"],
+      "envVars": [],
+      "distribution": "bundled",
+      "sdkLocal": true,
+      "nativeRuntimeAvailable": true
     }
   ],
   "aliases": {
+    "apple-foundation": {"provider":"apple-fm"},
     "aws-bedrock": {"provider":"amazon-bedrock","legacy":true},
     "azure-openai-responses": {"provider":"openai","api":"azure-openai-responses"},
     "bailian-token-plan": {"provider":"qwen-token-plan"},
@@ -6365,7 +6378,8 @@ enum ProviderCatalogGeneratedData {
       "deepinfra",
       "deepgram",
       "elevenlabs",
-      "senseaudio"
+      "senseaudio",
+      "apple-media-understanding"
     ],
     "embedding": ["openai","openai-compatible","gemini","mistral","bedrock","github-copilot","ollama","lmstudio","deepinfra","local","voyage"],
     "web-search": [
@@ -6398,6 +6412,11 @@ enum ProviderCatalogGeneratedData {
       "defaultModels": {"image":"claude-opus-5"},
       "autoPriority": {"image":20},
       "nativeDocumentInputs": ["pdf"]
+    },
+    "apple-media-understanding": {
+      "providerId": "apple-media-understanding",
+      "capabilities": ["image","audio","video"],
+      "defaultModels": {"image":"vision-ocr","audio":"speech-transcriber","video":"media-intelligence"}
     },
     "codex": {"pluginId":"codex","capabilities":["image"],"defaultModels":{"image":"gpt-6-astra"}},
     "deepgram": {"pluginId":"deepgram","capabilities":["audio"],"defaultModels":{"audio":"nova-3"},"autoPriority":{"audio":30}},

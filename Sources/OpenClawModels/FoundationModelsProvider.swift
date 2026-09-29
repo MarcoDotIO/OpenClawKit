@@ -186,7 +186,8 @@ public struct FoundationModelsProvider: ModelProvider {
     ///   ``FoundationModelsError`` for framework and validation failures, `CancellationError` when
     ///   cancelled (a cancelled request never returns tool calls).
     public func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
-        try await self.generateDetailed(request).response
+        // In-process tool executions ride along as `executedToolCalls` so agent loops can record them.
+        try await self.generateDetailed(request).responseWithExecutedToolCalls
     }
 
     /// Generates a response and reports the backend used and any in-process tool executions.
@@ -225,7 +226,7 @@ public struct FoundationModelsProvider: ModelProvider {
             }
             let task = Task {
                 do {
-                    let response = try await self.execute(request, sink: sink).response
+                    let response = try await self.execute(request, sink: sink).responseWithExecutedToolCalls
                     try Task.checkCancellation()
                     if let reasoning = response.reasoningText, !reasoning.isEmpty {
                         continuation.yield(.reasoningDelta(reasoning))

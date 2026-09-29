@@ -1,3 +1,6 @@
+#if compiler(>=6.4) && canImport(CoreSpotlight) && canImport(FoundationModels) && !os(tvOS) && !os(watchOS) && arch(arm64)
+import CoreSpotlight
+#endif
 import Foundation
 import OpenClawAgents
 import OpenClawCore
@@ -27,14 +30,28 @@ public enum MemoryToolRegistration {
     /// - Parameters:
     ///   - registry: Tool registry.
     ///   - includeSystemFiles: Also search the user's files.
+    ///   - indexDelegate: Optional `CSSearchableIndexDelegate` (for example the
+    ///     `SpotlightMemoryIndexDelegate` assigned to a `SpotlightMemoryIndex`) that hydrates app-indexed
+    ///     memory items. Other objects are ignored. The same object can be passed to
+    ///     `FoundationModelsSpotlightSearchOptions(searchableIndexDelegate:)` for Apple FM sessions.
     /// - Returns: `true` when the tool was registered.
     @discardableResult
-    public static func registerSpotlightSearch(into registry: AgentToolRegistry, includeSystemFiles: Bool = false) async -> Bool {
+    public static func registerSpotlightSearch(
+        into registry: AgentToolRegistry,
+        includeSystemFiles: Bool = false,
+        indexDelegate: (any AnyObject & Sendable)? = nil
+    ) async -> Bool {
         #if compiler(>=6.4) && canImport(CoreSpotlight) && canImport(FoundationModels) && !os(tvOS) && !os(watchOS) && arch(arm64)
         if #available(iOS 27.0, macOS 27.0, visionOS 27.0, *) {
-            let tool = includeSystemFiles
-                ? SpotlightSearchAgentTool(fetchAttributes: [.title, .textContent, .path], includeFiles: true)
-                : SpotlightSearchAgentTool()
+            let delegate = indexDelegate as? any CSSearchableIndexDelegate
+            let tool: SpotlightSearchAgentTool
+            if includeSystemFiles {
+                tool = SpotlightSearchAgentTool(fetchAttributes: [.title, .textContent, .path], includeFiles: true, indexDelegate: delegate)
+            } else if let delegate {
+                tool = SpotlightSearchAgentTool(fetchAttributes: [.title, .textContent, .domainIdentifier], indexDelegate: delegate)
+            } else {
+                tool = SpotlightSearchAgentTool()
+            }
             await registry.register(tool)
             return true
         }

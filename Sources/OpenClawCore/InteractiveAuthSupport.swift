@@ -56,16 +56,18 @@ public struct InteractiveAuthFlowDescriptor: Sendable, Equatable {
 
 /// Shared catalog of provider login flows exposed to host apps.
 public enum InteractiveAuthFlowCatalog {
-    /// Known interactive auth descriptors keyed by provider ID.
-    public static let descriptors: [InteractiveAuthFlowDescriptor] = [
-        InteractiveAuthFlowDescriptor(
-            providerID: "openai-codex",
-            displayName: "OpenAI Codex",
-            kind: .browserOAuth,
-            authorizationURL: URL(string: "https://auth.openai.com/oauth/authorize"),
-            callbackURL: URL(string: "http://127.0.0.1:1455/oauth-callback"),
-            scopes: ["openid", "profile", "email", "offline_access"]
-        ),
+    /// Known interactive auth descriptors: the upstream 2026.9.6 flows
+    /// (``upstreamProviderDescriptors``: OpenAI ChatGPT login and device pairing, xAI, OpenRouter,
+    /// Chutes) followed by the SDK device-code flows (GitHub Copilot, Qwen Portal, MiniMax Portal).
+    ///
+    /// - Note: 2026.3.0 merged `openai-codex` into `openai`. The ChatGPT browser flow is listed under
+    ///   `openai` and uses the upstream loopback callback `http://localhost:1455/auth/callback`
+    ///   (previously `http://127.0.0.1:1455/oauth-callback`); `descriptor(for: "openai-codex")` still
+    ///   resolves to it.
+    public static let descriptors: [InteractiveAuthFlowDescriptor] = upstreamProviderDescriptors + sdkDeviceCodeDescriptors
+
+    /// SDK device-code flows not covered by the upstream descriptors.
+    static let sdkDeviceCodeDescriptors: [InteractiveAuthFlowDescriptor] = [
         InteractiveAuthFlowDescriptor(
             providerID: "github-copilot",
             displayName: "GitHub Copilot",
@@ -95,10 +97,10 @@ public enum InteractiveAuthFlowCatalog {
         ),
     ]
 
-    /// Returns one auth-flow descriptor for the requested provider identifier.
+    /// Returns the primary auth-flow descriptor for a provider identifier, resolving legacy aliases
+    /// (`openai-codex` and `codex` resolve to the `openai` ChatGPT browser login).
     public static func descriptor(for providerID: String) -> InteractiveAuthFlowDescriptor? {
-        let normalized = providerID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return self.descriptors.first(where: { $0.providerID == normalized })
+        self.descriptors(forProvider: providerID).first
     }
 }
 

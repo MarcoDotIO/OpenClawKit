@@ -319,11 +319,22 @@ public actor SubagentManager {
         )
         self.records[childKey] = record
         self.order.append(childKey)
+        await self.emitSubagentHook(
+            .subagentSpawned,
+            SubagentHookEvent(childSessionKey: childKey, agentId: agentID, runId: runID, label: params.label ?? taskName, mode: context.rawValue),
+            parentSessionKey: parentSessionKey
+        )
         Task {
             let outcome = await self.runtime.wait(runID: runID)
             await self.complete(childKey: childKey, runID: runID, outcome: outcome, params: params)
         }
         return record
+    }
+
+    /// Emits a typed sub-agent hook on the runtime's shared registry.
+    private func emitSubagentHook(_ hook: HookName, _ event: SubagentHookEvent, parentSessionKey: String) async {
+        guard let registry = self.runtime.hookRegistry, await registry.hasHandlers(for: hook) else { return }
+        await registry.emitObserving(hook, event: event, context: HookContext(runID: event.runId, sessionKey: parentSessionKey, agentID: event.agentId))
     }
 
     /// Children of a parent, oldest first.
@@ -481,6 +492,18 @@ public actor SubagentManager {
         if let engine = await self.runtime.contextEngines.selected() {
             await engine.onSubagentEnded(childSessionKey: childKey, reason: .completed)
         }
+        await self.emitSubagentHook(
+            .subagentEnded,
+            SubagentHookEvent(
+                childSessionKey: childKey,
+                runId: runID,
+                label: record.taskName,
+                mode: record.context.rawValue,
+                outcome: status,
+                error: outcome?.error
+            ),
+            parentSessionKey: record.parentSessionKey
+        )
         let announce = params?.expectsCompletionMessage ?? true
         if announce, status != "killed" {
             let event = Self.completionEvent(record: record, outcome: outcome)

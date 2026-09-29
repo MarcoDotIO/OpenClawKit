@@ -87,7 +87,7 @@
               "cacheRead": 0,
               "cacheWrite": 0
             },
-            "contextWindow": 4096,
+            "contextWindow": 8192,
             "maxTokens": 1024,
             "compat": {
               "supportsTools": true,
@@ -121,7 +121,10 @@
             "tags": [
               "sdk-local",
               "network-required"
-            ]
+            ],
+            "params": {
+              "network": "required"
+            }
           }
         ]
       }
@@ -1200,6 +1203,18 @@
       "authMethods": [
         "local"
       ]
+    },
+    {
+      "id": "apple-media-understanding",
+      "displayName": "Apple Media Understanding",
+      "sdkLocal": true,
+      "nativeRuntimeAvailable": true,
+      "capabilities": [
+        "media-understanding"
+      ],
+      "authMethods": [
+        "local"
+      ]
     }
   ],
   "providerAliases": {
@@ -1222,6 +1237,9 @@
     "foundation": {
       "provider": "apple-fm",
       "legacy": true
+    },
+    "apple-foundation": {
+      "provider": "apple-fm"
     },
     "gemini": {
       "provider": "google",
@@ -1257,6 +1275,21 @@
   "authAliases": {
     "byteplus-plan": "byteplus",
     "volcengine-plan": "volcengine"
+  },
+  "mediaUnderstandingProviderMetadata": {
+    "apple-media-understanding": {
+      "providerId": "apple-media-understanding",
+      "capabilities": [
+        "image",
+        "audio",
+        "video"
+      ],
+      "defaultModels": {
+        "image": "vision-ocr",
+        "audio": "speech-transcriber",
+        "video": "media-intelligence"
+      }
+    }
   },
   "modelIdNormalization": {
     "openai": {

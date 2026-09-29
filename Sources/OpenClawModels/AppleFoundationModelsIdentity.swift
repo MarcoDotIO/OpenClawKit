@@ -334,7 +334,8 @@ public extension FoundationModelsProvider {
                     maxTokens: self.defaultMaxTokens,
                     compat: self.upstreamCompat
                 ),
-            ]
+            ],
+            timeoutSeconds: self.defaultTimeoutSeconds
         )
     }
 
@@ -399,8 +400,11 @@ public extension FoundationModelsProvider {
         )
     }
 
-    /// Upstream compat flags representable by ``ModelCompatConfig`` today.
+    /// Upstream compat flags (`supportsTools`, `supportsJsonSchemaResponseFormat`,
+    /// `supportsDeveloperRole: false`, `supportsUsageInStreaming`).
     private static var upstreamCompat: ModelCompatConfig {
-        ModelCompatConfig(supportsDeveloperRole: false, supportsUsageInStreaming: true, supportsTools: true)
+        var compat = ModelCompatConfig(supportsDeveloperRole: false, supportsUsageInStreaming: true, supportsTools: true)
+        compat.supportsJSONSchemaResponseFormat = true
+        return compat
     }
 }

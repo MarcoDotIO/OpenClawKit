@@ -321,9 +321,14 @@ struct ProviderRuntimeAuthTests {
 
     @Test
     func interactiveAuthCatalogIncludesBrowserAndDeviceCodeFlows() {
+        // `openai-codex` merged into `openai`: the legacy id resolves to the ChatGPT browser login with
+        // the upstream loopback callback.
         let codex = InteractiveAuthFlowCatalog.descriptor(for: "openai-codex")
+        #expect(codex?.providerID == "openai")
         #expect(codex?.kind == .browserOAuth)
-        #expect(codex?.callbackURL?.absoluteString == "http://127.0.0.1:1455/oauth-callback")
+        #expect(codex?.callbackURL?.absoluteString == "http://localhost:1455/auth/callback")
+        #expect(InteractiveAuthFlowCatalog.descriptors.contains { $0.providerID == "openai-codex" } == false)
+        #expect(InteractiveAuthFlowCatalog.descriptor(for: "grok")?.providerID == "xai")
 
         let copilot = InteractiveAuthFlowCatalog.descriptor(for: "github-copilot")
         #expect(copilot?.kind == .deviceCode)

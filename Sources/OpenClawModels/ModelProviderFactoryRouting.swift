@@ -49,6 +49,10 @@ extension ModelProviderFactory {
     ///   transport per request.
     static func makeRuntimeProvider(providerID: String, config: ModelProviderConfig) throws -> any ModelProvider {
         let normalizedProviderID = OpenClawReferenceProviderCatalog.normalize(providerID: providerID)
+        // Apple Foundation Models runs natively: every alias routes here whatever the placeholder `api`.
+        if FoundationModelsProvider.handles(providerID: providerID) || FoundationModelsProvider.handles(providerID: normalizedProviderID) {
+            return FoundationModelsProvider()
+        }
         var config = config
         if OpenAIRouteResolution.isLegacyCodexProviderID(providerID) || OpenAIRouteResolution.isLegacyCodexProviderID(normalizedProviderID) {
             config = OpenAIRouteResolution.migrateLegacyCodexConfig(config)
@@ -144,7 +148,7 @@ extension ModelProviderFactory {
         case GeminiModelProvider.providerID, "google", "google-vertex", "google-antigravity", "google-gemini-cli":
             let googleAPI: ModelAPI = api == .googleVertex || normalizedProviderID == "google-vertex" ? .googleVertex : .googleGenerativeAI
             return GoogleGenerativeAIModelProvider(id: normalizedProviderID, configuration: legacy, runtime: runtime(googleAPI))
-        case FoundationModelsProvider.providerID, "apple-fm", "foundation":
+        case let id where FoundationModelsProvider.handles(providerID: id):
             return FoundationModelsProvider()
         case LocalModelProvider.providerID:
             return LocalModelProvider(

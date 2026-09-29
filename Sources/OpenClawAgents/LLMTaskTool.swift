@@ -252,14 +252,12 @@ private extension LLMTaskTool {
                 modelID: self.modelID,
                 preferredAuthProfileID: self.authProfileID,
                 metadata: Self.metadata(for: self.thinkingLevel),
+                // Providers resolve the native reasoning effort from `thinkingLevel`
+                // (ReasoningEffortResolver); no lossy effort mapping happens here.
                 policy: ModelGenerationPolicy(
                     maxTokens: self.maxTokens,
                     temperature: self.temperature,
                     requestTimeoutMs: self.timeoutMs,
-                    reasoningEffort: Self.reasoningEffort(
-                        from: self.thinkingLevel,
-                        reasoningLevel: reasoningLevel
-                    ),
                     thinkingLevel: self.thinkingLevel,
                     reasoningLevel: reasoningLevel
                 )
@@ -314,25 +312,6 @@ private extension LLMTaskTool {
                 return .xhigh
             }
             return .high
-        }
-
-        private static func reasoningEffort(
-            from thinkingLevel: ThinkLevel?,
-            reasoningLevel: ReasoningLevel?
-        ) -> ModelReasoningEffort? {
-            if reasoningLevel == .off {
-                return nil
-            }
-            switch thinkingLevel {
-            case .minimal, .low:
-                return .low
-            case .medium:
-                return .medium
-            case .high, .xhigh, .max, .ultra:
-                return .high
-            case .off, .adaptive, nil:
-                return nil
-            }
         }
 
         private static func schema(_ value: AnyCodable?) throws -> [String: AnyCodable]? {

@@ -91,7 +91,7 @@ struct LLMTaskToolTests {
         #expect(request.policy.maxTokens == 120)
         #expect(request.policy.requestTimeoutMs == 4_000)
         #expect(request.policy.thinkingLevel == .xhigh)
-        #expect(request.policy.reasoningEffort == .high)
+        #expect(request.policy.reasoningEffort == nil)
         #expect(request.metadata["thinkingLevel"] == "xhigh")
         #expect(request.systemPrompt?.contains("Return exactly one JSON value") == true)
         #expect(request.prompt.contains("## Input JSON"))
@@ -382,11 +382,11 @@ struct LLMTaskToolTests {
         #expect(request.policy.maxTokens == 12)
         #expect(request.policy.requestTimeoutMs == 7)
         #expect(request.policy.thinkingLevel == .high)
-        #expect(request.policy.reasoningEffort == .high)
+        #expect(request.policy.reasoningEffort == nil)
     }
 
     @Test
-    func mapsReasoningEffortAcrossThinkingLevels() async throws {
+    func forwardsThinkingLevelsWithoutLossyEffortMapping() async throws {
         let provider = CapturingProvider(id: "openai-codex", responseText: #"{"ok":true}"#)
         let router = ModelRouter()
         await router.register(provider)
@@ -401,7 +401,7 @@ struct LLMTaskToolTests {
         ])
         let low = try #require(await provider.snapshot())
         #expect(low.policy.thinkingLevel == .low)
-        #expect(low.policy.reasoningEffort == .low)
+        #expect(low.policy.reasoningEffort == nil)
 
         _ = try await tool.execute(arguments: [
             "prompt": AnyCodable("Return JSON"),
@@ -409,7 +409,7 @@ struct LLMTaskToolTests {
         ])
         let medium = try #require(await provider.snapshot())
         #expect(medium.policy.thinkingLevel == .medium)
-        #expect(medium.policy.reasoningEffort == .medium)
+        #expect(medium.policy.reasoningEffort == nil)
 
         _ = try await tool.execute(arguments: [
             "prompt": AnyCodable("Return JSON"),

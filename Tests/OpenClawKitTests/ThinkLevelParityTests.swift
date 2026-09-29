@@ -147,6 +147,7 @@ struct ThinkLevelParityTests {
         let request = try #require(await provider.snapshot())
         #expect(request.policy.thinkingLevel == .max)
         #expect(request.metadata["thinkingLevel"] == "max")
-        #expect(request.policy.reasoningEffort == .high)
+        // Providers resolve native effort from `thinkingLevel`; the runtime sends no lossy effort hint.
+        #expect(request.policy.reasoningEffort == nil)
     }
 }

@@ -38,8 +38,17 @@ public struct SpotlightSearchAgentTool: AgentTool {
     ///   - fetchAttributes: Attributes fetched for CoreSpotlight items.
     ///   - includeFiles: Also search the user's files (requires explicit consent).
     ///   - maximumResponseSize: Response size cap.
-    public init(fetchAttributes: [SearchableItemAttribute], includeFiles: Bool = false, maximumResponseSize: Int? = nil) {
-        var sources: [SearchSource] = [.coreSpotlight(CoreSpotlightSource(fetchAttributes: fetchAttributes))]
+    ///   - indexDelegate: Optional `CSSearchableIndexDelegate` that hydrates app-indexed items, for
+    ///     example the ``SpotlightMemoryIndexDelegate`` assigned to a ``SpotlightMemoryIndex``.
+    public init(
+        fetchAttributes: [SearchableItemAttribute],
+        includeFiles: Bool = false,
+        maximumResponseSize: Int? = nil,
+        indexDelegate: (any CSSearchableIndexDelegate)? = nil
+    ) {
+        let coreSpotlight = indexDelegate.map { CoreSpotlightSource(searchableIndexDelegate: $0, fetchAttributes: fetchAttributes) }
+            ?? CoreSpotlightSource(fetchAttributes: fetchAttributes)
+        var sources: [SearchSource] = [.coreSpotlight(coreSpotlight)]
         if includeFiles {
             sources.append(.files(FileSource(fetchAttributes: fetchAttributes)))
         }

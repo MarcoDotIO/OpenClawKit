@@ -346,17 +346,24 @@ extension ModelCatalogModel {
             id: definition.id,
             name: definition.name,
             api: definition.api,
+            baseURL: definition.baseURL,
             headers: definition.headers.isEmpty ? nil : definition.headers,
             input: definition.input,
             reasoning: definition.reasoning,
             contextWindow: definition.contextWindow > 0 ? definition.contextWindow : nil,
+            contextTokens: definition.contextTokens,
             maxTokens: definition.maxTokens > 0 ? definition.maxTokens : nil,
-            cost: ModelCatalogCost(
-                input: definition.cost.input,
-                output: definition.cost.output,
-                cacheRead: definition.cost.cacheRead,
-                cacheWrite: definition.cost.cacheWrite
-            )
+            thinkingLevelMap: definition.thinkingLevelMap.flatMap { ModelCatalogJSONBridge.convert($0, to: ModelCatalogThinkingLevelMap.self) },
+            cost: ModelCatalogJSONBridge.convert(definition.cost, to: ModelCatalogCost.self)
+                ?? ModelCatalogCost(
+                    input: definition.cost.input,
+                    output: definition.cost.output,
+                    cacheRead: definition.cost.cacheRead,
+                    cacheWrite: definition.cost.cacheWrite
+                ),
+            compat: definition.compat.flatMap { ModelCatalogJSONBridge.convert($0, to: ModelCatalogCompatConfig.self) },
+            mediaInput: definition.mediaInput.flatMap { ModelCatalogJSONBridge.convert($0, to: ModelCatalogMediaInputConfig.self) },
+            params: definition.params
         )
     }
 }

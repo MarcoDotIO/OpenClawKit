@@ -365,6 +365,8 @@ function normalizeModel(value) {
   if (replacedBy) model.replacedBy = replacedBy;
   const tags = trimmedList(value.tags);
   if (tags.length > 0) model.tags = tags;
+  // SDK rows may declare provider request params (for example Private Cloud Compute's network requirement).
+  if (isRecord(value.params) && Object.keys(value.params).length > 0) model.params = value.params;
   return model;
 }
 
@@ -804,6 +806,10 @@ function buildCatalog(upstream, overrides) {
     for (const [provider, metadata] of Object.entries(manifest.mediaUnderstandingProviderMetadata ?? {})) {
       if (isRecord(metadata)) mediaUnderstanding[lower(provider)] = { pluginId: manifest.id, ...metadata };
     }
+  }
+  // SDK-local media-understanding services (for example Apple's on-device Vision/Speech/MediaIntelligence).
+  for (const [provider, metadata] of Object.entries(overrides.mediaUnderstandingProviderMetadata ?? {})) {
+    if (isRecord(metadata)) mediaUnderstanding[lower(provider)] = { ...metadata };
   }
   for (const [provider, policy] of Object.entries(overrides.modelIdNormalization ?? {})) {
     const normalized = normalizeModelIdPolicy(policy);

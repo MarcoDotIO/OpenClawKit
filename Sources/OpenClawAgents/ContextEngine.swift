@@ -705,6 +705,9 @@ public enum CompactionPlanner {
     /// - Parameter error: Provider error.
     /// - Returns: `true` for context-overflow errors.
     public static func isContextOverflowError(_ error: Error) -> Bool {
+        if let reporting = error as? any ModelContextOverflowReporting {
+            return reporting.isContextOverflow
+        }
         let description = [
             (error as? LocalizedError)?.errorDescription,
             String(describing: error),
@@ -719,6 +722,8 @@ public enum CompactionPlanner {
             "ollama error: context length exceeded",
             "maximum context length",
             "prompt is too long",
+            "context_overflow",
+            "exceeded model context window size",
         ].contains { description.contains($0) }
     }
 }
