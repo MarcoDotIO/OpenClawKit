@@ -10,22 +10,28 @@ public protocol OpenClawChatGatewayRequestSending: Sendable {
     func sendChatGatewayRequest(_ request: OpenClawChatGatewayRequest) async throws -> Data
 }
 
-/// Client timeouts for requests that ask for none (`timeoutMs == 0`, e.g. `sessions.compact`).
-private let chatGatewayUnboundedRequestTimeoutMs: Double = 10 * 60 * 1000
-
 extension GatewayNodeSession: OpenClawChatGatewayRequestSending {
-    /// Sends a chat gateway request on the session's current connection.
-    public func request(_ request: OpenClawChatGatewayRequest) async throws -> Data {
-        let paramsJSON: String? = if request.params.isEmpty {
-            nil
-        } else {
-            String(decoding: try JSONEncoder().encode(request.params), as: UTF8.self)
-        }
-        let timeoutMs = request.timeoutMs > 0 ? request.timeoutMs : chatGatewayUnboundedRequestTimeoutMs
-        return try await self.request(
+    /// Sends a chat gateway request, optionally bound to a route lease.
+    ///
+    /// A `timeoutMs` of `0` (for example `sessions.compact`) leaves the deadline to the gateway.
+    /// - Parameters:
+    ///   - request: The request to send.
+    ///   - expectedRoute: When set, the request never reconnects and fails with `CancellationError`
+    ///     (or ``GatewayNodeSessionRequestError/routeChangedBeforeDispatch`` when
+    ///     `distinguishPreDispatchRouteChange` is set) if the route is no longer current.
+    ///   - distinguishPreDispatchRouteChange: Report a pre-dispatch route change as a typed error,
+    ///     which proves the request never left the client.
+    public func request(
+        _ request: OpenClawChatGatewayRequest,
+        ifCurrentRoute expectedRoute: GatewayNodeSessionRoute? = nil,
+        distinguishPreDispatchRouteChange: Bool = false) async throws -> Data
+    {
+        try await self.request(
             method: request.method,
-            paramsJSON: paramsJSON,
-            timeoutSeconds: max(1, Int((timeoutMs / 1000).rounded(.up))))
+            params: request.params.isEmpty ? nil : request.params,
+            timeoutMs: request.timeoutMs,
+            ifCurrentRoute: expectedRoute,
+            distinguishPreDispatchRouteChange: distinguishPreDispatchRouteChange)
     }
 
     /// Sends a chat gateway request on the session's current connection.
@@ -35,11 +41,11 @@ extension GatewayNodeSession: OpenClawChatGatewayRequestSending {
 }
 
 extension GatewayChannelActor: OpenClawChatGatewayRequestSending {
-    /// Sends a chat gateway request on the channel.
+    /// Sends a chat gateway request on the channel (`timeoutMs == 0` leaves the deadline to the gateway).
     public func sendChatGatewayRequest(_ request: OpenClawChatGatewayRequest) async throws -> Data {
         try await self.request(
             method: request.method,
             params: request.params.isEmpty ? nil : request.params,
-            timeoutMs: request.timeoutMs > 0 ? request.timeoutMs : chatGatewayUnboundedRequestTimeoutMs)
+            timeoutMs: request.timeoutMs)
     }
 }

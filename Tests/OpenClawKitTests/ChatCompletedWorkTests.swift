@@ -1,6 +1,7 @@
 import Foundation
 import OpenClawKit
 import Testing
+@testable import OpenClawChatStore
 @testable import OpenClawChatUI
 
 @Suite("Completed transcript work")
@@ -211,8 +212,8 @@ struct ChatCompletedWorkTests {
         #expect(refreshed.map(\.id) == decoded.map(\.id))
         #expect(Set(refreshed.map(\.id)).count == 4)
         #expect(Self.work(in: Self.collapse(refreshed)).first?.messages.count == 3)
-        // The OpenClawChatSQLiteTranscriptCache.cacheableMessages copy returns with the OpenClawChatStore port.
-        #expect(OpenClawChatViewModel.dedupeMessages(decoded).count == 4)
+        let cached = OpenClawChatSQLiteTranscriptCache.cacheableMessages(decoded)
+        #expect(OpenClawChatViewModel.dedupeMessages(cached).count == 4)
     }
 
     @Test @MainActor func `phase and boundary metadata survive decode cache sanitize and canonical copies`() throws {
@@ -221,12 +222,12 @@ struct ChatCompletedWorkTests {
          "content":[{"type":"text","text":"Use blue","textSignature":"{\"v\":1,\"phase\":\"commentary\"}"}]}
         """#
         let message = try Self.decode(raw)
-        // The OpenClawChatSQLiteTranscriptCache.cacheableMessages copy returns with the OpenClawChatStore port.
         let copies = [
             message,
             OpenClawChatViewModel.stripInboundMetadata(from: message),
             OpenClawChatViewModel.adoptingCanonicalMessage(message, over: message),
-        ]
+        ] +
+            OpenClawChatSQLiteTranscriptCache.cacheableMessages([message])
         for copy in copies {
             let decoded = try JSONDecoder().decode(OpenClawChatMessage.self, from: JSONEncoder().encode(copy))
             #expect(decoded.phase == "commentary")
@@ -257,8 +258,8 @@ struct ChatCompletedWorkTests {
         let user = Self.message("user", "Check the files", at: 0)
         #expect(OpenClawChatViewModel.hasUnansweredLatestUser(in: [user] + decoded))
 
-        // The OpenClawChatSQLiteTranscriptCache.cacheableMessages copy returns with the OpenClawChatStore port.
-        let copies = [first, OpenClawChatViewModel.adoptingCanonicalMessage(first, over: first)]
+        let copies = [first, OpenClawChatViewModel.adoptingCanonicalMessage(first, over: first)] +
+            OpenClawChatSQLiteTranscriptCache.cacheableMessages([first])
         for copy in copies {
             let encoded = try JSONDecoder().decode(AnyCodable.self, from: JSONEncoder().encode(copy))
             let marker = encoded.dictionaryValue?["openclawStreamFallback"]?.dictionaryValue

@@ -8,6 +8,24 @@ import OpenClawChatUI
 /// OpenClawChatUI in SQLite through GRDB. It ships as a separate product so apps that do not need
 /// offline storage never compile GRDB. SwiftPM still resolves GRDB for every consumer of the
 /// package. The module is Apple-only.
+///
+/// Entry points:
+/// - ``OpenClawClientDatabases``: one installation-wide container (`gateway-cache.sqlite` plus
+///   `client-state.sqlite`) for every paired gateway.
+/// - ``OpenClawChatSQLiteTranscriptCache``: the gateway-scoped transcript cache and durable command
+///   outbox handed to `OpenClawChatViewModel`.
+/// - ``OpenClawWatchMessageJournal``: the phone-side ledger for Watch-originated chat commands.
+///
+/// ```swift
+/// let databases = try OpenClawClientDatabases(
+///     directoryURL: OpenClawClientDatabases.defaultDirectoryURL())
+/// let store = databases.store(gatewayID: gatewayStableID)
+/// let viewModel = OpenClawChatViewModel(
+///     sessionKey: "main",
+///     transport: transport,
+///     transcriptCache: store,
+///     outbox: store)
+/// ```
 public enum OpenClawChatStore {
     /// Release of OpenClawKit that introduced this module surface.
     public static let moduleVersion = "2026.3.0"

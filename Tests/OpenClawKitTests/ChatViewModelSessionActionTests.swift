@@ -1,12 +1,8 @@
 import Foundation
 import OpenClawKit
 import Testing
+@testable import OpenClawChatStore
 @testable import OpenClawChatUI
-
-// Ported from upstream OpenClaw 2026.9.6. Trimmed until the GRDB-backed OpenClawChatStore lands (W5d; these need
-// OpenClawClientDatabases): "rewind waits for current session outbox confirmation", "fork at message waits for
-// current session outbox confirmation", "rewind bumps branch epoch and parks a racing enqueue", "rewind list failure
-// clears lease and later reconcile delivers", "read only branch refresh failure preserves replay eligibility".
 
 private func makeSessionActionOutboxDirectory() throws -> URL {
     let directory = FileManager.default.temporaryDirectory
@@ -844,9 +840,149 @@ struct ChatViewModelSessionActionTests {
         #expect(await transport.historySessionKeys().isEmpty)
     }
 
+    @Test func `rewind waits for current session outbox confirmation`() async throws {
+        let directory = try makeSessionActionOutboxDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let databases = try OpenClawClientDatabases(directoryURL: directory)
+        let store = databases.store(gatewayID: "gw-test")
+        let scope = OpenClawChatOutboxScope(sessionKey: "main", agentID: nil)
+        #expect(await store.updateLastActiveLeafEntryID("leaf-active", expectedEpoch: 0, for: scope))
+        #expect(await store.enqueueCommand(sessionActionOutboxCommand(
+            id: "rewind-pending",
+            text: "wait before rewind")))
+        let transport = SessionActionTransport(branches: self.branches())
+        let viewModel = OpenClawChatViewModel(
+            sessionKey: "main",
+            transport: transport,
+            outbox: store)
+        viewModel.restoreOutboxMessages(session: viewModel.currentSessionSnapshot())
+        #expect(await self.waitForOutboxRestore(viewModel))
 
+        await viewModel.rewindToMessage(self.userMessage(entryID: "message-42"))
 
+        #expect(viewModel.canPerformMessageSessionAction == false)
+        #expect(await transport.rewoundMessages().isEmpty)
+        await viewModel.confirmOutboxCommandsNow(in: [self.confirmingMessage(commandID: "rewind-pending")])
+        #expect(viewModel.canPerformMessageSessionAction)
 
+        await viewModel.rewindToMessage(self.userMessage(entryID: "message-42"))
+
+        #expect(await transport.rewoundMessages().map { [$0.sessionKey, $0.entryID] } == [
+            ["main", "message-42"],
+        ])
+    }
+
+    @Test func `fork at message waits for current session outbox confirmation`() async throws {
+        let directory = try makeSessionActionOutboxDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try OpenClawClientDatabases(directoryURL: directory).store(gatewayID: "gw-test")
+        #expect(await store.enqueueCommand(sessionActionOutboxCommand(
+            id: "fork-pending",
+            text: "wait before fork")))
+        let transport = SessionActionTransport()
+        let viewModel = OpenClawChatViewModel(
+            sessionKey: "main",
+            transport: transport,
+            outbox: store)
+        viewModel.restoreOutboxMessages(session: viewModel.currentSessionSnapshot())
+        #expect(await self.waitForOutboxRestore(viewModel))
+
+        await viewModel.forkAtMessage(self.userMessage(entryID: "message-42"))
+
+        #expect(viewModel.canPerformMessageSessionAction == false)
+        #expect(await transport.forkedMessages().isEmpty)
+        await viewModel.confirmOutboxCommandsNow(in: [self.confirmingMessage(commandID: "fork-pending")])
+        #expect(viewModel.canPerformMessageSessionAction)
+
+        await viewModel.forkAtMessage(self.userMessage(entryID: "message-42"))
+
+        #expect(await transport.forkedMessages().map { [$0.sessionKey, $0.entryID] } == [
+            ["main", "message-42"],
+        ])
+    }
+
+    @Test func `rewind bumps branch epoch and parks a racing enqueue`() async throws {
+        let directory = try makeSessionActionOutboxDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let databases = try OpenClawClientDatabases(directoryURL: directory)
+        let store = databases.store(gatewayID: "gw-test")
+        let siblingStore = databases.store(gatewayID: "gw-test")
+        let scope = OpenClawChatOutboxScope(sessionKey: "main", agentID: nil)
+        #expect(await store.updateLastActiveLeafEntryID("leaf-active", expectedEpoch: 0, for: scope))
+        let rewindGate = SessionActionCompletionGate()
+        let transport = SessionActionTransport(
+            rewindGate: rewindGate,
+            branches: self.branches(activeLeafEntryID: "leaf-new"))
+        let viewModel = OpenClawChatViewModel(
+            sessionKey: "main",
+            transport: transport,
+            outbox: store)
+        viewModel.hasRestoredOutboxMessages = true
+
+        let rewind = Task {
+            await viewModel.rewindToMessage(self.userMessage(entryID: "message-42"))
+        }
+        guard await self.waitForForkStart(rewindGate) else {
+            rewindGate.release()
+            rewind.cancel()
+            Issue.record("timed out waiting for rewind start signal")
+            return
+        }
+        #expect(await siblingStore.enqueueCommand(sessionActionOutboxCommand(
+            id: "racing-rewind",
+            text: "belongs to the old transcript")))
+        #expect(await siblingStore.claimNextCommand() == nil)
+
+        rewindGate.release()
+        await rewind.value
+
+        let state = try #require(await store.branchState(for: scope))
+        #expect(state.epoch == 1)
+        #expect(state.lastActiveLeafEntryID == "leaf-new")
+        #expect(state.switchPendingSince == nil)
+        let racedCommand = try #require(await store.loadCommands().first)
+        #expect(racedCommand.id == "racing-rewind")
+        #expect(racedCommand.status == .failed)
+        #expect(OpenClawChatSQLiteTranscriptCache.outboxDisplayError(racedCommand.lastError) ==
+            "Session branch changed; review and retry this message.")
+    }
+
+    @Test func `rewind list failure clears lease and later reconcile delivers`() async throws {
+        let directory = try makeSessionActionOutboxDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let databases = try OpenClawClientDatabases(directoryURL: directory)
+        let store = databases.store(gatewayID: "gw-test")
+        let siblingStore = databases.store(gatewayID: "gw-test")
+        let scope = OpenClawChatOutboxScope(sessionKey: "main", agentID: nil)
+        #expect(await store.updateLastActiveLeafEntryID("leaf-active", expectedEpoch: 0, for: scope))
+        let transport = SessionActionTransport(
+            branches: self.branches(),
+            branchListFailureIndices: [0],
+            sendSucceeds: true)
+        let viewModel = OpenClawChatViewModel(
+            sessionKey: "main",
+            transport: transport,
+            outbox: store)
+        viewModel.hasRestoredOutboxMessages = true
+
+        await viewModel.rewindToMessage(self.userMessage(entryID: "message-42"))
+
+        #expect(await store.branchState(for: scope)?.switchPendingSince == nil)
+        #expect(await store.branchState(for: scope)?.needsReconciliation == true)
+        #expect(viewModel.reconciledOutboxBranchScopes.contains(scope) == false)
+        #expect(await store.enqueueCommand(sessionActionOutboxCommand(
+            id: "after-rewind-list-failure",
+            text: "send after reconcile")))
+        #expect(await siblingStore.claimNextCommand() == nil)
+        viewModel.healthOK = true
+        viewModel.readySessionMetadataGeneration = viewModel.sessionMetadataGeneration
+        viewModel.flushOutboxIfNeeded()
+
+        #expect(await self.waitForSend(transport))
+        #expect(await transport.branchListSessionKeys().suffix(2) == ["main", "main"])
+        #expect(await transport.sentSessionKeys() == ["main"])
+        #expect(await store.loadCommands().map(\.status) == [.awaitingConfirmation])
+    }
 
     @Test func `branch refresh populates state`() async {
         let branches = self.branches()
@@ -873,6 +1009,9 @@ struct ChatViewModelSessionActionTests {
         #expect(await transport.branchListSessionKeys() == ["main"])
     }
 
+    // Trimmed: upstream's `branch message count uses localized singular and plural forms` case tests
+    // `OpenClawChatComposer.branchMessageCount`, which ships with the composer view port.
+
     @Test func `branch message count uses localized singular and plural forms`() {
         #expect(OpenClawChatComposer.branchMessageCount(1) == "1 message")
         #expect(OpenClawChatComposer.branchMessageCount(2) == "2 messages")
@@ -891,6 +1030,23 @@ struct ChatViewModelSessionActionTests {
         #expect(await transport.branchListSessionKeys() == ["main"])
     }
 
+    @Test func `read only branch refresh failure preserves replay eligibility`() async throws {
+        let directory = try makeSessionActionOutboxDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try OpenClawClientDatabases(directoryURL: directory).store(gatewayID: "gw-test")
+        let scope = OpenClawChatOutboxScope(sessionKey: "main", agentID: nil)
+        let transport = SessionActionTransport(branchListFailureIndices: [0])
+        let viewModel = OpenClawChatViewModel(
+            sessionKey: "main",
+            transport: transport,
+            outbox: store)
+        viewModel.reconciledOutboxBranchScopes.insert(scope)
+
+        await viewModel.refreshSessionBranchesForMenuPresentation()
+
+        #expect(viewModel.reconciledOutboxBranchScopes.contains(scope))
+        #expect(await store.branchState(for: scope)?.switchPendingSince == nil)
+    }
 
     @Test func `newer branch refresh supersedes an older response`() async {
         let firstGate = SessionActionCompletionGate()

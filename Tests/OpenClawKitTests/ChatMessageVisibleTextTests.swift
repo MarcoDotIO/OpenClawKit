@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+@testable import OpenClawChatStore
 @testable import OpenClawChatUI
 
 private func textContent(_ text: String) -> OpenClawChatMessageContent {
@@ -170,7 +171,7 @@ struct ChatMessageVisibleTextTests {
         let adopted = OpenClawChatViewModel.adoptingCanonicalMessage(
             original,
             over: OpenClawChatMessage(role: "assistant", content: [textContent("short")], timestamp: 0))
-        let cacheable = adopted
+        let cacheable = try #require(OpenClawChatSQLiteTranscriptCache.cacheableMessages([adopted]).first)
         let encoded = try JSONEncoder().encode(cacheable)
         let decoded = try JSONDecoder().decode(
             OpenClawChatMessage.self,
