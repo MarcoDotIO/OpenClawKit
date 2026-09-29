@@ -15,18 +15,86 @@ public enum AuthProfileMode: String, Codable, Sendable, Equatable, CaseIterable 
 /// Config-declared auth profile metadata aligned with the TS SDK (upstream `auth.profiles.<id>`).
 ///
 /// Config holds metadata only; upstream keeps the credentials themselves in its auth stores.
+///
+/// Unknown `mode` strings (for example a mode added by a newer OpenClaw) never drop the profile:
+/// the authored value is kept in ``unrecognizedMode`` and written back unchanged, ``mode`` holds the
+/// ``AuthProfileMode/token`` placeholder, and ``AuthProfileResolver`` never selects the profile.
 public struct AuthProfileConfig: Codable, Sendable, Equatable {
     public var provider: String
     public var mode: AuthProfileMode
     public var email: String?
     /// Human-readable profile label (2026.9.6).
     public var displayName: String?
+    /// Authored mode this SDK does not recognize (round-tripped; `nil` for known modes).
+    public var unrecognizedMode: String?
 
     public init(provider: String, mode: AuthProfileMode, email: String? = nil, displayName: String? = nil) {
         self.provider = provider
         self.mode = mode
         self.email = email
         self.displayName = displayName
+        self.unrecognizedMode = nil
+    }
+
+    /// Creates a profile from an authored mode string, keeping unknown modes raw.
+    /// - Parameters:
+    ///   - provider: Provider id.
+    ///   - rawMode: Authored `mode` value.
+    ///   - email: Account email.
+    ///   - displayName: Profile label.
+    public init(provider: String, rawMode: String, email: String? = nil, displayName: String? = nil) {
+        let trimmed = rawMode.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.init(provider: provider, mode: AuthProfileMode(rawValue: trimmed) ?? .token, email: email, displayName: displayName)
+        self.unrecognizedMode = AuthProfileMode(rawValue: trimmed) == nil ? trimmed : nil
+    }
+
+    /// Whether ``mode`` reflects the authored mode (`false` for an ``unrecognizedMode``).
+    public var isModeRecognized: Bool {
+        self.unrecognizedMode == nil
+    }
+
+    /// The authored mode string (``unrecognizedMode`` or the ``mode`` raw value).
+    public var rawMode: String {
+        self.unrecognizedMode ?? self.mode.rawValue
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case provider
+        case mode
+        case email
+        case displayName
+    }
+
+    /// Decodes a profile; an unknown `mode` is kept in ``unrecognizedMode`` (and reported) instead
+    /// of failing the profile.
+    /// - Parameter decoder: Source decoder.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let provider = try container.decode(String.self, forKey: .provider)
+        let rawMode = try container.decode(String.self, forKey: .mode)
+        self.init(
+            provider: provider,
+            rawMode: rawMode,
+            email: try container.decodeIfPresent(String.self, forKey: .email),
+            displayName: try container.decodeIfPresent(String.self, forKey: .displayName)
+        )
+        if let unrecognizedMode {
+            container.recordConfigIssue(
+                "Unknown auth profile mode \"\(unrecognizedMode)\"; the profile is kept but never selected.",
+                kind: .unknownEnumValue,
+                forKey: .mode
+            )
+        }
+    }
+
+    /// Encodes the profile with its authored mode.
+    /// - Parameter encoder: Target encoder.
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(self.provider, forKey: .provider)
+        try container.encode(self.rawMode, forKey: .mode)
+        try container.encodeIfPresent(self.email, forKey: .email)
+        try container.encodeIfPresent(self.displayName, forKey: .displayName)
     }
 }
 
@@ -92,7 +160,7 @@ public struct AuthConfig: Codable, Sendable, Equatable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        // A profile with an unknown mode is dropped (and recorded as an issue) instead of failing the config.
+        // A profile with an unknown mode is kept raw (and recorded as an issue); malformed profiles are dropped.
         self.profiles = container.decodeLossyDictionaryIfPresent(AuthProfileConfig.self, forKey: .profiles) ?? [:]
         self.order = try container.decodeIfPresent([String: [String]].self, forKey: .order) ?? [:]
         self.cooldowns = try container.decodeIfPresent(AuthCooldownConfig.self, forKey: .cooldowns) ?? AuthCooldownConfig()
@@ -797,7 +865,7 @@ public actor AuthProfileStore {
 
     private static func currentTimestampMs() -> Int64 {
         // Int64 keeps millisecond timestamps representable on 32-bit watchOS (arm64_32).
-        Int64(Date().timeIntervalSince1970 * 1000)
+        OpenClawClock.nowMs()
     }
 }
 
@@ -867,7 +935,7 @@ public enum AuthProfileResolver {
             return false
         }
         if let configured = config?.profiles[profileID] {
-            guard normalizeProviderID(configured.provider) == provider else {
+            guard normalizeProviderID(configured.provider) == provider, configured.isModeRecognized else {
                 return false
             }
             if configured.mode != metadata.mode && !(configured.mode == .oauth && metadata.mode == .token) {
@@ -937,6 +1005,6 @@ public enum AuthProfileResolver {
 
     private static func currentTimestampMs() -> Int64 {
         // Int64 keeps millisecond timestamps representable on 32-bit watchOS (arm64_32).
-        Int64(Date().timeIntervalSince1970 * 1000)
+        OpenClawClock.nowMs()
     }
 }

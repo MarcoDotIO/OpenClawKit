@@ -877,18 +877,99 @@ extension ConfigMigrationRules {
 
     // MARK: Plugins, secrets and root containers
 
+    /// Retired `plugins.entries.canvas.config.host` keys (upstream `RETIRED_HOST_KEYS`).
+    static let retiredCanvasHostKeys = ["root", "port", "liveReload"]
+
+    /// Port of upstream `migrateCanvasHostConfig` (`extensions/canvas/src/config-migration.ts`): drops the
+    /// retired root `canvasHost` and the retired plugin host keys, keeping only the route-enable switch
+    /// (plugin value wins) and, while legacy documents may still need migrating, the `root` locator.
     static func migrateCanvasHost(_ root: MigrationObject, _ changes: inout [String]) {
-        guard root.has("canvasHost") else { return }
-        let legacy = root.object("canvasHost")
-        if let enabled = legacy?["enabled"] {
-            let host = root.ensureObject("plugins").ensureObject("entries").ensureObject("canvas").ensureObject("config").ensureObject("host")
-            if !host.isSet("enabled") {
-                host["enabled"] = enabled
-                changes.append("Moved canvasHost.enabled → plugins.entries.canvas.config.host.enabled.")
+        let hasLegacyHost = root.has("canvasHost")
+        let legacyHost = root.object("canvasHost")
+        let canvasConfig = root.object("plugins")?.object("entries")?.object("canvas")?.object("config")
+        let existingHost = canvasConfig?.object("host")
+        // Stable releases merged canvasHost into the plugin host config; plugin keys won.
+        let configuredRoot = existingHost?.has("root") == true ? existingHost?["root"] : legacyHost?["root"]
+        let retainRoot = Self.shouldRetainLegacyCanvasRoot(configuredRoot)
+        let retiredKeys = Self.retiredCanvasHostKeys.filter { key in
+            existingHost?.has(key) == true && !(key == "root" && retainRoot)
+        }
+        guard hasLegacyHost || !retiredKeys.isEmpty else { return }
+
+        root.remove("canvasHost")
+        let enabled = existingHost?.bool("enabled") ?? legacyHost?.bool("enabled")
+        if existingHost != nil || enabled != nil || retainRoot {
+            let config = root.ensureObject("plugins").ensureObject("entries").ensureObject("canvas").ensureObject("config")
+            if enabled == nil, !retainRoot {
+                config.remove("host")
+            } else {
+                let host = MigrationObject()
+                if let enabled {
+                    host["enabled"] = .bool(enabled)
+                }
+                if retainRoot, let configuredRoot {
+                    host["root"] = configuredRoot.deepCopy()
+                }
+                config["host"] = .object(host)
             }
         }
-        root.remove("canvasHost")
-        changes.append("Removed retired canvasHost; only plugins.entries.canvas.config.host.enabled remains.")
+
+        if hasLegacyHost {
+            if retainRoot {
+                changes.append("Migrated canvasHost to plugins.entries.canvas.config.host; retained root for document migration retry.")
+            } else if enabled == nil {
+                changes.append("Removed retired canvasHost configuration.")
+            } else {
+                changes.append("Migrated canvasHost.enabled to plugins.entries.canvas.config.host.enabled.")
+            }
+        }
+        if !retiredKeys.isEmpty {
+            let paths = retiredKeys.map { "plugins.entries.canvas.config.host.\($0)" }.joined(separator: ", ")
+            changes.append("Removed retired Canvas host config: \(paths).")
+        }
+    }
+
+    /// Upstream keeps a custom canvas `root` while it is an unresolved `${VAR}` template, or while its
+    /// `documents` directory (other than `<state dir>/canvas/documents`) still holds documents or cannot be
+    /// read, so `openclaw doctor --fix` can retry the document move.
+    static func shouldRetainLegacyCanvasRoot(
+        _ configuredRoot: MigrationValue?,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        guard let rawRoot = configuredRoot?.stringValue else { return false }
+        if rawRoot.contains("${") {
+            return true
+        }
+        let trimmed = rawRoot.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        let legacyDirectory = URL(
+            fileURLWithPath: OpenClawConfigDocumentStore.expandHome(trimmed, environment: environment),
+            isDirectory: true
+        ).appendingPathComponent("documents", isDirectory: true).standardizedFileURL
+        let coreDirectory = OpenClawConfigDocumentStore.defaultStateDirectory(environment: environment)
+            .appendingPathComponent("canvas", isDirectory: true)
+            .appendingPathComponent("documents", isDirectory: true).standardizedFileURL
+        if legacyDirectory.path == coreDirectory.path
+            || legacyDirectory.resolvingSymlinksInPath().path == coreDirectory.resolvingSymlinksInPath().path {
+            return false
+        }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: legacyDirectory.path, isDirectory: &isDirectory) else {
+            return false
+        }
+        guard isDirectory.boolValue else {
+            // Not a readable documents directory: keep the locator so doctor can report it.
+            return true
+        }
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: legacyDirectory,
+            includingPropertiesForKeys: [.isDirectoryKey]
+        ) else {
+            return true
+        }
+        return entries.contains { entry in
+            (try? entry.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+        }
     }
 
     static func migrateSecretsEgressHosts(_ root: MigrationObject, _ changes: inout [String]) {

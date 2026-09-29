@@ -73,6 +73,10 @@ struct ConfigSecretsGatewayAuditTests {
         try Data(#"{"providers": {"openai": {"apiKey": "sk-file"}}, "a/b": {"c~d": "escaped"}}"#.utf8).write(to: jsonFile)
         let singleFile = directory.appendingPathComponent("token.txt")
         try Data("single-value\n".utf8).write(to: singleFile)
+        // File providers require private files (mode & 0o077 == 0).
+        for file in [jsonFile, singleFile] {
+            try FileManager.default.setAttributes([.posixPermissions: NSNumber(value: 0o600)], ofItemAtPath: file.path)
+        }
         let store = FileCredentialStore(fileURL: directory.appendingPathComponent("credentials.json"))
         try await store.saveSecret("store-value", for: "GATEWAY_TOKEN")
 

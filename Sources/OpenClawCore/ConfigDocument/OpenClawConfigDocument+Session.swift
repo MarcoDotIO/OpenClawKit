@@ -40,6 +40,15 @@ extension OpenClawConfigDocument {
         /// Creates an empty session section.
         public init() {}
 
+        /// SDK-only `session.legacyChannelAccountKeys` switch (read from the passthrough keys).
+        ///
+        /// Imports map it to ``ChannelsCompatibilityConfig/legacySessionAccountKeys``. Upstream's
+        /// strict session schema rejects the key, so stores strip it before writing
+        /// (see ``OpenClawConfigDocument/sdkOnlyKeyPaths``).
+        public var legacyChannelAccountKeys: Bool? {
+            self.additionalProperties["legacyChannelAccountKeys"]?.boolValue
+        }
+
         /// Typed fields.
         public static var configFields: [ConfigField<Self>] {
             [

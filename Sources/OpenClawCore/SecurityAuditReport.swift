@@ -226,9 +226,16 @@ public enum SecurityAuditRunner {
             findings.append(contentsOf: self.checkConfigSecrets(config))
             findings.append(contentsOf: self.checkRiskyDefaults(config))
             findings.append(contentsOf: self.checkGatewaySharedSecret(config.gateway.auth))
+            // Channel-owned findings: plaintext channel secrets (upstream path spelling, plugin
+            // sections and `accounts.*`), BlueBubbles removal and Teams sovereign clouds.
+            findings.append(contentsOf: config.channels.securityAuditFindings())
         }
         if let document = options.document {
             findings.append(contentsOf: self.checkDocumentSecrets(document))
+            if options.config == nil, let channels = document.channels {
+                // Without an SDK-native config, audit the document's channel blocks directly.
+                findings.append(contentsOf: channels.channelsConfig.securityAuditFindings())
+            }
         }
 
         var permissionPaths = options.statePaths
@@ -291,7 +298,9 @@ public enum SecurityAuditRunner {
             check("gateway.remote.edgeAuth.\(header)", value)
         }
         for (providerID, provider) in document.models?.providers ?? [:] {
-            check("models.providers.\(providerID).apiKey", provider.apiKey)
+            if !ModelAuthMarkers.isNonSecretMarker(provider.apiKey?.plaintext) {
+                check("models.providers.\(providerID).apiKey", provider.apiKey)
+            }
             for (header, value) in provider.headers ?? [:] {
                 check("models.providers.\(providerID).headers.\(header)", value)
             }
@@ -362,6 +371,12 @@ public enum SecurityAuditRunner {
         }
     }
 
+    /// Plaintext secrets in SDK-native config keys.
+    ///
+    /// Typed channel sections are reported by ``ChannelsConfig/securityAuditFindings()`` under
+    /// `channels.secrets.plaintext` (upstream path spelling), so only the SDK-only legacy
+    /// `channels.pluginChannels.*.secrets` wrapper is listed here. Non-secret provider markers
+    /// (``ModelAuthMarkers``, for example `apple-fm-local`) are never reported.
     private static func checkConfigSecrets(_ config: OpenClawConfig) -> [SecurityAuditFinding] {
         var exposedKeys: [String] = []
 
@@ -370,26 +385,15 @@ public enum SecurityAuditRunner {
             ("gateway.auth.password", config.gateway.auth.password?.stringValue),
             ("gateway.remote.token", config.gateway.remote?.token?.stringValue),
             ("gateway.remote.password", config.gateway.remote?.password?.stringValue),
-            ("channels.discord.botToken", config.channels.discord.botToken),
-            ("channels.telegram.botToken", config.channels.telegram.botToken),
-            ("channels.whatsappCloud.accessToken", config.channels.whatsappCloud.accessToken),
-            ("channels.whatsappCloud.webhookVerifyToken", config.channels.whatsappCloud.webhookVerifyToken),
-            ("channels.slack.botToken", config.channels.slack.botToken),
-            ("channels.slack.appToken", config.channels.slack.appToken),
-            ("channels.slack.signingSecret", config.channels.slack.signingSecret),
-            ("channels.googleChat.bearerToken", config.channels.googleChat.bearerToken),
-            ("channels.googleChat.verificationToken", config.channels.googleChat.verificationToken),
-            ("channels.signal.authToken", config.channels.signal.authToken),
-            ("channels.bluebubbles.password", config.channels.bluebubbles.password),
-            ("channels.msteams.botAppPassword", config.channels.msteams.botAppPassword),
-            ("channels.webchat.sharedSecret", config.channels.webchat.sharedSecret),
             ("models.openAI.apiKey", config.models.openAI.apiKey),
             ("models.openAICompatible.apiKey", config.models.openAICompatible.apiKey),
             ("models.anthropic.apiKey", config.models.anthropic.apiKey),
             ("models.gemini.apiKey", config.models.gemini.apiKey),
         ]
         for (key, value) in secrets {
-            if let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty {
+            if let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty,
+               !(key.hasPrefix("models.") && ModelAuthMarkers.isNonSecretMarker(trimmed))
+            {
                 exposedKeys.append(key)
             }
         }
@@ -398,15 +402,10 @@ public enum SecurityAuditRunner {
             guard !normalizedID.isEmpty else {
                 continue
             }
-            if let secret = provider.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines), !secret.isEmpty {
-                let secretField: String
-                switch provider.auth {
-                case .oauth, .token:
-                    secretField = "apiKey"
-                case .apiKey, .awsSDK, nil:
-                    secretField = "apiKey"
-                }
-                exposedKeys.append("models.providers.\(normalizedID).\(secretField)")
+            if let secret = provider.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines), !secret.isEmpty,
+               !ModelAuthMarkers.isNonSecretMarker(secret)
+            {
+                exposedKeys.append("models.providers.\(normalizedID).apiKey")
             }
         }
         for (channelID, channelConfig) in config.channels.pluginChannels {

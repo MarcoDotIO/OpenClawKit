@@ -16,7 +16,11 @@ extension OpenClawConfig {
     /// agent; `agentIDs` ← entry keys; `workspaceRoot`/`modelOverride` and think/verbose/reasoning/elevated
     /// levels ← `agents.defaults`; `responseUsage` ← `messages.responseUsage`; exec host/node/policy ←
     /// `tools.exec`; `routeAgentMap` ← route `bindings`; `routing` ← `session.dmScope`/`mainKey`;
-    /// `channels.pluginChannels` ← non-built-in channel blocks. Everything else keeps the base value.
+    /// `channels` ← ``ChannelsConfigDocument/channelsConfig`` (typed sections present in the document
+    /// replace the base section, other blocks land in ``ChannelsConfig/extensionChannels``; SDK-only
+    /// sections keep the base values) with `session.legacyChannelAccountKeys` →
+    /// ``ChannelsCompatibilityConfig/legacySessionAccountKeys``; `models.catalogRefresh`; and the
+    /// upstream-shaped `mcp`, `skills`, `memory` and `plugins` sections. Everything else keeps the base value.
     /// - Parameters:
     ///   - document: Upstream document.
     ///   - base: SDK-native values used where the document has no equivalent.
@@ -61,12 +65,16 @@ extension OpenClawConfig {
             var profiles: [String: AuthProfileConfig] = [:]
             for (id, profile) in auth.profiles ?? [:] {
                 guard let provider = ConfigValueSupport.nonEmpty(profile.provider),
-                      let rawMode = profile.mode?.rawValue, let mode = AuthProfileMode(rawValue: rawMode)
+                      let rawMode = ConfigValueSupport.nonEmpty(profile.mode?.rawValue)
                 else {
-                    record("auth.profiles.\(id)", "Auth profile needs a provider and a known mode; skipped.")
+                    record("auth.profiles.\(id)", "Auth profile needs a provider and a mode; skipped.")
                     continue
                 }
-                profiles[id] = AuthProfileConfig(provider: provider, mode: mode, email: profile.email, displayName: profile.displayName)
+                let imported = AuthProfileConfig(provider: provider, rawMode: rawMode, email: profile.email, displayName: profile.displayName)
+                if let unknown = imported.unrecognizedMode {
+                    record("auth.profiles.\(id)", "Unknown auth profile mode \"\(unknown)\" is kept but the profile is never selected.")
+                }
+                profiles[id] = imported
             }
             config.auth = AuthConfig(profiles: profiles, order: auth.order ?? base.auth.order, cooldowns: base.auth.cooldowns)
         }
@@ -75,6 +83,13 @@ extension OpenClawConfig {
         if let models = document.models {
             if let mode = models.mode.flatMap(ModelsConfigMode.init(rawValue:)) {
                 config.models.mode = mode
+            }
+            if models.catalogRefresh != nil {
+                if let refresh = models.catalogRefreshConfig {
+                    config.models.catalogRefresh = refresh
+                } else {
+                    record("models.catalogRefresh", "catalogRefresh could not be represented as ModelCatalogRefreshConfig; kept the base value.")
+                }
             }
             if let providers = models.providers {
                 var imported: [String: ModelProviderConfig] = [:]
@@ -91,7 +106,11 @@ extension OpenClawConfig {
         if let session = document.session, session.dmScope != nil || session.mainKey != nil {
             config.routing = session.routingConfig
         }
-        config.channels = Self.importPluginChannels(document.channels, base: base.channels)
+        config.channels = Self.importChannels(document.channels, session: document.session, base: base.channels)
+        config.mcp = document.mcp ?? base.mcp
+        config.skills = document.skills ?? base.skills
+        config.memory = document.memory ?? base.memory
+        config.plugins = document.plugins ?? base.plugins
         self = config
     }
 
@@ -137,13 +156,33 @@ extension OpenClawConfig {
         self.projectTools(into: &tree)
         self.projectSession(into: &tree)
         self.projectBindings(into: &tree, original: original)
-        self.projectPluginChannels(into: &tree)
+        self.projectChannels(into: &tree, original: original)
+        for (key, section) in [
+            ("mcp", self.mcp?.jsonObject), ("skills", self.skills?.jsonObject),
+            ("memory", self.memory?.jsonObject), ("plugins", self.plugins?.jsonObject),
+        ] {
+            if let section {
+                merge(key, AnyCodable(.object(section)))
+            }
+        }
 
         OpenClawConfigDocument.stripSDKOnlyKeys(from: &tree)
         var document = (try? OpenClawConfigDocument.decode(jsonObject: tree, migrateLegacyKeys: false)) ?? OpenClawConfigDocument()
         if let order = original?.agents?.entryOrder, !order.isEmpty {
             document.agents?.entryOrder = order
         }
+        return document
+    }
+
+    /// A document holding only this config's upstream-shaped runtime sections (`mcp`, `skills`,
+    /// `memory`, `plugins`), so runtime bridges written against ``OpenClawConfigDocument`` (for example
+    /// `MCPConfig.resolve(from:)`) also accept SDK-native configs.
+    public var runtimeSectionsDocument: OpenClawConfigDocument {
+        var document = OpenClawConfigDocument()
+        document.mcp = self.mcp
+        document.skills = self.skills
+        document.memory = self.memory
+        document.plugins = self.plugins
         return document
     }
 
@@ -223,33 +262,38 @@ extension OpenClawConfig {
         )
     }
 
-    private static func importPluginChannels(_ channels: OpenClawConfigDocument.Channels?, base: ChannelsConfig) -> ChannelsConfig {
-        guard let channels else { return base }
+    private static func importChannels(
+        _ channels: OpenClawConfigDocument.Channels?,
+        session: OpenClawConfigDocument.Session?,
+        base: ChannelsConfig
+    ) -> ChannelsConfig {
         var result = base
-        for id in channels.pluginChannelIDs {
-            guard let block = channels.entries[id] else { continue }
-            var config: [String: String] = [:]
-            for (key, value) in block.jsonObject where key != "enabled" {
-                switch value.value {
-                case .string(let string):
-                    config[key] = string
-                case .int(let int):
-                    config[key] = String(int)
-                case .double(let double):
-                    config[key] = OpenClawJSON5.formatNumber(double)
-                case .bool(let flag):
-                    config[key] = flag ? "true" : "false"
-                default:
-                    continue
-                }
+        if let channels {
+            let imported = channels.channelsConfig
+            let present = Set(channels.channels.keys.map { $0.lowercased() })
+            // Typed sections present in the document replace the base section; absent ones keep it.
+            if present.contains("discord") { result.discord = imported.discord }
+            if present.contains("telegram") { result.telegram = imported.telegram }
+            if present.contains("slack") { result.slack = imported.slack }
+            if present.contains("googlechat") { result.googleChat = imported.googleChat }
+            if present.contains("signal") { result.signal = imported.signal }
+            if present.contains("imessage") { result.imessage = imported.imessage }
+            if present.contains("msteams") { result.msteams = imported.msteams }
+            if present.contains("bluebubbles") { result.bluebubbles = imported.bluebubbles }
+            // Plugin-owned and untyped upstream blocks (for example `whatsapp` and `matrix`).
+            for (id, value) in imported.extensionChannels {
+                result.extensionChannels[id] = value
             }
-            let existing = base.pluginChannels[id]
-            result.pluginChannels[id] = PluginChannelConfig(
-                enabled: block.enabled ?? true,
-                packageName: existing?.packageName,
-                config: config,
-                secrets: existing?.secrets ?? [:]
-            )
+            if channels.defaults != nil {
+                result.defaults = imported.defaults
+            }
+            if channels.modelByChannel != nil {
+                result.modelByChannel = imported.modelByChannel
+            }
+            // `whatsappCloud`, `webchat`, `pluginChannels` and `compatibility` are SDK-only and keep the base values.
+        }
+        if let legacyKeys = session?.legacyChannelAccountKeys {
+            result.compatibility.legacySessionAccountKeys = legacyKeys
         }
         return result
     }
@@ -258,12 +302,17 @@ extension OpenClawConfig {
 
     private func projectedModels(original: OpenClawConfigDocument?) -> AnyCodable? {
         let defaults = ModelsConfig()
-        guard self.models.mode != defaults.mode || !self.models.providers.isEmpty || original?.models != nil else {
+        guard self.models.mode != defaults.mode || !self.models.providers.isEmpty || original?.models != nil
+            || self.models.catalogRefresh != nil
+        else {
             return nil
         }
         var models: [String: AnyCodable] = [:]
         if self.models.mode != defaults.mode || original?.models?.mode != nil {
             models["mode"] = AnyCodable(.string(self.models.mode.rawValue))
+        }
+        if let catalogRefresh = self.models.catalogRefresh {
+            models["catalogRefresh"] = ConfigTreeCoding.encode(catalogRefresh)
         }
         if !self.models.providers.isEmpty {
             var providers: [String: AnyCodable] = [:]
@@ -429,10 +478,14 @@ extension OpenClawConfig {
         }
     }
 
-    private func projectPluginChannels(into tree: inout [String: AnyCodable]) {
-        guard !self.channels.pluginChannels.isEmpty else { return }
-        var channels = tree["channels"]?.dictionaryValue ?? [:]
-        for (id, plugin) in self.channels.pluginChannels where !OpenClawConfigDocument.Channels.builtInChannelIDs.contains(id) {
+    private func projectChannels(into tree: inout [String: AnyCodable], original: OpenClawConfigDocument?) {
+        let originalChannels = tree["channels"]?.dictionaryValue.flatMap { object in
+            try? ConfigTreeCoding.decode(ChannelsConfigDocument.self, from: AnyCodable(.object(object)), issues: nil)
+        } ?? original?.channels
+        var channels = ChannelsConfigDocument(exporting: self.channels, preserving: originalChannels).jsonObject
+        // Legacy SDK plugin wrappers without a raw block keep their flattened settings as a channel block.
+        for (id, plugin) in self.channels.pluginChannels
+        where !OpenClawConfigDocument.builtInChannelIDs.contains(id) && plugin.raw.isEmpty {
             var block = channels[id]?.dictionaryValue ?? [:]
             block["enabled"] = AnyCodable(.bool(plugin.enabled))
             for (key, value) in plugin.config where block[key] == nil {
@@ -440,7 +493,10 @@ extension OpenClawConfig {
             }
             channels[id] = AnyCodable(.object(block))
         }
-        tree["channels"] = AnyCodable(.object(channels))
+        if channels.isEmpty, tree["channels"] == nil {
+            return
+        }
+        tree["channels"] = ConfigTree.preservingAuthoredSecretTemplates(AnyCodable(.object(channels)), original: tree["channels"])
     }
 }
 
@@ -467,5 +523,27 @@ public enum ConfigTree {
             result[key] = self.deepMerge(baseObject[key], value)
         }
         return AnyCodable(.object(result))
+    }
+
+    /// Returns `projected` with authored `${NAME}` / `$NAME` strings from `original` restored where the
+    /// projection wrote the equivalent SecretRef object. Unlike ``deepMerge(_:_:)`` it never re-adds
+    /// keys the projection removed.
+    /// - Parameters:
+    ///   - projected: Newly projected value.
+    ///   - original: Authored value at the same path.
+    /// - Returns: The projection with authored secret templates kept.
+    public static func preservingAuthoredSecretTemplates(_ projected: AnyCodable, original: AnyCodable?) -> AnyCodable {
+        if let originalString = original?.stringValue, let object = projected.dictionaryValue,
+           let ref = try? ConfigTreeCoding.decode(SecretRef.self, from: AnyCodable(.object(object)), issues: nil),
+           SecretInput.parse(originalString).input == .ref(ref)
+        {
+            return AnyCodable(.string(originalString))
+        }
+        if let object = projected.dictionaryValue, let originalObject = original?.dictionaryValue {
+            return AnyCodable(.object(object.reduce(into: [:]) { result, entry in
+                result[entry.key] = self.preservingAuthoredSecretTemplates(entry.value, original: originalObject[entry.key])
+            }))
+        }
+        return projected
     }
 }

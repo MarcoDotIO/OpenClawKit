@@ -68,7 +68,8 @@ struct ConfigVocabularyToleranceTests {
 
         #expect(config.auth.profiles["bedrock"]?.mode == .awsSDK)
         #expect(config.auth.profiles["anthropic"]?.mode == .apiKey)
-        #expect(config.auth.profiles["passkey"] == nil)
+        // Unknown auth modes are kept raw (never selected) instead of dropping the profile.
+        #expect(config.auth.profiles["passkey"]?.isModeRecognized == false)
 
         #expect(config.secrets.providers["shared"] == .store(StoreSecretProviderConfig()))
         #expect(config.secrets.providers["local-env"]?.source == .env)

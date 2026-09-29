@@ -33,6 +33,32 @@ public enum OpenClawFileSystem {
         try data.write(to: url, options: [.atomic])
     }
 
+    /// Ensures a private directory exists: missing directories (and missing intermediates) are created
+    /// with `0700`; existing directories keep their permissions.
+    /// - Parameter url: Directory URL.
+    public static func ensurePrivateDirectory(_ url: URL) throws {
+        guard !FileManager.default.fileExists(atPath: url.path) else {
+            return
+        }
+        #if os(Windows)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        #else
+        try FileManager.default.createDirectory(
+            at: url,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: NSNumber(value: 0o700)]
+        )
+        #endif
+    }
+
+    /// Restricts a state or config file to its owner (`0600`); best effort.
+    /// - Parameter url: File URL.
+    public static func restrictToOwner(_ url: URL) {
+        #if !os(Windows)
+        try? FileManager.default.setAttributes([.posixPermissions: NSNumber(value: 0o600)], ofItemAtPath: url.path)
+        #endif
+    }
+
     /// Checks whether a file exists at the provided URL path.
     /// - Parameter url: File or directory URL.
     /// - Returns: `true` when path exists.

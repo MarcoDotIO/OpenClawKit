@@ -13,6 +13,8 @@ public struct ModelsConfig: Codable, Sendable, Equatable {
     public var local: LocalModelConfig
     public var providers: [String: ModelProviderConfig]
     public var bedrockDiscovery: BedrockDiscoveryConfig
+    /// Hosted model-catalog refresh (upstream `models.catalogRefresh`; `nil` when not configured).
+    public var catalogRefresh: ModelCatalogRefreshConfig?
 
     /// Creates model settings.
     /// - Parameters:
@@ -25,6 +27,8 @@ public struct ModelsConfig: Codable, Sendable, Equatable {
     ///   - foundation: Foundation Models settings.
     ///   - local: Local model settings.
     ///   - providers: Extended provider service matrix keyed by provider ID.
+    ///   - bedrockDiscovery: Bedrock model discovery settings.
+    ///   - catalogRefresh: Hosted model-catalog refresh settings.
     public init(
         defaultProviderID: String = "echo",
         systemPrompt: String? = nil,
@@ -36,7 +40,8 @@ public struct ModelsConfig: Codable, Sendable, Equatable {
         foundation: FoundationModelConfig = FoundationModelConfig(),
         local: LocalModelConfig = LocalModelConfig(),
         providers: [String: ModelProviderConfig] = [:],
-        bedrockDiscovery: BedrockDiscoveryConfig = BedrockDiscoveryConfig()
+        bedrockDiscovery: BedrockDiscoveryConfig = BedrockDiscoveryConfig(),
+        catalogRefresh: ModelCatalogRefreshConfig? = nil
     ) {
         self.defaultProviderID = defaultProviderID
         self.systemPrompt = systemPrompt
@@ -49,6 +54,7 @@ public struct ModelsConfig: Codable, Sendable, Equatable {
         self.local = local
         self.providers = providers
         self.bedrockDiscovery = bedrockDiscovery
+        self.catalogRefresh = catalogRefresh
     }
 
     @available(*, deprecated, message: "Use ModelProviderConfig-based providers instead")
@@ -92,6 +98,7 @@ public struct ModelsConfig: Codable, Sendable, Equatable {
         case local
         case providers
         case bedrockDiscovery
+        case catalogRefresh
     }
 
     public init(from decoder: Decoder) throws {
@@ -113,6 +120,7 @@ public struct ModelsConfig: Codable, Sendable, Equatable {
         }
         self.bedrockDiscovery = try container.decodeIfPresent(BedrockDiscoveryConfig.self, forKey: .bedrockDiscovery)
             ?? BedrockDiscoveryConfig()
+        self.catalogRefresh = container.decodeLenient(ModelCatalogRefreshConfig.self, forKey: .catalogRefresh)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -128,6 +136,7 @@ public struct ModelsConfig: Codable, Sendable, Equatable {
         try container.encode(self.local, forKey: .local)
         try container.encode(self.providers, forKey: .providers)
         try container.encode(self.bedrockDiscovery, forKey: .bedrockDiscovery)
+        try container.encodeIfPresent(self.catalogRefresh, forKey: .catalogRefresh)
     }
 
     @available(*, deprecated, message: "Use providers instead")
