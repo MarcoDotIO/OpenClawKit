@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+@testable import OpenClawChatStore
 @testable import OpenClawChatUI
 
 @Suite("Managed chat image attachments")
@@ -20,9 +21,8 @@ struct ChatMessageMediaAttachmentTests {
         #expect(attachment.isInlineAttachment)
         #expect(attachment.mediaKind == .file)
         #expect(attachment.mediaKind?.acceptsManagedArtifactID(attachment.artifactId ?? "") == true)
-        // Upstream also round-trips through OpenClawChatSQLiteTranscriptCache.cacheableMessages; that half
-        // returns with the OpenClawChatStore port. The Codable round-trip below is what the cache persists.
-        let reloaded = try JSONDecoder().decode(OpenClawChatMessage.self, from: JSONEncoder().encode(message))
+        let cached = try #require(OpenClawChatSQLiteTranscriptCache.cacheableMessages([message]).first)
+        let reloaded = try JSONDecoder().decode(OpenClawChatMessage.self, from: JSONEncoder().encode(cached))
         #expect(reloaded.content.first == attachment)
     }
 
@@ -132,6 +132,17 @@ struct ChatMessageMediaAttachmentTests {
         #expect(
             message.content.first?.artifactId ==
                 "artifact_managed_image_11111111-1111-4111-8111-111111111111")
+    }
+
+    @Test func `transcript cache preserves references without image bytes`() throws {
+        let message = Self.message(
+            artifactId: "artifact_managed_image_11111111-1111-4111-8111-111111111111")
+        let cached = try #require(OpenClawChatSQLiteTranscriptCache.cacheableMessages([message]).first)
+        let image = try #require(cached.content.first)
+
+        #expect(image.artifactId == message.content.first?.artifactId)
+        #expect(image.url == message.content.first?.url)
+        #expect(image.content == nil)
     }
 
     private static func message(artifactId: String) -> OpenClawChatMessage {
