@@ -426,6 +426,59 @@ struct AppleFoundationModelsBridgeTests {
     }
 
     @Test
+    func bridgeKeepsProviderReasoningSignaturesAcrossToolTurns() async throws {
+        guard #available(macOS 27.0, iOS 27.0, visionOS 27.0, *) else { return }
+        try await Self.checkReasoningSignatureRoundTrip()
+    }
+
+    @available(macOS 27.0, iOS 27.0, visionOS 27.0, *)
+    private static func checkReasoningSignatureRoundTrip() async throws {
+        // Claude-style turn: signed thinking plus a tool call; the continuation must send the same
+        // signature back or Anthropic turns thinking off (or rejects the tool turn).
+        let signature = "RXJBbnRocm9waWNUaGlua2luZ1NpZw=="
+        func continuationThinking(reasoningText: String?) async throws -> [(String, String?)] {
+            let provider = ScriptedProvider { _, index in
+                if index == 0 {
+                    return ModelGenerationResponse(
+                        text: "",
+                        providerID: "scripted",
+                        toolCalls: [ModelToolCall(id: "t1", name: "lookup", arguments: ["q": AnyCodable("x")])],
+                        reasoningText: reasoningText,
+                        reasoningSignature: signature
+                    )
+                }
+                return ModelGenerationResponse(text: "done", providerID: "scripted")
+            }
+            let tool = try FoundationModelsDynamicTool(
+                definition: ModelToolDefinition(
+                    name: "lookup",
+                    parameters: ["type": AnyCodable("object"), "properties": AnyCodable(["q": AnyCodable(["type": AnyCodable("string")])])]
+                )
+            ) { _ in "42" }
+            let session = LanguageModelSession(model: OpenClawLanguageModel(provider: provider, supportsReasoning: true), tools: [tool])
+            let response = try await session.respond(to: "Look it up.")
+            #expect(response.content == "done")
+            let continuation = try #require(await provider.log.requests.last)
+            return continuation.messages.flatMap { message -> [ModelAssistantPart] in
+                guard case .assistant(let parts) = message else { return [] }
+                return parts
+            }.compactMap { part -> (String, String?)? in
+                guard case .thinking(let text, let signature) = part else { return nil }
+                return (text, signature)
+            }
+        }
+        let thinking = try await continuationThinking(reasoningText: "check the lookup")
+        #expect(thinking.map(\.0) == ["check the lookup"])
+        #expect(thinking.map(\.1) == [signature])
+        // Redacted thinking: a signature without text still survives.
+        let redacted = try await continuationThinking(reasoningText: nil)
+        #expect(redacted.map(\.1) == [signature])
+        // Foreign (framework-produced) signatures are not handed to the provider.
+        #expect(OpenClawBridgeReasoningSignature.signature(from: Data([1, 2, 3])) == nil)
+        #expect(OpenClawBridgeReasoningSignature.signature(from: OpenClawBridgeReasoningSignature.data(for: "abc")) == "abc")
+    }
+
+    @Test
     func structuredOutputIsRevalidatedAgainstTheCallerSchema() async throws {
         guard #available(macOS 27.0, iOS 27.0, visionOS 27.0, *) else { return }
         try await Self.checkStructuredOutput()

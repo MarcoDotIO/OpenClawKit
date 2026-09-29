@@ -655,7 +655,16 @@ struct AppleFoundationModelsTranscriptTests {
         #expect(without.entries == [.prompt([.text("q")]), .response("a")])
         #expect(without.prompt == [.text("[Attachment n.txt]\nnotes")])
         let with = try FoundationModelsTranscriptPlanner.plan(systemPrompt: nil, messages: messages, allowImages: false, allowReasoning: true)
-        #expect(with.entries == [.prompt([.text("q")]), .reasoning("plan", signature: nil), .response("a")])
+        #expect(with.entries == [.prompt([.text("q")]), .reasoning("plan"), .response("a")])
+        // Another provider's signature (for example an Anthropic thinking signature after a model
+        // switch) is never handed to Foundation Models.
+        let signed = try FoundationModelsTranscriptPlanner.plan(
+            systemPrompt: nil,
+            messages: [.user("q"), .assistant(content: [.thinking("plan", signature: "RXJBbnRocm9waWNTaWc="), .text("a")]), .user("next")],
+            allowImages: false,
+            allowReasoning: true
+        )
+        #expect(signed.entries == [.prompt([.text("q")]), .reasoning("plan"), .response("a")])
         expectFoundationModelsError("Only text content is supported") {
             _ = try FoundationModelsTranscriptPlanner.plan(
                 systemPrompt: nil,

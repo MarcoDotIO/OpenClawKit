@@ -407,20 +407,14 @@ enum AppleFMTranscriptBuilder {
                 entries.append(.prompt(Transcript.Prompt(segments: try Self.segments(parts))))
             case .response(let text):
                 entries.append(.response(Transcript.Response(assetIDs: [], segments: [.text(Transcript.TextSegment(content: text))])))
-            case .reasoning(let text, let signature):
+            case .reasoning(let text):
                 #if compiler(>=6.4)
                 if #available(iOS 27.0, macOS 27.0, visionOS 27.0, *) {
-                    entries.append(
-                        .reasoning(
-                            Transcript.Reasoning(
-                                segments: [.text(Transcript.TextSegment(content: text))],
-                                signature: signature.flatMap { Data(base64Encoded: $0) }
-                            )
-                        )
-                    )
+                    // Upstream replays reasoning text only; foreign signatures are opaque to the framework.
+                    entries.append(.reasoning(Transcript.Reasoning(segments: [.text(Transcript.TextSegment(content: text))])))
                 }
                 #else
-                _ = (text, signature)
+                _ = text
                 #endif
             case .toolCall(let call):
                 let arguments = try GeneratedContent(json: call.argumentsJSON)

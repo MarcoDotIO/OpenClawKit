@@ -171,8 +171,15 @@ public struct OpenClawLanguageModelExecutor: LanguageModelExecutor {
         var deltas: [Int: ModelToolCallDelta] = [:]
         var finalCalls: [ModelToolCall] = []
         var usage: ModelUsage?
+        // Reasoning actions share one entry so the provider's signature lands on the streamed text.
+        let reasoningEntryID = UUID().uuidString
+        var reasoningStreamed = false
+        var reasoningSignature: String?
         do {
             for try await chunk in await model.provider.generateStream(modelRequest) {
+                if let signature = chunk.reasoningSignature, !signature.isEmpty {
+                    reasoningSignature = signature
+                }
                 switch chunk.kind {
                 case .text, .final:
                     if !chunk.text.isEmpty {
@@ -184,7 +191,10 @@ public struct OpenClawLanguageModelExecutor: LanguageModelExecutor {
                     }
                 case .reasoning:
                     if let reasoning = chunk.reasoningText, !reasoning.isEmpty {
-                        await channel.send(.reasoning(action: .appendText(reasoning, tokenCount: Self.estimatedTokens(reasoning))))
+                        await channel.send(
+                            .reasoning(entryID: reasoningEntryID, action: .appendText(reasoning, tokenCount: Self.estimatedTokens(reasoning)))
+                        )
+                        reasoningStreamed = true
                     }
                 case .toolCallDelta:
                     if let delta = chunk.toolCallDelta {
@@ -200,6 +210,19 @@ public struct OpenClawLanguageModelExecutor: LanguageModelExecutor {
             }
         } catch {
             throw OpenClawTranscriptConverter.frameworkError(error)
+        }
+        if let reasoningSignature {
+            // Keep the provider's signature (for example Claude's signed thinking, which tool-use
+            // continuations must send back) on the reasoning entry so the next request replays it.
+            if !reasoningStreamed {
+                await channel.send(.reasoning(entryID: reasoningEntryID, action: .appendText("", tokenCount: 0)))
+            }
+            await channel.send(
+                .reasoning(
+                    entryID: reasoningEntryID,
+                    action: .updateSignature(OpenClawBridgeReasoningSignature.data(for: reasoningSignature), tokenCount: 0)
+                )
+            )
         }
         // Tool calls are sent whole: the session only runs tools once the response completes.
         let calls = finalCalls.isEmpty
@@ -240,6 +263,25 @@ public struct OpenClawLanguageModelExecutor: LanguageModelExecutor {
     }
 }
 
+/// Stores provider reasoning signatures (strings) in `Transcript.Reasoning.signature` (bytes) so they
+/// round-trip unchanged through a Foundation Models session.
+enum OpenClawBridgeReasoningSignature {
+    /// Marks signatures stored by ``OpenClawLanguageModelExecutor``.
+    static let prefix = Data("openclaw-signature:".utf8)
+
+    /// Bytes stored on the framework's reasoning entry for a provider signature.
+    static func data(for signature: String) -> Data {
+        Self.prefix + Data(signature.utf8)
+    }
+
+    /// The provider signature stored by the bridge, or `nil` for missing or foreign signatures.
+    static func signature(from data: Data?) -> String? {
+        guard let data, data.starts(with: Self.prefix) else { return nil }
+        let signature = String(decoding: data.dropFirst(Self.prefix.count), as: UTF8.self)
+        return signature.isEmpty ? nil : signature
+    }
+}
+
 /// Converts between Foundation Models executor requests and OpenClaw contract v2 requests.
 @available(iOS 27.0, macOS 27.0, visionOS 27.0, watchOS 27.0, *)
 enum OpenClawTranscriptConverter {
@@ -265,7 +307,8 @@ enum OpenClawTranscriptConverter {
                 let text = Self.text(response.segments)
                 if !text.isEmpty { assistant.append(.text(text)) }
             case .reasoning(let reasoning):
-                assistant.append(.thinking(Self.text(reasoning.segments), signature: reasoning.signature?.base64EncodedString()))
+                // Only signatures this bridge stored come back; other models' signatures are opaque here.
+                assistant.append(.thinking(Self.text(reasoning.segments), signature: OpenClawBridgeReasoningSignature.signature(from: reasoning.signature)))
             case .toolCalls(let calls):
                 for call in calls {
                     assistant.append(.toolCall(ModelToolCall(id: call.id, name: call.toolName, argumentsJSON: call.arguments.jsonString)))
