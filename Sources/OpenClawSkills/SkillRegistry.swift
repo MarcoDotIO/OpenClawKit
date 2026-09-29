@@ -451,11 +451,24 @@ public actor SkillRegistry {
     /// - Parameters:
     ///   - fileURL: SKILL.md URL.
     ///   - source: Source bucket.
-    /// - Returns: The definition, or `nil` when no name can be resolved.
+    /// - Returns: The definition, or `nil` when no name can be resolved or the file is larger than
+    ///   ``maxSkillFileBytes``.
+    /// - Throws: When the file cannot be read or is not UTF-8.
     public static func parseSkill(fileURL: URL, source: SkillSource) throws -> SkillDefinition? {
-        let raw = try String(contentsOf: fileURL, encoding: .utf8)
+        let handle = try FileHandle(forReadingFrom: fileURL)
+        defer { try? handle.close() }
+        // Bounded read: an oversized SKILL.md is skipped (upstream `DEFAULT_MAX_SKILL_FILE_BYTES`).
+        let data = try handle.read(upToCount: Self.maxSkillFileBytes + 1) ?? Data()
+        guard data.count <= Self.maxSkillFileBytes else { return nil }
+        guard let raw = String(data: data, encoding: .utf8) else {
+            throw CocoaError(.fileReadInapplicableStringEncoding, userInfo: [NSFilePathErrorKey: fileURL.path])
+        }
         return self.parseSkill(contents: raw, filePath: fileURL.path, source: source)
     }
+
+    /// Largest SKILL.md the registry reads (upstream `DEFAULT_MAX_SKILL_FILE_BYTES`); larger files are
+    /// skipped like unreadable ones.
+    public static let maxSkillFileBytes = 256_000
 
     /// Parses SKILL.md contents.
     /// - Parameters:

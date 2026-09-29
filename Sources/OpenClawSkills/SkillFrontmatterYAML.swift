@@ -132,10 +132,15 @@ struct FrontmatterSyntaxError: Error, Equatable, Sendable {
 /// Parser for JSON5 text and YAML flow collections.
 ///
 /// Accepts trailing commas, unquoted identifier keys, single- and double-quoted strings, `//`,
-/// `/* */` and ` #` comments, hex numbers, and YAML plain scalars inside flow collections.
+/// `/* */` and ` #` comments, hex numbers, and YAML plain scalars inside flow collections. Nesting is
+/// limited to ``maxDepth`` levels (`TOO_DEEP`), so a hostile SKILL.md cannot overflow the stack.
 struct FlowValueParser {
+    /// Deepest collection nesting accepted.
+    static let maxDepth = 64
+
     private let scalars: [Unicode.Scalar]
     private var index = 0
+    private var depth = 0
 
     init(_ text: String) {
         self.scalars = Array(text.unicodeScalars)
@@ -233,7 +238,16 @@ struct FlowValueParser {
         }
     }
 
+    private mutating func enterCollection() throws {
+        self.depth += 1
+        if self.depth > Self.maxDepth {
+            throw FrontmatterSyntaxError(code: "TOO_DEEP", message: "flow collection nesting exceeds \(Self.maxDepth)")
+        }
+    }
+
     private mutating func parseObject() throws -> FrontmatterValue {
+        try self.enterCollection()
+        defer { self.depth -= 1 }
         self.index += 1
         var members: [FrontmatterMember] = []
         while true {
@@ -275,6 +289,8 @@ struct FlowValueParser {
     }
 
     private mutating func parseArray() throws -> FrontmatterValue {
+        try self.enterCollection()
+        defer { self.depth -= 1 }
         self.index += 1
         var items: [FrontmatterValue] = []
         while true {
@@ -446,7 +462,7 @@ struct YAMLSubsetParser {
         let firstContent = self.lines.firstIndex { !$0.isBlank }
         guard let firstContent else { return [] }
         let rootIndent = self.lines[firstContent].indent
-        let value = try self.parseMapping(from: &index, indent: rootIndent)
+        let value = try self.parseMapping(from: &index, indent: rootIndent, depth: 0)
         guard case .object(let members) = value else {
             throw FrontmatterSyntaxError(code: "INVALID_ROOT", message: "frontmatter must be a YAML mapping")
         }
@@ -465,7 +481,14 @@ struct YAMLSubsetParser {
         return nil
     }
 
-    private func parseMapping(from index: inout Int, indent: Int) throws -> FrontmatterValue {
+    private static func checkDepth(_ depth: Int) throws {
+        if depth > FlowValueParser.maxDepth {
+            throw FrontmatterSyntaxError(code: "TOO_DEEP", message: "YAML nesting exceeds \(FlowValueParser.maxDepth)")
+        }
+    }
+
+    private func parseMapping(from index: inout Int, indent: Int, depth: Int) throws -> FrontmatterValue {
+        try Self.checkDepth(depth)
         var members: [FrontmatterMember] = []
         while let cursor = self.nextContentIndex(from: index) {
             let line = self.lines[cursor]
@@ -477,7 +500,7 @@ struct YAMLSubsetParser {
                 throw FrontmatterSyntaxError(code: "BLOCK_AS_IMPLICIT_KEY", message: "expected key: value, got \(line.content)")
             }
             index = cursor + 1
-            let value = try self.parseValue(rest: rest, from: &index, parentIndent: indent)
+            let value = try self.parseValue(rest: rest, from: &index, parentIndent: indent, depth: depth + 1)
             if let existing = members.firstIndex(where: { $0.key == key }) {
                 members[existing] = FrontmatterMember(key: key, value: value)
             } else {
@@ -487,7 +510,8 @@ struct YAMLSubsetParser {
         return .object(members)
     }
 
-    private func parseSequence(from index: inout Int, indent: Int) throws -> FrontmatterValue {
+    private func parseSequence(from index: inout Int, indent: Int, depth: Int) throws -> FrontmatterValue {
+        try Self.checkDepth(depth)
         var items: [FrontmatterValue] = []
         while let cursor = self.nextContentIndex(from: index) {
             let line = self.lines[cursor]
@@ -499,20 +523,21 @@ struct YAMLSubsetParser {
             index = cursor + 1
             if let (key, value) = Self.splitKey(rest), !rest.hasPrefix("\""), !rest.hasPrefix("'"), !rest.hasPrefix("{"), !rest.hasPrefix("[") {
                 // `- key: value` starts an inline mapping item; continuation keys are indented further.
-                var members = [FrontmatterMember(key: key, value: try self.parseValue(rest: value, from: &index, parentIndent: indent + 2))]
+                var members = [FrontmatterMember(key: key, value: try self.parseValue(rest: value, from: &index, parentIndent: indent + 2, depth: depth + 1))]
                 if let next = self.nextContentIndex(from: index), self.lines[next].indent > indent {
-                    let nested = try self.parseMapping(from: &index, indent: self.lines[next].indent)
+                    let nested = try self.parseMapping(from: &index, indent: self.lines[next].indent, depth: depth + 1)
                     if case .object(let more) = nested { members.append(contentsOf: more) }
                 }
                 items.append(.object(members))
             } else {
-                items.append(try self.parseValue(rest: rest, from: &index, parentIndent: indent))
+                items.append(try self.parseValue(rest: rest, from: &index, parentIndent: indent, depth: depth + 1))
             }
         }
         return .array(items)
     }
 
-    private func parseValue(rest: String, from index: inout Int, parentIndent: Int) throws -> FrontmatterValue {
+    private func parseValue(rest: String, from index: inout Int, parentIndent: Int, depth: Int) throws -> FrontmatterValue {
+        try Self.checkDepth(depth)
         let value = Self.stripTrailingComment(rest)
         if value.isEmpty {
             guard let next = self.nextContentIndex(from: index), self.lines[next].indent > parentIndent else {
@@ -522,11 +547,12 @@ struct YAMLSubsetParser {
             if child.content.hasPrefix("{") || child.content.hasPrefix("[") {
                 return try self.parseFlow(startingWith: "", from: &index, parentIndent: parentIndent)
             }
+            // One nesting level per collection: the caller already counted this value.
             if child.content == "-" || child.content.hasPrefix("- ") {
-                return try self.parseSequence(from: &index, indent: child.indent)
+                return try self.parseSequence(from: &index, indent: child.indent, depth: depth)
             }
             if Self.splitKey(child.content) != nil, !child.content.hasPrefix("\""), !child.content.hasPrefix("'") {
-                return try self.parseMapping(from: &index, indent: child.indent)
+                return try self.parseMapping(from: &index, indent: child.indent, depth: depth)
             }
             return .string(self.foldPlain(initial: "", from: &index, parentIndent: parentIndent))
         }
