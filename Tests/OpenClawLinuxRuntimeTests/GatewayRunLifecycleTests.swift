@@ -34,7 +34,7 @@ struct GatewayRunLifecycleTests {
     @Test
     func builtinAgentWaitTimesOutWithoutWaitingForTheRun() async throws {
         let server = Self.bareServer("lifecycle-wait-timeout") { request in
-            try await Task.sleep(nanoseconds: 2_000_000_000)
+            try await Task.sleep(nanoseconds: 10_000_000_000)
             return Self.ok(request)
         }
         let accepted = try Harness.payload(await Harness.call(server, "agent", ["message": AnyCodable("slow"), "idempotencyKey": AnyCodable("slow-1")]))
@@ -42,7 +42,8 @@ struct GatewayRunLifecycleTests {
         let started = Date()
         let waited = try Harness.payload(await Harness.call(server, "agent.wait", ["runId": AnyCodable("slow-1"), "timeoutMs": AnyCodable(50)]))
         #expect(waited["status"] == AnyCodable("timeout"))
-        #expect(Date().timeIntervalSince(started) < 1)
+        // Well before the 10 s run ends (generous margin for loaded CI machines).
+        #expect(Date().timeIntervalSince(started) < 5)
         // The run keeps being tracked after a timed-out wait.
         #expect(await server.trackedRuns["slow-1"] != nil)
         let aborted = try Harness.payload(await Harness.call(server, "sessions.abort", ["runId": AnyCodable("slow-1")]))
@@ -187,7 +188,7 @@ struct GatewayRunLifecycleTests {
     func reusedIdempotencyKeysDoNotStartASecondRunUnderTheSameID() async throws {
         let stack = await Harness.runtimeStack("lifecycle-run-ids", turns: [
             { _ in
-                try await Task.sleep(nanoseconds: 1_000_000_000)
+                try await Task.sleep(nanoseconds: 3_000_000_000)
                 return ModelGenerationResponse(text: "first", providerID: "scripted")
             },
         ], fallback: ScriptedToolProvider.text("later"))

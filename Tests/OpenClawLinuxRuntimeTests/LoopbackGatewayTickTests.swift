@@ -25,19 +25,19 @@ struct LoopbackGatewayTickTests {
         let (server, _) = Harness.bareServer("robust-ticks")
         let context = GatewayConnectionContext(connectionID: "tick-client", scopes: ["operator.admin"])
         let factory = SocketCounter()
-        // Without server ticks the client watchdog (deadline 2 × 100 ms) would drop the idle
-        // connection and wipe its subscriptions well before the 600 ms sleep ends.
+        // Without server ticks the client watchdog (deadline 2 × 250 ms) would drop the idle
+        // connection and wipe its subscriptions well before the 1.5 s sleep ends.
         let client = GatewayClient(
             socketFactory: {
                 factory.increment()
                 return LoopbackGatewaySocket(server: server, connection: context, tickIntervalMs: 10)
             },
-            tickIntervalMs: 100
+            tickIntervalMs: 250
         )
         try await client.connect(to: GatewayEndpoint(url: URL(string: "ws://127.0.0.1:18789")!))
         let subscribed = try await client.send(method: "sessions.messages.subscribe", params: ["key": AnyCodable("agent:main:main")])
         #expect(subscribed.ok)
-        try await Task.sleep(nanoseconds: 600_000_000)
+        try await Task.sleep(nanoseconds: 1_500_000_000)
         #expect(await server.sessionMessageSubscriptions(connectionID: "tick-client") == ["agent:main:main"])
         #expect(factory.count == 1)
         let connected = await client.isConnected()
