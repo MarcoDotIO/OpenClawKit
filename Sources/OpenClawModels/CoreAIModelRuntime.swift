@@ -505,9 +505,8 @@ enum CoreAIBridge {
     // MARK: Tensor conversion
 
     static func ndArray(from tensor: CoreAITensor) throws -> NDArray {
-        guard tensor.data.count == tensor.elementCount * tensor.scalarType.byteWidth else {
-            throw CoreAIRuntimeError.invalidTensor("tensor bytes do not match shape \(tensor.shape)")
-        }
+        // Decoded or mutated tensors may be inconsistent; NDArray traps on negative dimensions.
+        try tensor.validate()
         var array = NDArray(shape: tensor.shape, scalarType: Self.ndScalarType(tensor.scalarType))
         let width = tensor.scalarType.byteWidth
         let shape = tensor.shape
