@@ -5,7 +5,7 @@ import OpenClawCore
 import OpenClawProtocol
 @testable import OpenClawMCP
 
-@Suite("MCP stdio transport")
+@Suite("MCP stdio transport", .timeLimit(.minutes(1)))
 struct MCPStdioTransportTests {
     actor Lines {
         private(set) var values: [String] = []
@@ -107,6 +107,101 @@ struct MCPStdioTransportTests {
             try await client.connect()
         }
         await client.close()
+    }
+
+    @Test
+    func closeDoesNotWaitForAWriteBlockedOnAFullPipe() async throws {
+        // The server never reads stdin, so a 200 KB message fills the pipe and the write blocks.
+        let transport = try MCPStdioTransport(
+            serverName: "deaf",
+            config: self.config("exec sleep 5"),
+            allowlist: ExecCommandAllowlist(patterns: ["/bin/*", "/usr/bin/*"]),
+            shutdownGraceSeconds: 0.2
+        )
+        try await transport.start()
+        let big = MCPJSONRPCMessage.request(id: .int(1), method: "tools/call", params: AnyCodable(["blob": AnyCodable(String(repeating: "x", count: 200_000))]))
+        let pending = Task { try await transport.send(big) }
+        try await Task.sleep(nanoseconds: 200_000_000)
+        let startedAt = Date()
+        await transport.close()
+        #expect(Date().timeIntervalSince(startedAt) < 3, "close escalates without waiting for the blocked write")
+        // Once the child is gone the blocked write fails with EPIPE (no SIGPIPE crash).
+        await #expect(throws: MCPTransportError.self) {
+            try await pending.value
+        }
+    }
+
+    @Test
+    func writesAfterTheServerExitsThrowInsteadOfRaisingSIGPIPE() async throws {
+        let transport = try MCPStdioTransport(
+            serverName: "short-lived",
+            config: self.config("head -n 50 >/dev/null; exit 1"),
+            allowlist: ExecCommandAllowlist(patterns: ["/bin/*", "/usr/bin/*"]),
+            shutdownGraceSeconds: 0.2
+        )
+        try await transport.start()
+        let text = AnyCodable(String(repeating: "y", count: 2_000))
+        let line = MCPJSONRPCMessage.notification(method: "notifications/message", params: AnyCodable(["text": text]))
+        var failure: Error?
+        for _ in 0..<5_000 {
+            do {
+                try await transport.send(line)
+            } catch {
+                failure = error
+                break
+            }
+        }
+        #expect(failure is MCPTransportError)
+        await transport.close()
+    }
+
+    @Test
+    func dangerousEnvironmentVariablesAreDropped() async throws {
+        let lines = Lines()
+        let env = [
+            "LD_PRELOAD": "/nonexistent/evil.so",
+            "DYLD_INSERT_LIBRARIES": "/nonexistent/evil.dylib",
+            "NODE_OPTIONS": "--require /nonexistent/payload.js",
+            "BASH_ENV": "/nonexistent/rc",
+            "GITHUB_TOKEN": "gh-token",
+            "FAKE": "1",
+        ]
+        let transport = try MCPStdioTransport(
+            serverName: "env",
+            config: MCPServerConfig(command: "/bin/sh", args: ["-c", "env >&2"], env: env),
+            allowlist: ExecCommandAllowlist(patterns: ["/bin/*", "/usr/bin/*"]),
+            diagnostics: { event in
+                if event.name == "mcp.stderr" { await lines.append(event.metadata["line"] ?? "") }
+                if event.name == "mcp.env.dropped" { await lines.append("dropped:" + (event.metadata["key"] ?? "")) }
+            },
+            shutdownGraceSeconds: 0.2
+        )
+        #expect(transport.droppedEnvironmentKeys == ["BASH_ENV", "DYLD_INSERT_LIBRARIES", "LD_PRELOAD", "NODE_OPTIONS"])
+        try await transport.start()
+        try await Task.sleep(nanoseconds: 500_000_000)
+        let captured = await lines.values
+        #expect(captured.contains("bundle-mcp:env: FAKE=1"))
+        #expect(captured.contains("bundle-mcp:env: GITHUB_TOKEN=gh-token"))
+        let stderr = captured.filter { $0.hasPrefix("bundle-mcp:") }
+        #expect(!stderr.contains { $0.contains("LD_PRELOAD") || $0.contains("DYLD_INSERT") || $0.contains("NODE_OPTIONS=") || $0.contains("BASH_ENV=") })
+        #expect(captured.filter { $0.hasPrefix("dropped:") }.sorted() == [
+            "dropped:BASH_ENV", "dropped:DYLD_INSERT_LIBRARIES", "dropped:LD_PRELOAD", "dropped:NODE_OPTIONS",
+        ])
+        await transport.close()
+    }
+
+    @Test
+    func environmentPolicyMatchesUpstream() {
+        let dangerous = ["LD_PRELOAD", "ld_library_path", " DYLD_INSERT_LIBRARIES ", "NODE_OPTIONS", "PYTHONPATH", "BASH_FUNC_x%%"]
+        for key in dangerous + ["GIT_SSH_COMMAND", "OPENSSL_CONF", "SHELL"] {
+            #expect(MCPStdioEnvironmentPolicy.isDangerous(key), "\(key) is dropped")
+        }
+        for key in ["GITHUB_TOKEN", "AWS_ACCESS_KEY_ID", "DATABASE_URL", "HOME", "FAKE", "API_KEY", "PATH", ""] {
+            #expect(!MCPStdioEnvironmentPolicy.isDangerous(key), "\(key) is kept")
+        }
+        let sanitized = MCPStdioEnvironmentPolicy.sanitize(["LD_PRELOAD": "x", "TOKEN": "y"])
+        #expect(sanitized.allowed == ["TOKEN": "y"])
+        #expect(sanitized.dropped == ["LD_PRELOAD"])
     }
 
     @Test
