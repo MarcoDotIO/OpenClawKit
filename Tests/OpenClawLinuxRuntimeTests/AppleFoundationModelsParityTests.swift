@@ -53,8 +53,15 @@ struct AppleFoundationModelsIdentityTests {
         }
         #expect(!FoundationModelsProvider.handles(providerID: "openai"))
         #expect(FoundationModelsProvider.isNonSecretAuthMarker("apple-fm-local"))
+        #expect(FoundationModelsProvider.isNonSecretAuthMarker(" apple-fm-local "))
         #expect(!FoundationModelsProvider.isNonSecretAuthMarker("sk-real"))
         #expect(!FoundationModelsProvider.isNonSecretAuthMarker(nil))
+        #expect(!FoundationModelsProvider.isNonSecretAuthMarker(""))
+        // One marker list: the provider agrees with the core security-audit markers.
+        #expect(FoundationModelsProvider.localAuthMarker == ModelAuthMarkers.appleFoundationModelsLocal)
+        for marker in ["oauth:anthropic", "secretref-managed", "ollama-local", "sk-live-123", "GOOGLE_API_KEY"] {
+            #expect(FoundationModelsProvider.isNonSecretAuthMarker(marker) == ModelAuthMarkers.isNonSecretMarker(marker), "\(marker)")
+        }
     }
 
     @Test
