@@ -13,6 +13,53 @@ extension AgentLoop {
     struct ToolView: Sendable {
         let visible: [AgentToolDescriptor]
         let catalog: ToolSearchCatalog?
+        /// Canonical names of every tool this turn may execute (visible or behind Tool Search): the
+        /// registry after the policy, session MCP overrides and `toolsAllow`.
+        let callableNames: Set<String>
+    }
+
+    /// Execution-time tool checks. Hiding a tool from the model is not enough: a model can still call
+    /// it by name, so every call is re-checked against the turn's callable set and the current
+    /// session policy (permission mode and tool overrides re-read per call, so a mid-run tightening
+    /// applies to the next call).
+    struct ToolExecutionGate: Sendable {
+        /// Enforce the checks (`false` for forced `AgentRunRequest.toolCalls`, which the host issued).
+        let enforce: Bool
+        /// Canonical names callable this turn; `nil` skips the check.
+        let callableNames: Set<String>?
+        /// Current policy and session tool overrides.
+        let live: @Sendable () async -> (policy: ToolPolicy, overrides: SessionToolOverrides?)
+
+        /// Gate that runs every call (forced host tool calls).
+        static let unenforced = ToolExecutionGate(enforce: false, callableNames: nil) { (ToolPolicy.allowAll, nil) }
+
+        /// Why a call must not run, or `nil` when it may.
+        func denial(for descriptor: AgentToolDescriptor, calledAs name: String) async -> String? {
+            guard self.enforce else { return nil }
+            let current = await self.live()
+            if !current.policy.allows(descriptor) {
+                return "Tool \(name) is not allowed by the current tool policy"
+            }
+            if case .mcp(let server, let tool) = descriptor.source, current.overrides?.deniesMCPTool(server: server, tool: tool) == true {
+                return "Tool \(name) is not allowed by the current tool policy"
+            }
+            if let callableNames, !callableNames.contains(AgentToolRegistry.canonicalName(descriptor.name)) {
+                return "Tool \(name) is not available in this run"
+            }
+            return nil
+        }
+    }
+
+    /// Gate for model-proposed calls of one turn: the turn's callable set plus a live re-read of the
+    /// session record before each call.
+    func toolGate(request: AgentRunRequest, fallback: SessionRecord?, callableNames: Set<String>?) -> ToolExecutionGate {
+        let store = self.deps.sessionStore
+        let base = self.deps.tools.policy
+        let sessionKey = request.sessionKey
+        return ToolExecutionGate(enforce: true, callableNames: callableNames) {
+            let record = await store?.recordForKey(sessionKey) ?? fallback
+            return (Self.effectivePolicy(base: base, request: request, session: record), record?.toolOverrides)
+        }
     }
 
     /// Policy-filtered tools (shared registry, then run-scoped tools); large catalogs move behind Tool
@@ -35,15 +82,16 @@ extension AgentLoop {
             }
         }
         descriptors = promptBuild.filterTools(descriptors)
+        let callableNames = Set(descriptors.map { AgentToolRegistry.canonicalName($0.name) })
         var configuration = self.deps.tools.toolSearch ?? .embeddedDefault
         if self.isSmallContext(model), configuration.enabled {
             configuration.minCatalogSize = min(configuration.minCatalogSize, self.deps.configuration.smallContextToolSearchThreshold + 1)
         }
         let catalog = ToolSearchCatalog(descriptors: descriptors, configuration: configuration)
         guard catalog.isActive else {
-            return ToolView(visible: descriptors, catalog: nil)
+            return ToolView(visible: descriptors, catalog: nil, callableNames: callableNames)
         }
-        return ToolView(visible: catalog.modelVisibleDescriptors, catalog: catalog)
+        return ToolView(visible: catalog.modelVisibleDescriptors, catalog: catalog, callableNames: callableNames)
     }
 
     /// Whether the model has a small context window (Apple's on-device `apple-fm/system` model, or a
@@ -73,7 +121,7 @@ extension AgentLoop {
         catalog: ToolSearchCatalog,
         context: AgentToolInvocationContext,
         agentID: String,
-        policy: ToolPolicy,
+        gate: ToolExecutionGate,
         request: AgentRunRequest,
         hooks: AgentLoopHookEmitter,
         events: AgentEventSequencer,
@@ -111,8 +159,7 @@ extension AgentLoop {
                     parentToolCallID: toolCallID
                 ),
                 agentID: agentID,
-                policy: policy,
-                enforcePolicy: true,
+                gate: gate,
                 request: request,
                 hooks: hooks,
                 events: events,
@@ -123,7 +170,13 @@ extension AgentLoop {
     }
 
     static func effectivePolicy(base: ToolPolicy, request: AgentRunRequest, session: SessionRecord?) -> ToolPolicy {
-        var policy = request.toolPolicy ?? base
+        Self.effectivePolicy(base: base, requestPolicy: request.toolPolicy, session: session)
+    }
+
+    /// The policy a run of `session` executes under: the per-run policy (else the runtime base) plus
+    /// the session's read-only mutation denies and tool-override denies.
+    static func effectivePolicy(base: ToolPolicy, requestPolicy: ToolPolicy?, session: SessionRecord?) -> ToolPolicy {
+        var policy = requestPolicy ?? base
         var deny: [String] = []
         if session?.permissionMode == .readOnly {
             deny.append(contentsOf: Self.mutationToolNames)
@@ -149,8 +202,7 @@ extension AgentLoop {
         _ calls: [AgentToolCall],
         context: AgentToolInvocationContext,
         agentID: String,
-        policy: ToolPolicy,
-        enforcePolicy: Bool,
+        gate: ToolExecutionGate,
         searchCatalog: ToolSearchCatalog?,
         sessionID: String,
         request: AgentRunRequest,
@@ -180,7 +232,7 @@ extension AgentLoop {
                     catalog: searchCatalog,
                     context: context,
                     agentID: agentID,
-                    policy: policy,
+                    gate: gate,
                     request: request,
                     hooks: hooks,
                     events: events,
@@ -192,8 +244,7 @@ extension AgentLoop {
                 descriptor: descriptors[call.name],
                 context: context,
                 agentID: agentID,
-                policy: policy,
-                enforcePolicy: enforcePolicy,
+                gate: gate,
                 request: request,
                 hooks: hooks,
                 events: events,
@@ -201,38 +252,86 @@ extension AgentLoop {
             )
         }
         let parallel = calls.count > 1 && calls.allSatisfy { descriptors[$0.name]?.executionMode == .parallel }
-        var results: [AgentToolResult] = []
-        if parallel {
-            results = try await withThrowingTaskGroup(of: (Int, AgentToolResult).self) { group in
-                for (index, call) in calls.enumerated() {
-                    group.addTask {
-                        (index, try await dispatch(index, call))
+        // The assistant tool-call turn is already persisted, so every call id must get a result in the
+        // transcript, including calls an abort, timeout or error interrupted: providers reject a
+        // replayed tool call without a result. Results are written in call order as they complete.
+        var completed = [AgentToolResult?](repeating: nil, count: calls.count)
+        var persisted = 0
+        do {
+            if parallel {
+                let outcomes = await withTaskGroup(of: (Int, Result<AgentToolResult, Error>).self) { group in
+                    for (index, call) in calls.enumerated() {
+                        group.addTask {
+                            do {
+                                return (index, .success(try await dispatch(index, call)))
+                            } catch {
+                                return (index, .failure(error))
+                            }
+                        }
+                    }
+                    var collected: [(Int, Result<AgentToolResult, Error>)] = []
+                    for await item in group {
+                        collected.append(item)
+                    }
+                    return collected
+                }
+                var firstError: Error?
+                for (index, outcome) in outcomes.sorted(by: { $0.0 < $1.0 }) {
+                    switch outcome {
+                    case .success(let result):
+                        completed[index] = result
+                    case .failure(let error):
+                        firstError = firstError ?? error
                     }
                 }
-                var ordered: [(Int, AgentToolResult)] = []
-                for try await item in group {
-                    ordered.append(item)
+                if let firstError {
+                    throw firstError
                 }
-                return ordered.sorted { $0.0 < $1.0 }.map(\.1)
+            } else {
+                for (index, call) in calls.enumerated() {
+                    try Task.checkCancellation()
+                    let result = try await dispatch(index, call)
+                    completed[index] = result
+                    recorder.record(result)
+                    try await self.appendToolResult(
+                        result,
+                        sessionID: sessionID,
+                        request: request,
+                        transcript: transcript,
+                        hooks: hooks,
+                        recorder: recorder,
+                        isSynthetic: false
+                    )
+                    persisted = index + 1
+                }
             }
-        } else {
-            for (index, call) in calls.enumerated() {
-                try Task.checkCancellation()
-                results.append(try await dispatch(index, call))
+            while persisted < calls.count, let result = completed[persisted] {
+                recorder.record(result)
+                try await self.appendToolResult(
+                    result,
+                    sessionID: sessionID,
+                    request: request,
+                    transcript: transcript,
+                    hooks: hooks,
+                    recorder: recorder,
+                    isSynthetic: false
+                )
+                persisted += 1
             }
-        }
-        for result in results {
-            recorder.record(result)
-            try await self.appendToolResult(
-                result,
+        } catch {
+            await self.persistInterruptedBatch(
+                calls,
+                completed: completed,
+                from: persisted,
                 sessionID: sessionID,
                 request: request,
                 transcript: transcript,
                 hooks: hooks,
-                recorder: recorder,
-                isSynthetic: false
+                recorder: recorder
             )
+            throw error
         }
+        let results = completed.compactMap { $0 }
         if self.deps.tools.loopDetection.enabled {
             let detection = self.deps.tools.loopDetection
             for (call, result) in zip(calls, results) {
@@ -252,28 +351,84 @@ extension AgentLoop {
         return results
     }
 
+    /// Text of the synthetic result written for a tool call that an abort, timeout or error interrupted.
+    static let interruptedToolResultText = "Tool call was interrupted before it returned a result (the run was aborted, "
+        + "timed out or failed); its effects are unknown. Check before retrying it."
+
+    /// Writes the results of an interrupted batch in call order: calls that finished keep their real
+    /// result; the rest get a synthetic error result, so no call id is left without a result.
+    func persistInterruptedBatch(
+        _ calls: [AgentToolCall],
+        completed: [AgentToolResult?],
+        from start: Int,
+        sessionID: String,
+        request: AgentRunRequest,
+        transcript: any SessionTranscriptStore,
+        hooks: AgentLoopHookEmitter,
+        recorder: AgentRunRecorder
+    ) async {
+        for index in start..<calls.count {
+            if let result = completed[index] {
+                recorder.record(result)
+                do {
+                    try await self.appendToolResult(
+                        result,
+                        sessionID: sessionID,
+                        request: request,
+                        transcript: transcript,
+                        hooks: hooks,
+                        recorder: recorder,
+                        isSynthetic: false
+                    )
+                    continue
+                } catch {
+                    // Fall through to the synthetic result below.
+                }
+            }
+            let call = calls[index]
+            let synthetic = AgentToolResultMessage(
+                toolCallId: call.id ?? "",
+                toolName: call.name,
+                content: [.text(Self.interruptedToolResultText)],
+                isError: true,
+                timestamp: SessionTranscriptClock.nowMs()
+            )
+            try? await self.appendSyntheticMessage(
+                .toolResult(synthetic),
+                sessionID: sessionID,
+                sessionKey: request.sessionKey,
+                transcript: transcript,
+                recorder: recorder
+            )
+        }
+    }
+
     func executeOne(
         _ call: AgentToolCall,
         descriptor: AgentToolDescriptor?,
         context: AgentToolInvocationContext,
         agentID: String,
-        policy: ToolPolicy,
-        enforcePolicy: Bool,
+        gate: ToolExecutionGate,
         request: AgentRunRequest,
         hooks: AgentLoopHookEmitter,
         events: AgentEventSequencer,
         recorder: AgentRunRecorder
     ) async throws -> AgentToolResult {
         let toolCallID = call.id ?? AgentToolCall.makeID()
+        // The registry resolves case variants and aliases ("Bash" → exec), so hooks, approvals, events
+        // and diagnostics use the resolved tool (upstream passes hooks `normalizeToolPolicyName(tool.name)`);
+        // results still echo the proposed name, which providers require.
+        let toolName = descriptor.map { AgentToolRegistry.canonicalName($0.name) } ?? call.name
+        let displayName = descriptor?.name ?? call.name
         var arguments = call.arguments
         events.emit(.tool, [
             "phase": AnyCodable("start"),
-            "name": AnyCodable(call.name),
+            "name": AnyCodable(displayName),
             "toolCallId": AnyCodable(toolCallID),
             "args": AnyCodable(arguments),
         ])
-        recorder.record(AgentRunEvent(runID: request.runID, kind: .toolStarted, toolName: call.name))
-        await self.emitDiagnostic("tool.call.started", request: request, metadata: ["toolName": call.name, "toolCallId": toolCallID])
+        recorder.record(AgentRunEvent(runID: request.runID, kind: .toolStarted, toolName: displayName))
+        await self.emitDiagnostic("tool.call.started", request: request, metadata: ["toolName": displayName, "toolCallId": toolCallID])
 
         let startedAt = Date()
         var hookContext = AgentToolCallHookContext(
@@ -281,15 +436,16 @@ extension AgentLoop {
             sessionKey: request.sessionKey,
             agentID: agentID,
             toolCallID: toolCallID,
-            toolName: call.name,
+            toolName: toolName,
+            rawToolName: call.name,
             arguments: arguments,
             descriptor: descriptor
         )
         var result: AgentToolResult?
 
         if let descriptor {
-            if enforcePolicy, !policy.allows(descriptor) {
-                result = AgentToolResult(name: call.name, toolCallID: toolCallID, output: .error("Tool \(call.name) is not allowed by the current tool policy"))
+            if let denial = await gate.denial(for: descriptor, calledAs: call.name) {
+                result = AgentToolResult(name: call.name, toolCallID: toolCallID, output: .error(denial))
             } else if let violation = Self.schemaViolation(arguments, descriptor: descriptor) {
                 result = AgentToolResult(name: call.name, toolCallID: toolCallID, output: .error("Invalid arguments for \(call.name): \(violation)"))
             }
@@ -311,6 +467,7 @@ extension AgentLoop {
                 result = try await self.requestToolApproval(
                     approvalRequest,
                     call: call,
+                    toolName: toolName,
                     toolCallID: toolCallID,
                     descriptor: descriptor,
                     agentID: agentID,
@@ -321,7 +478,7 @@ extension AgentLoop {
         }
         if result == nil, let decision = await hooks.beforeToolCall(
             BeforeToolCallEvent(
-                toolName: call.name,
+                toolName: toolName,
                 params: arguments,
                 toolKind: descriptor.map(Self.toolKind(of:)),
                 runId: request.runID,
@@ -341,6 +498,7 @@ extension AgentLoop {
                     result = try await self.requestToolApproval(
                         AgentToolApprovalRequest(approval),
                         call: call,
+                        toolName: toolName,
                         toolCallID: toolCallID,
                         descriptor: descriptor,
                         agentID: agentID,
@@ -364,7 +522,7 @@ extension AgentLoop {
             let update: AgentToolUpdateHandler = { partial in
                 var data: [String: AnyCodable] = [
                     "phase": AnyCodable("update"),
-                    "name": AnyCodable(call.name),
+                    "name": AnyCodable(displayName),
                     "toolCallId": AnyCodable(toolCallID),
                 ]
                 if let progress = partial.progress {
@@ -393,7 +551,7 @@ extension AgentLoop {
                 name: finished.name,
                 toolCallID: finished.toolCallID,
                 output: finished.output,
-                durationMs: Int(Date().timeIntervalSince(startedAt) * 1000)
+                durationMs: RuntimeTime.elapsedMilliseconds(since: startedAt)
             )
         }
         await self.deps.hooks.afterToolCall?(hookContext, finished)
@@ -402,7 +560,7 @@ extension AgentLoop {
         await hooks.observe(
             .afterToolCall,
             metadata: [
-                "toolName": AnyCodable(call.name),
+                "toolName": AnyCodable(toolName),
                 "toolCallId": AnyCodable(toolCallID),
                 "isError": AnyCodable(finished.isError),
                 "durationMs": AnyCodable(finished.durationMs ?? 0),
@@ -410,11 +568,11 @@ extension AgentLoop {
         ) {
             Self.afterToolCallEvent(context: completedContext, result: completed)
         }
-        recorder.record(AgentRunEvent(runID: request.runID, kind: .toolCompleted, toolName: call.name))
+        recorder.record(AgentRunEvent(runID: request.runID, kind: .toolCompleted, toolName: displayName))
         let preview = String(finished.output.text.prefix(self.deps.configuration.toolResultEventMaxChars))
         events.emit(.tool, [
             "phase": AnyCodable("result"),
-            "name": AnyCodable(call.name),
+            "name": AnyCodable(displayName),
             "toolCallId": AnyCodable(toolCallID),
             "isError": AnyCodable(finished.isError),
             "result": AnyCodable(preview),
@@ -423,7 +581,7 @@ extension AgentLoop {
         await self.emitDiagnostic(
             finished.isError ? "tool.call.failed" : "tool.call.completed",
             request: request,
-            metadata: ["toolName": call.name, "toolCallId": toolCallID, "durationMs": String(finished.durationMs ?? 0)]
+            metadata: ["toolName": displayName, "toolCallId": toolCallID, "durationMs": String(finished.durationMs ?? 0)]
         )
         return finished
     }
@@ -432,6 +590,7 @@ extension AgentLoop {
     func requestToolApproval(
         _ approvalRequest: AgentToolApprovalRequest,
         call: AgentToolCall,
+        toolName: String,
         toolCallID: String,
         descriptor: AgentToolDescriptor?,
         agentID: String,
@@ -443,15 +602,15 @@ extension AgentLoop {
             description: approvalRequest.description,
             severity: approvalRequest.severity,
             pluginID: approvalRequest.pluginID,
-            toolName: call.name,
+            toolName: toolName,
             agentID: agentID,
             allowedDecisions: approvalRequest.allowedDecisions
         )
         let grantKey: String
-        if case .mcp(let server, let toolName) = descriptor?.source {
-            grantKey = ApprovalBroker.mcpGrantKey(server: server, tool: toolName)
+        if case .mcp(let server, let mcpTool) = descriptor?.source {
+            grantKey = ApprovalBroker.mcpGrantKey(server: server, tool: mcpTool)
         } else {
-            grantKey = ApprovalBroker.pluginGrantKey(pluginID: approvalRequest.pluginID, toolName: call.name)
+            grantKey = ApprovalBroker.pluginGrantKey(pluginID: approvalRequest.pluginID, toolName: toolName)
         }
         let started = await self.deps.approvalBroker.begin(
             presentation: presentation,
@@ -626,7 +785,7 @@ extension AgentLoop {
                 message = decoded
             }
         }
-        try await self.appendMessage(
+        let written = try await self.appendMessage(
             .toolResult(message),
             sessionID: sessionID,
             sessionKey: request.sessionKey,
@@ -634,9 +793,48 @@ extension AgentLoop {
             hooks: hooks,
             recorder: recorder
         )
+        if !written {
+            // A `before_message_write` block must not leave the call without a result (providers
+            // reject the replayed tool call), so a content-free placeholder takes its place.
+            let placeholder = AgentToolResultMessage(
+                toolCallId: original.toolCallId,
+                toolName: original.toolName,
+                content: [.text(Self.blockedToolResultText)],
+                isError: true,
+                timestamp: SessionTranscriptClock.nowMs()
+            )
+            try await self.appendSyntheticMessage(
+                .toolResult(placeholder),
+                sessionID: sessionID,
+                sessionKey: request.sessionKey,
+                transcript: transcript,
+                recorder: recorder
+            )
+        }
+    }
+
+    /// Text of the placeholder written when a `before_message_write` handler blocks a tool result.
+    static let blockedToolResultText = "Tool result was not recorded (blocked by a before_message_write hook)."
+
+    /// Writes a runtime-generated message (placeholders for missing tool results) without running
+    /// the write hooks again.
+    func appendSyntheticMessage(
+        _ message: AgentMessage,
+        sessionID: String,
+        sessionKey: String,
+        transcript: any SessionTranscriptStore,
+        recorder: AgentRunRecorder
+    ) async throws {
+        try await transcript.appendMessage(message, sessionID: sessionID)
+        recorder.record(message)
+        if let engine = await self.deps.contextEngines.selected() {
+            _ = await engine.ingest(sessionID: sessionID, sessionKey: sessionKey, message: message)
+        }
     }
 
     /// Writes one transcript message after `before_message_write` handlers (block or replace).
+    /// - Returns: `false` when a handler blocked the write.
+    @discardableResult
     func appendMessage(
         _ message: AgentMessage,
         sessionID: String,
@@ -644,7 +842,7 @@ extension AgentLoop {
         transcript: any SessionTranscriptStore,
         hooks: AgentLoopHookEmitter,
         recorder: AgentRunRecorder
-    ) async throws {
+    ) async throws -> Bool {
         var written = message
         let agentID = hooks.agentID
         if let decision = await hooks.beforeMessageWrite({
@@ -657,7 +855,7 @@ extension AgentLoop {
                     sessionKey: sessionKey,
                     metadata: ["role": message.role]
                 )
-                return
+                return false
             }
             if let replacement = decision.message, let decoded = HookPayloadCoding.decode(AgentMessage.self, from: replacement) {
                 written = decoded
@@ -668,18 +866,21 @@ extension AgentLoop {
         if let engine = await self.deps.contextEngines.selected() {
             _ = await engine.ingest(sessionID: sessionID, sessionKey: sessionKey, message: written)
         }
+        return true
     }
 
+    /// Records the turn an abort, timeout or error interrupted. `partialText` is the visible text the
+    /// interrupted model turn streamed before it was persisted (empty when every turn was persisted).
     func recordInterruptedTurn(
         error: Error,
         control: AgentRunControl,
-        accumulator: AgentStreamAccumulator,
+        partialText: String,
         sessionID: String,
         request: AgentRunRequest,
         transcript: any SessionTranscriptStore
     ) async throws {
         let aborted = error is CancellationError || control.cancellation != nil
-        let partial = accumulator.partialVisibleText
+        let partial = partialText
         guard aborted || !partial.isEmpty else { return }
         let message = AgentAssistantMessage(
             content: partial.isEmpty ? [] : [.text(partial)],

@@ -141,12 +141,35 @@ public struct AgentToolCallHookContext: Sendable, Equatable {
     public var agentID: String
     /// Tool call identifier.
     public var toolCallID: String
-    /// Tool name as proposed by the model.
+    /// Canonical name of the resolved tool (lowercased, aliases resolved: a model call to `Bash`
+    /// reports `exec`), as upstream hooks see it; the proposed name when the tool is not registered.
     public var toolName: String
+    /// Tool name exactly as the model proposed it.
+    public var rawToolName: String
     /// Tool arguments (after earlier rewrites).
     public var arguments: [String: AnyCodable]
     /// Tool descriptor, when the tool is registered.
     public var descriptor: AgentToolDescriptor?
+
+    init(
+        runID: String,
+        sessionKey: String,
+        agentID: String,
+        toolCallID: String,
+        toolName: String,
+        rawToolName: String? = nil,
+        arguments: [String: AnyCodable],
+        descriptor: AgentToolDescriptor?
+    ) {
+        self.runID = runID
+        self.sessionKey = sessionKey
+        self.agentID = agentID
+        self.toolCallID = toolCallID
+        self.toolName = toolName
+        self.rawToolName = rawToolName ?? toolName
+        self.arguments = arguments
+        self.descriptor = descriptor
+    }
 }
 
 /// Approval requested by a `before_tool_call` hook (upstream `HookApprovalRequest`).
@@ -585,6 +608,10 @@ struct AgentLoop: Sendable {
     let deps: AgentLoopDependencies
 
     static let mutationToolNames: Set<String> = ["write", "edit", "apply_patch", "exec", "process"]
+    /// Hidden notice appended when the session permission mode changes mid-run (upstream
+    /// `PERMISSION_CHANGE_NOTICE`).
+    static let permissionChangeNotice = "Permission change. The operator changed this session's permissions. Continue with the "
+        + "updated policy, preserving completed work. Inspect interrupted actions before retrying them; do not repeat completed actions."
     /// Upstream default reason for `before_tool_call` blocks without a reason.
     static let defaultHookBlockReason = "Tool call blocked by plugin hook"
 
@@ -622,7 +649,7 @@ struct AgentLoop: Sendable {
                     runId: originalRequest.runID,
                     messages: AgentLoopHookEmitter.encode(messages),
                     success: true,
-                    durationMs: Int(max(0, SessionTranscriptClock.nowMs() - startedAt))
+                    durationMs: RuntimeTime.elapsedMilliseconds(since: startedAt)
                 )
             }
             return result
@@ -635,7 +662,7 @@ struct AgentLoop: Sendable {
                     messages: AgentLoopHookEmitter.encode(messages),
                     success: false,
                     error: description,
-                    durationMs: Int(max(0, SessionTranscriptClock.nowMs() - startedAt))
+                    durationMs: RuntimeTime.elapsedMilliseconds(since: startedAt)
                 )
             }
             throw error
@@ -799,8 +826,7 @@ struct AgentLoop: Sendable {
                 calls,
                 context: context,
                 agentID: agentID,
-                policy: policy,
-                enforcePolicy: false,
+                gate: .unenforced,
                 searchCatalog: nil,
                 sessionID: sessionID,
                 request: request,
@@ -819,7 +845,9 @@ struct AgentLoop: Sendable {
         var overflowRetried = false
         var iteration = 0
         var stopDetail: String?
-        let accumulator = AgentStreamAccumulator()
+        // Text streamed by the model turn that is not persisted yet (recorded if the run is interrupted).
+        var pendingTurn: AgentStreamAccumulator?
+        var observedPermissionMode = sessionRecord?.permissionMode
 
         do {
             while true {
@@ -830,7 +858,27 @@ struct AgentLoop: Sendable {
                 }
                 iteration += 1
 
-                let toolView = await self.toolView(policy: policy, model: model, session: sessionRecord, promptBuild: promptBuild)
+                // Permission mode and tool overrides can change mid-run (`sessions.patch`); every turn
+                // (and every tool call, through the gate) uses the current record.
+                let liveSession = await self.deps.sessionStore?.recordForKey(request.sessionKey) ?? sessionRecord
+                let policy = Self.effectivePolicy(base: self.deps.tools.policy, request: request, session: liveSession)
+                if liveSession?.permissionMode != observedPermissionMode {
+                    observedPermissionMode = liveSession?.permissionMode
+                    try await self.appendMessage(
+                        .custom(
+                            customType: "permission_change",
+                            content: .string("\(Self.permissionChangeNotice) Requested mode: \(observedPermissionMode?.rawValue ?? "default")."),
+                            display: false,
+                            timestamp: SessionTranscriptClock.nowMs()
+                        ),
+                        sessionID: sessionID,
+                        sessionKey: request.sessionKey,
+                        transcript: transcript,
+                        hooks: hooks,
+                        recorder: recorder
+                    )
+                }
+                let toolView = await self.toolView(policy: policy, model: model, session: liveSession, promptBuild: promptBuild)
                 let descriptors = toolView.visible
                 var contextMessages = try await transcript.contextMessages(sessionID: sessionID)
                 let engine = await self.deps.contextEngines.selected()
@@ -873,14 +921,14 @@ struct AgentLoop: Sendable {
                 let composedSystemPrompt = await self.composeSystemPrompt(
                     workspace: workspace,
                     request: request,
-                    session: sessionRecord,
+                    session: liveSession,
                     addition: systemAddition,
                     directory: toolView.catalog?.configuration.mode == .directory ? toolView.catalog?.directoryPrompt() : nil,
                     promptContext: AgentPromptContext(
                         runID: runID,
                         sessionKey: request.sessionKey,
                         agentID: agentID,
-                        session: sessionRecord,
+                        session: liveSession,
                         providerID: model.providerID,
                         modelID: model.modelID,
                         capabilities: model.capabilities,
@@ -923,6 +971,8 @@ struct AgentLoop: Sendable {
                 }
                 let callStartedAt = SessionTranscriptClock.nowMs()
 
+                let turn = AgentStreamAccumulator()
+                pendingTurn = turn
                 let response: ModelGenerationResponse
                 do {
                     if streaming {
@@ -931,7 +981,7 @@ struct AgentLoop: Sendable {
                             providerID: callProvider,
                             iteration: iteration,
                             runID: runID,
-                            accumulator: accumulator,
+                            accumulator: turn,
                             events: events
                         )
                     } else {
@@ -1038,6 +1088,7 @@ struct AgentLoop: Sendable {
                     hooks: hooks,
                     recorder: recorder
                 )
+                pendingTurn = nil
                 if let usage = response.usage {
                     let turnUsage = AgentMessageConversion.tokenUsage(from: usage)
                     usageTotal = usageTotal + turnUsage
@@ -1060,8 +1111,7 @@ struct AgentLoop: Sendable {
                     calls,
                     context: context,
                     agentID: agentID,
-                    policy: policy,
-                    enforcePolicy: true,
+                    gate: self.toolGate(request: request, fallback: liveSession, callableNames: toolView.callableNames),
                     searchCatalog: toolView.catalog,
                     sessionID: sessionID,
                     request: request,
@@ -1080,7 +1130,7 @@ struct AgentLoop: Sendable {
             try? await self.recordInterruptedTurn(
                 error: error,
                 control: control,
-                accumulator: accumulator,
+                partialText: pendingTurn?.partialVisibleText ?? "",
                 sessionID: sessionID,
                 request: request,
                 transcript: transcript
@@ -1243,7 +1293,9 @@ struct AgentLoop: Sendable {
     ) async throws -> ModelGenerationResponse {
         let itemID = "\(runID):assistant:\(iteration)"
         let stream = await self.deps.modelRouter.generateStream(request)
-        let turnAccumulator = AgentStreamAccumulator()
+        // One accumulator per model turn: it feeds the events, the response text and, if the run is
+        // interrupted before the turn is persisted, the recorded partial text.
+        let turnAccumulator = accumulator
         var partialCalls: [Int: (id: String?, name: String?, arguments: String)] = [:]
         var finalCalls: [ModelToolCall] = []
         var executedCalls: [ModelExecutedToolCall] = []
@@ -1254,7 +1306,6 @@ struct AgentLoop: Sendable {
             try Task.checkCancellation()
             // Text deltas accumulate; the `.final` chunk usually carries no text.
             if !chunk.text.isEmpty {
-                _ = accumulator.appendText(chunk.text)
                 let update = turnAccumulator.appendText(chunk.text)
                 if !update.delta.isEmpty || update.replace {
                     var data: [String: AnyCodable] = [
@@ -1328,7 +1379,7 @@ struct AgentLoop: Sendable {
         startedAt: Int64,
         error: Error?
     ) async {
-        let duration = Int(max(0, SessionTranscriptClock.nowMs() - startedAt))
+        let duration = RuntimeTime.elapsedMilliseconds(since: startedAt)
         let category: String? = error.map { error in
             if error is CancellationError { return "aborted" }
             return CompactionPlanner.isContextOverflowError(error) ? "context_overflow" : "provider_error"
