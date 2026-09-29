@@ -686,7 +686,8 @@ public struct OpenClawGatewaySessionChatTransport: OpenClawChatGatewayTransport 
     /// (subscriptions are per socket). A reconnect onto a different connection context (endpoint,
     /// credentials or gateway) is reported as ``OpenClawChatTransportEvent/routeChanged``; a
     /// reconnect of the same context as ``OpenClawChatTransportEvent/seqGap``. A transport pinned
-    /// to ``gatewayStableID`` drops frames while the session is connected to another gateway.
+    /// to ``gatewayStableID`` drops frames while the session is connected to another gateway and
+    /// reports ``OpenClawChatTransportEvent/health(ok:)`` `false` once when that starts.
     public func events() -> AsyncStream<OpenClawChatTransportEvent> {
         let transport = self
         return AsyncStream(bufferingPolicy: .bufferingNewest(200)) { continuation in
@@ -694,6 +695,7 @@ public struct OpenClawGatewaySessionChatTransport: OpenClawChatGatewayTransport 
                 let subscription = await transport.gateway.makeServerEventSubscription(bufferingNewest: 200)
                 defer { subscription.cancel() }
                 var tracker = RouteTracker()
+                var servingOtherGateway = false
                 if let route = await transport.currentRoute() {
                     _ = tracker.observe(route)
                     transport.subscribeSessions(ifCurrentRoute: route)
@@ -702,11 +704,17 @@ public struct OpenClawGatewaySessionChatTransport: OpenClawChatGatewayTransport 
                     if Task.isCancelled { break }
                     guard var mapped = OpenClawChatGatewayPayloadCodec.event(from: frame) else { continue }
                     // A pinned transport ignores frames while the shared session serves another
-                    // gateway, so that gateway's transcripts and sessions never reach this store.
-                    if let gatewayStableID = transport.gatewayStableID,
-                       await transport.gateway.currentRoute(ifGatewayID: gatewayStableID) == nil
-                    {
-                        continue
+                    // gateway, so that gateway's transcripts and sessions never reach this store, and
+                    // reports itself offline once instead of inheriting the other gateway's health.
+                    if let gatewayStableID = transport.gatewayStableID {
+                        guard await transport.gateway.currentRoute(ifGatewayID: gatewayStableID) != nil else {
+                            if !servingOtherGateway, await transport.gateway.currentRoute() != nil {
+                                servingOtherGateway = true
+                                continuation.yield(.health(ok: false))
+                            }
+                            continue
+                        }
+                        servingOtherGateway = false
                     }
                     if tracker.shouldCheckRoute(after: mapped), let route = await transport.currentRoute() {
                         switch tracker.observe(route) {

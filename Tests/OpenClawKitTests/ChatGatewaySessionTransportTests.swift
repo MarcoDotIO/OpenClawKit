@@ -286,7 +286,11 @@ struct ChatGatewaySessionTransportTests {
         let home = OpenClawGatewaySessionChatTransport(gateway: gateway, gatewayStableID: "gw-a")
         let homeConsumer = Task {
             for await event in home.events() {
-                if case .tick = event { homeRecorder.append("tick") }
+                switch event {
+                case .tick: homeRecorder.append("tick")
+                case .health(ok: false): homeRecorder.append("offline")
+                default: break
+                }
             }
         }
         defer { homeConsumer.cancel() }
@@ -320,8 +324,10 @@ struct ChatGatewaySessionTransportTests {
         workSocket.emit(GatewayCoreFrames.event("tick", payload: ["ts": 2]))
         workSocket.emit(GatewayCoreFrames.event("tick", payload: ["ts": 3]))
         try await gatewayCoreWaitUntil("work ticks delivered") { workRecorder.values.count == 2 }
+        // The home transport reports itself offline once and never delivers B's frames.
+        try await gatewayCoreWaitUntil("home reported offline") { homeRecorder.values.contains("offline") }
         try await Task.sleep(for: .milliseconds(100))
-        #expect(homeRecorder.values.count == 1)
+        #expect(homeRecorder.values == ["tick", "offline"])
     }
 
     @Test func `gateway stable id must match the connected gateway exactly`() async throws {
