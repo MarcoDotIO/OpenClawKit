@@ -99,12 +99,19 @@ public struct GatewayHelloPolicy: Sendable, Equatable {
         self.attachmentMaxImageBytes = attachmentMaxImageBytes
     }
 
-    /// Reads a hello-ok `policy` object, ignoring non-positive values.
+    /// Tick intervals a gateway may advertise; values outside are clamped so a hostile or buggy
+    /// hello-ok cannot disable (or trap) the tick watchdog.
+    public static let advertisedTickIntervalRangeMs: ClosedRange<Double> = 1000...600_000
+
+    /// Reads a hello-ok `policy` object, ignoring non-positive values and clamping `tickIntervalMs`
+    /// to ``advertisedTickIntervalRangeMs``.
     public init(policy: [String: AnyCodable]) {
         func positive(_ value: AnyCodable?) -> Int? {
             value?.intValue.flatMap { $0 > 0 ? $0 : nil }
         }
-        let tick = policy["tickIntervalMs"]?.doubleValue.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+        let range = Self.advertisedTickIntervalRangeMs
+        let tick = policy["tickIntervalMs"]?.doubleValue
+            .flatMap { $0.isFinite && $0 > 0 ? min(max($0, range.lowerBound), range.upperBound) : nil }
         let attachments = policy["attachments"]?.dictionaryValue
         self.init(
             tickIntervalMs: tick ?? Self.defaultTickIntervalMs,

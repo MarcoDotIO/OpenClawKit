@@ -31,9 +31,19 @@ private struct GatewayStartupUnavailableConnectError: Error {
 /// socket can never tear down (or leak state into) its replacement. All connect callers share one
 /// in-flight attempt; handshake failures back off on the monotonic clock (500 ms doubling to 30 s).
 public actor GatewayChannelActor {
-    /// Resolves a request deadline: `0` means no client deadline, `nil` means `defaultMs`.
+    /// Resolves a request deadline: `nil` means `defaultMs`; `0`, negative and non-finite values
+    /// (NaN, infinity) mean no client deadline.
     nonisolated static func resolveRequestTimeoutMs(_ timeoutMs: Double?, defaultMs: Double) -> Double? {
-        timeoutMs == 0 ? nil : (timeoutMs ?? defaultMs)
+        guard let timeoutMs else { return defaultMs }
+        return timeoutMs.isFinite && timeoutMs > 0 ? timeoutMs : nil
+    }
+
+    /// Saturating milliseconds-to-nanoseconds conversion for `Task.sleep`: `0` for NaN and
+    /// non-positive values, `UInt64.max` once the product no longer fits (never traps).
+    nonisolated static func sleepNanoseconds(milliseconds: Double) -> UInt64 {
+        guard milliseconds > 0 else { return 0 }
+        let nanoseconds = milliseconds * 1_000_000
+        return nanoseconds >= Double(UInt64.max) ? UInt64.max : UInt64(nanoseconds)
     }
 
     static let maxStartupUnavailableRetries = 20
@@ -763,7 +773,7 @@ public actor GatewayChannelActor {
     private func keepaliveLoop(connectionGeneration: UInt64) async {
         while self.shouldReconnect {
             guard await self.sleepUnlessCancelled(
-                nanoseconds: UInt64(self.keepaliveIntervalSeconds * 1_000_000_000))
+                nanoseconds: Self.sleepNanoseconds(milliseconds: self.keepaliveIntervalSeconds * 1000))
             else { return }
             guard self.shouldReconnect else { return }
             guard self.isConnected(connectionGeneration: connectionGeneration) else { return }
@@ -1581,7 +1591,9 @@ extension GatewayChannelActor {
     private func watchTicks(connectionGeneration: UInt64) async {
         let tolerance = self.helloPolicy.tickIntervalMs * 2
         while self.isConnected(connectionGeneration: connectionGeneration) {
-            guard await self.sleepUnlessCancelled(nanoseconds: UInt64(tolerance * 1_000_000)) else { return }
+            guard await self.sleepUnlessCancelled(nanoseconds: Self.sleepNanoseconds(milliseconds: tolerance)) else {
+                return
+            }
             guard self.isConnected(connectionGeneration: connectionGeneration) else { return }
             if let last = self.lastInboundAt {
                 let delta = Self.milliseconds(from: last, to: ContinuousClock.now)
@@ -1615,7 +1627,9 @@ extension GatewayChannelActor {
         else { return }
         let delay = self.backoffMs / 1000
         self.backoffMs = min(self.backoffMs * 2, 30000)
-        guard await self.sleepUnlessCancelled(nanoseconds: UInt64(delay * 1_000_000_000)) else { return }
+        guard await self.sleepUnlessCancelled(nanoseconds: Self.sleepNanoseconds(milliseconds: delay * 1000)) else {
+            return
+        }
         guard self.shouldReconnect else { return }
         guard !self.reconnectPausedForAuthFailure, !self.reconnectPausedForTLSFailure else { return }
         guard self.automaticReconnectRequested else { return }
@@ -1739,7 +1753,8 @@ extension GatewayChannelActor {
     /// - Parameters:
     ///   - method: Gateway method.
     ///   - params: Request params.
-    ///   - timeoutMs: Client deadline; `nil` uses 15 s and `0` leaves the deadline to the gateway.
+    ///   - timeoutMs: Client deadline, counted from the first dispatch (connect time is bounded
+    ///     separately by the handshake budget); `nil` uses 15 s and `0` leaves the deadline to the gateway.
     /// - Returns: The encoded response payload (empty when the gateway returns none).
     public func request(
         method: String,
@@ -1834,11 +1849,22 @@ extension GatewayChannelActor {
     {
         let budgetMs = Self.resolveRequestTimeoutMs(timeoutMs, defaultMs: self.defaultRequestTimeoutMs)
         let clock = ContinuousClock()
-        let start = clock.now
+        // The budget covers the request, not the connect in front of it: connect is bounded by
+        // its own handshake budget, and counting it here dispatched frames with a ~1 ms deadline
+        // the gateway would still execute after the caller saw a timeout.
+        var start: ContinuousClock.Instant?
         var startupRetries = 0
         while true {
             let target = try await self.requestTarget(boundGeneration: boundGeneration)
-            let remainingMs = budgetMs.map { max(1, $0 - Self.milliseconds(from: start, to: clock.now)) }
+            let requestStart = start ?? clock.now
+            start = requestStart
+            var remainingMs: Double?
+            if let budgetMs {
+                let remaining = budgetMs - Self.milliseconds(from: requestStart, to: clock.now)
+                // A reconnect during startup retries may exhaust the budget: never dispatch then.
+                guard remaining > 0 else { throw Self.requestTimeoutError(budgetMs: budgetMs) }
+                remainingMs = remaining
+            }
             do {
                 return try await self.request(
                     method: method,
@@ -1851,7 +1877,7 @@ extension GatewayChannelActor {
                 guard let delayMs = error.startupRetryAfterMs,
                       startupRetries < Self.maxStartupUnavailableRetries
                 else { throw error }
-                if let budgetMs, Self.milliseconds(from: start, to: clock.now) + Double(delayMs) >= budgetMs {
+                if let budgetMs, Self.milliseconds(from: requestStart, to: clock.now) + Double(delayMs) >= budgetMs {
                     throw error
                 }
                 startupRetries += 1
@@ -1898,14 +1924,11 @@ extension GatewayChannelActor {
                         request.timeoutTask = Task { [weak self] in
                             guard let self else { return }
                             guard await self.sleepUnlessCancelled(
-                                nanoseconds: UInt64(effectiveTimeout * 1_000_000))
+                                nanoseconds: Self.sleepNanoseconds(milliseconds: effectiveTimeout))
                             else { return }
-                            let error = NSError(
-                                domain: "Gateway",
-                                code: 5,
-                                userInfo: [NSLocalizedDescriptionKey:
-                                    "gateway request timed out after \(Int(effectiveTimeout))ms"])
-                            await self.finishRequest(id: payload.id, result: .failure(error))
+                            await self.finishRequest(
+                                id: payload.id,
+                                result: .failure(Self.requestTimeoutError(budgetMs: effectiveTimeout)))
                         }
                     }
                     self.pending[payload.id] = request
@@ -1915,6 +1938,8 @@ extension GatewayChannelActor {
                             self.finishRequest(id: payload.id, result: .failure(CancellationError()))
                             return
                         }
+                        // A request that already timed out or was cancelled never reaches the socket.
+                        guard self.pending[payload.id] != nil else { return }
                         do {
                             try await task.sendRequest(.data(payload.data), lifetime: transportLifetime)
                         } catch is CancellationError {
@@ -1964,6 +1989,14 @@ extension GatewayChannelActor {
             return try self.encoder.encode(payload)
         }
         return Data() // Should not happen, but tolerate empty payloads.
+    }
+
+    /// The client-side request deadline error (`Gateway` code 5).
+    nonisolated static func requestTimeoutError(budgetMs: Double) -> NSError {
+        NSError(
+            domain: "Gateway",
+            code: 5,
+            userInfo: [NSLocalizedDescriptionKey: "gateway request timed out after \(Int(budgetMs))ms"])
     }
 
     /// Sends a fire-and-forget command frame over the gateway socket, connecting first when needed.
