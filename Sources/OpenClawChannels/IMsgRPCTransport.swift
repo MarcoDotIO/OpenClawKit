@@ -242,6 +242,13 @@ public protocol IMessageInboundTransport: IMessageTransport {
     /// - Parameter message: Payload.
     /// - Returns: Message GUID or id.
     func sendReturningID(_ message: IMessageTransportMessage) async throws -> String?
+    /// Calls an arbitrary `imsg` RPC method (private-API actions such as `typing`, `read`,
+    /// `tapback`, `message.edit`, `message.unsend`, `poll.send`).
+    /// - Parameters:
+    ///   - method: Method.
+    ///   - params: Parameters.
+    /// - Returns: Result.
+    func call(_ method: String, params: [String: AnyCodable]) async throws -> AnyCodable
 }
 
 /// `IMessageTransport` backed by `imsg rpc --json` (upstream iMessage channel runtime).
@@ -391,6 +398,15 @@ public actor IMsgRPCTransport: IMessageInboundTransport {
         self.notificationTask = nil
         await self.client?.stop()
         self.client = nil
+    }
+
+    /// Calls an arbitrary RPC method with the probe timeout.
+    /// - Parameters:
+    ///   - method: Method.
+    ///   - params: Parameters.
+    /// - Returns: Result.
+    public func call(_ method: String, params: [String: AnyCodable]) async throws -> AnyCodable {
+        try await self.connectedClient().request(method, params: params, timeoutMs: max(self.probeTimeoutMs, IMsgRPCClient.defaultTimeoutMs))
     }
 
     /// Calls `ping`.

@@ -231,6 +231,81 @@ struct IMsgRPCTransportTests {
     }
 }
 
+@Suite("iMessage private-API actions and catch-up")
+struct IMessagePrivateActionsTests {
+    @Test
+    func actionsUseChatGUIDFromInboundAndTypingDisablesAfterFailure() async throws {
+        let pipe = FakeIMsgPipe { method, _ in
+            switch method {
+            case "watch.subscribe": return #""result":{"subscription":1}"#
+            case "typing": return #""error":{"code":-32601,"message":"Method not found"}"#
+            case "read", "tapback", "message.edit", "message.unsend": return #""result":{"ok":true}"#
+            case "poll.send": return #""result":{"guid":"POLL-1"}"#
+            default: return #""result":{}"#
+            }
+        }
+        let config = IMessageChannelConfig(enabled: true)
+        let adapter = IMessageChannelAdapter(config: config, transport: IMsgRPCTransport(config: config) { pipe })
+        let collector = ChannelEventCollector()
+        await adapter.setInboundHandler { await collector.append($0) }
+        try await adapter.start()
+        let message = #"{"id":7,"guid":"g7","sender":"+15550002222","text":"hi","chat_guid":"iMessage;-;+15550002222"}"#
+        await pipe.push(.stdout(#"{"jsonrpc":"2.0","method":"message","params":{"message":\#(message)}}"#))
+        try await waitUntil("inbound") { await collector.messages.count == 1 }
+        #expect(await pipe.requests("read").first?["to"] as? String == "+15550002222")
+
+        try await adapter.sendTypingIndicator(accountID: nil, peerID: "+15550002222")
+        try await adapter.sendTypingIndicator(accountID: nil, peerID: "+15550002222")
+        #expect(await pipe.requests("typing").count == 1)
+
+        try await adapter.react(peerID: "+15550002222", messageID: "g7", emoji: "👍", remove: false)
+        let tapback = try #require(await pipe.requests("tapback").first)
+        #expect(tapback["chat_guid"] as? String == "iMessage;-;+15550002222")
+        #expect(tapback["reaction"] as? String == "like")
+        try await adapter.edit(peerID: "chat_guid:iMessage;+;chat9", messageID: "g8", text: "fixed")
+        #expect(await pipe.requests("message.edit").first?["chat_guid"] as? String == "iMessage;+;chat9")
+        let poll = try await adapter.sendPoll(peerID: "+15550002222", question: "Lunch?", options: ["Tacos", "Sushi"], allowMultiple: false)
+        #expect(poll?.primaryPlatformMessageID == "POLL-1")
+        await #expect(throws: ChannelMessageActionError.self) {
+            try await adapter.unsend(peerID: "+15550009999", messageID: "x")
+        }
+        await adapter.stop()
+    }
+
+    @Test
+    func catchupReplaysFromPersistedCursorWithinAgeAndLimit() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("imsg-cursor-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let cursor = directory.appendingPathComponent("cursor")
+        try Data("40".utf8).write(to: cursor)
+        let pipe = FakeIMsgPipe { method, _ in method == "watch.subscribe" ? #""result":{"subscription":2}"# : #""result":{}"# }
+        var config = IMessageChannelConfig(enabled: true)
+        config.sendReadReceipts = false
+        config.catchup = IMessageCatchupConfig(enabled: true, maxAgeMinutes: 60, perRunLimit: 1)
+        let adapter = IMessageChannelAdapter(config: config, transport: IMsgRPCTransport(config: config) { pipe }, cursorFileURL: cursor)
+        let collector = ChannelEventCollector()
+        await adapter.setInboundHandler { await collector.append($0) }
+        try await adapter.start()
+        #expect(await pipe.requests("watch.subscribe").first?["since_rowid"] as? Int == 40)
+
+        let formatter = ISO8601DateFormatter()
+        let stale = formatter.string(from: Date().addingTimeInterval(-3 * 3_600))
+        let recent = formatter.string(from: Date().addingTimeInterval(-5 * 60))
+        for (id, created) in [(41, stale), (42, recent), (43, recent)] {
+            let payload = #"{"id":\#(id),"guid":"c\#(id)","sender":"+15550002222","text":"m\#(id)","created_at":"\#(created)"}"#
+            await pipe.push(.stdout(#"{"jsonrpc":"2.0","method":"message","params":{"message":\#(payload)}}"#))
+        }
+        let live = formatter.string(from: Date().addingTimeInterval(60))
+        let livePayload = #"{"id":44,"guid":"c44","sender":"+15550002222","text":"live","created_at":"\#(live)"}"#
+        await pipe.push(.stdout(#"{"jsonrpc":"2.0","method":"message","params":{"message":\#(livePayload)}}"#))
+        try await waitUntil("two delivered") { await collector.messages.count == 2 }
+        try await waitUntil("cursor persisted") { (try? String(contentsOf: cursor, encoding: .utf8)) == "44" }
+        await adapter.stop()
+        #expect(await collector.messages.map(\.text) == ["m42", "live"])
+    }
+}
+
 /// Thread-safe counter for callbacks.
 final class LockedCounter: @unchecked Sendable {
     private let lock = NSLock()

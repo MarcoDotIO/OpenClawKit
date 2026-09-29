@@ -69,7 +69,7 @@ private struct IMessageReflectionRecord: Sendable, Equatable {
 /// sends are dropped, group chats route as `chat_id:<n>` with ``ChannelChatType/group``.
 /// The launching process needs Full Disk Access and Messages Automation; sandboxed App Store
 /// apps cannot spawn `imsg`.
-public actor IMessageChannelAdapter: InboundChannelAdapter, ReceiptingChannelAdapter {
+public actor IMessageChannelAdapter: InboundChannelAdapter, ReceiptingChannelAdapter, ChannelMessageActions {
     /// Adapter channel identifier.
     public let id: ChannelID = .imessage
 
@@ -81,6 +81,12 @@ public actor IMessageChannelAdapter: InboundChannelAdapter, ReceiptingChannelAda
     private var reflectionRecords: [IMessageReflectionRecord] = []
     private let reflectionTTL: TimeInterval = 120
     private var recentInboundGUIDs = ChannelRecentIDs(capacity: 1_000)
+    private var chatGUIDs: [String: String] = [:]
+    private var unsupportedPrivateMethods: Set<String> = []
+    private var lastRowID: Int64?
+    private var catchupProcessed = 0
+    private var catchupWatchStartedAt: Date?
+    private let cursorFileURL: URL?
 
     /// Creates an iMessage adapter.
     /// - Parameters:
@@ -88,7 +94,19 @@ public actor IMessageChannelAdapter: InboundChannelAdapter, ReceiptingChannelAda
     ///   - transport: Optional host-provided native transport. When `nil` on macOS/Linux and
     ///     simulation is disabled, an ``IMsgRPCTransport`` over `config.cliPath` is created.
     public init(config: IMessageChannelConfig, transport: (any IMessageTransport)? = nil) {
+        self.init(config: config, transport: transport, cursorFileURL: nil)
+    }
+
+    /// Creates an iMessage adapter that persists the watch cursor for catch-up.
+    /// - Parameters:
+    ///   - config: iMessage channel configuration.
+    ///   - transport: Optional native transport (see ``init(config:transport:)``).
+    ///   - cursorFileURL: File holding the last processed message row id; with
+    ///     `catchup.enabled`, restarts replay missed messages oldest-first from it.
+    public init(config: IMessageChannelConfig, transport: (any IMessageTransport)?, cursorFileURL: URL?) {
         self.config = config
+        self.cursorFileURL = cursorFileURL
+        self.lastRowID = cursorFileURL.flatMap { try? Data(contentsOf: $0) }.flatMap { Int64(String(decoding: $0, as: UTF8.self)) }
         if let transport {
             self.transport = transport
         } else if !config.allowUnsupportedPlatformSimulation, IMsgRPCTransport.isProcessTransportSupported {
@@ -119,7 +137,10 @@ public actor IMessageChannelAdapter: InboundChannelAdapter, ReceiptingChannelAda
         self.reflectionRecords.removeAll(keepingCapacity: true)
         if let inbound = self.transport as? any IMessageInboundTransport {
             do {
-                try await inbound.startWatching(includeAttachments: self.config.includeAttachments, sinceRowID: nil) { [weak self] payload in
+                let sinceRowID = self.config.catchup.enabled ? self.lastRowID : nil
+                self.catchupProcessed = 0
+                self.catchupWatchStartedAt = sinceRowID == nil ? nil : Date()
+                try await inbound.startWatching(includeAttachments: self.config.includeAttachments, sinceRowID: sinceRowID) { [weak self] payload in
                     await self?.handleNativePayload(payload)
                 }
             } catch {
@@ -237,10 +258,18 @@ public actor IMessageChannelAdapter: InboundChannelAdapter, ReceiptingChannelAda
     /// reflections of recent sends are dropped).
     /// - Parameter payload: Watch payload.
     public func handleNativePayload(_ payload: IMessagePayload) async {
-        guard self.started, payload.isFromMe != true, payload.isReaction != true else { return }
+        guard self.started else { return }
+        let isReplay = self.recordRowID(payload)
+        guard payload.isFromMe != true, payload.isReaction != true else { return }
         guard let peerID = payload.conversationPeerID else { return }
         if let guid = payload.guid?.channelTrimmedNonEmpty ?? payload.id.map(String.init), !self.recentInboundGUIDs.insert(guid) {
             return
+        }
+        if isReplay, !self.admitCatchup(payload) {
+            return
+        }
+        if let chatGUID = payload.chatGUID?.channelTrimmedNonEmpty {
+            self.chatGUIDs[peerID] = chatGUID
         }
         let text = payload.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let attachments = self.loadAttachments(payload.attachments ?? [])
@@ -268,8 +297,215 @@ public actor IMessageChannelAdapter: InboundChannelAdapter, ReceiptingChannelAda
             replyToID: payload.replyToGUID?.channelTrimmedNonEmpty,
             metadata: metadata
         )
+        if !isGroup, self.config.sendReadReceipts {
+            await self.callPrivate("read", target: peerID, extra: [:])
+        }
         if let inboundHandler {
             await inboundHandler(inbound)
+        }
+    }
+
+    // MARK: Catch-up
+
+    /// Records the row id; returns `true` when the payload replays history (created before the
+    /// watch started while catch-up replays from a persisted cursor).
+    private func recordRowID(_ payload: IMessagePayload) -> Bool {
+        if let rowID = payload.id, rowID > (self.lastRowID ?? 0) {
+            self.lastRowID = rowID
+            if let cursorFileURL {
+                try? Data(String(rowID).utf8).write(to: cursorFileURL, options: .atomic)
+            }
+        }
+        guard let watchStartedAt = self.catchupWatchStartedAt,
+              let created = payload.createdAt.flatMap(Self.parseTimestamp)
+        else { return false }
+        return created < watchStartedAt
+    }
+
+    /// Replayed messages must be younger than `catchup.maxAgeMinutes` and within `perRunLimit`.
+    private func admitCatchup(_ payload: IMessagePayload) -> Bool {
+        guard self.catchupProcessed < self.config.catchup.perRunLimit else { return false }
+        if let created = payload.createdAt.flatMap(Self.parseTimestamp),
+           Date().timeIntervalSince(created) > TimeInterval(self.config.catchup.maxAgeMinutes * 60)
+        {
+            return false
+        }
+        self.catchupProcessed += 1
+        return true
+    }
+
+    private static func parseTimestamp(_ value: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: value) {
+            return date
+        }
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: value)
+    }
+
+    // MARK: Private-API actions (imsg bridge)
+
+    /// Typing uses the private-API bridge (`imsg launch`); it disables itself after the first failure.
+    nonisolated public var supportsTypingIndicator: Bool {
+        true
+    }
+
+    /// Actions enabled by `channels.imessage.actions.*`.
+    nonisolated public var supportedMessageActions: Set<ChannelMessageActionName> {
+        var actions: Set<ChannelMessageActionName> = []
+        if self.config.actions.reactions { actions.insert(.react) }
+        if self.config.actions.edit { actions.insert(.edit) }
+        if self.config.actions.unsend { actions.formUnion([.unsend, .delete]) }
+        if self.config.actions.polls { actions.insert(.poll) }
+        return actions
+    }
+
+    /// Starts the typing bubble in direct chats (best effort; needs the private-API bridge).
+    /// - Parameters:
+    ///   - accountID: Unused.
+    ///   - peerID: Conversation.
+    public func sendTypingIndicator(accountID _: String?, peerID: String) async throws {
+        guard !peerID.hasPrefix("chat_") else { return }
+        await self.callPrivate("typing", target: peerID, extra: ["typing": AnyCodable(true)])
+    }
+
+    /// Stops the typing bubble.
+    /// - Parameters:
+    ///   - accountID: Unused.
+    ///   - peerID: Conversation.
+    public func stopTypingIndicator(accountID _: String?, peerID: String) async throws {
+        guard !peerID.hasPrefix("chat_") else { return }
+        await self.callPrivate("typing", target: peerID, extra: ["typing": AnyCodable(false)])
+    }
+
+    /// Sends or removes a tapback (`love`, `like`, `dislike`, `laugh`, `emphasize`, `question`).
+    /// - Parameters:
+    ///   - peerID: Conversation.
+    ///   - messageID: Target message GUID.
+    ///   - emoji: Tapback kind or emoji.
+    ///   - remove: Remove instead of add.
+    public func react(peerID: String, messageID: String, emoji: String, remove: Bool) async throws {
+        guard self.config.actions.reactions else {
+            throw ChannelMessageActionError.disabledByConfig(action: "react", channel: .imessage)
+        }
+        var params: [String: AnyCodable] = [
+            "chat_guid": AnyCodable(try self.chatGUID(for: peerID)),
+            "message_id": AnyCodable(messageID),
+            "reaction": AnyCodable(Self.tapbackKind(emoji)),
+            "part_index": AnyCodable(0),
+        ]
+        if remove {
+            params["remove"] = AnyCodable(true)
+        }
+        _ = try await self.requirePrivateTransport().call("tapback", params: params)
+    }
+
+    /// Edits a sent message (`message.edit`).
+    /// - Parameters:
+    ///   - peerID: Conversation.
+    ///   - messageID: Message GUID.
+    ///   - text: New text.
+    public func edit(peerID: String, messageID: String, text: String) async throws {
+        guard self.config.actions.edit else {
+            throw ChannelMessageActionError.disabledByConfig(action: "edit", channel: .imessage)
+        }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw ChannelMessageActionError.invalidParams("iMessage edit requires non-empty text")
+        }
+        _ = try await self.requirePrivateTransport().call("message.edit", params: [
+            "chat_guid": AnyCodable(try self.chatGUID(for: peerID)),
+            "message_id": AnyCodable(messageID),
+            "text": AnyCodable(trimmed),
+            "backwards_compatibility_message": AnyCodable(trimmed),
+            "part_index": AnyCodable(0),
+        ])
+    }
+
+    /// Unsends a message (`message.unsend`).
+    /// - Parameters:
+    ///   - peerID: Conversation.
+    ///   - messageID: Message GUID.
+    public func unsend(peerID: String, messageID: String) async throws {
+        guard self.config.actions.unsend else {
+            throw ChannelMessageActionError.disabledByConfig(action: "unsend", channel: .imessage)
+        }
+        _ = try await self.requirePrivateTransport().call("message.unsend", params: [
+            "chat_guid": AnyCodable(try self.chatGUID(for: peerID)),
+            "message_id": AnyCodable(messageID),
+            "part_index": AnyCodable(0),
+        ])
+    }
+
+    /// Sends a native Apple Messages poll (`poll.send`; single choice, distinct options).
+    /// - Parameters:
+    ///   - peerID: Conversation.
+    ///   - question: Question.
+    ///   - options: Options (at least two, distinct).
+    ///   - allowMultiple: Unsupported natively; must be `false`.
+    /// - Returns: Receipt with the poll message GUID.
+    public func sendPoll(peerID: String, question: String, options: [String], allowMultiple: Bool) async throws -> ChannelSendReceipt? {
+        guard self.config.actions.polls else {
+            throw ChannelMessageActionError.disabledByConfig(action: "poll", channel: .imessage)
+        }
+        let choices = options.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        guard !allowMultiple, !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, choices.count >= 2,
+              !choices.contains(where: \.isEmpty), Set(choices).count == choices.count
+        else {
+            throw ChannelMessageActionError.invalidParams("iMessage polls need a question and at least two distinct options (single choice)")
+        }
+        let result = try await self.requirePrivateTransport().call("poll.send", params: [
+            "chat_guid": AnyCodable(try self.chatGUID(for: peerID)),
+            "question": AnyCodable(question),
+            "options": AnyCodable(choices.map(AnyCodable.init)),
+        ])
+        let id = result.dictionaryValue?["guid"]?.stringValue ?? result.dictionaryValue?["message_id"]?.stringValue
+        return id.map { ChannelSendReceipt(platformMessageID: $0) }
+    }
+
+    private func requirePrivateTransport() throws -> any IMessageInboundTransport {
+        guard self.started, let transport = self.transport as? any IMessageInboundTransport else {
+            throw ChannelMessageActionError.unsupported(action: "private-api", channel: .imessage)
+        }
+        return transport
+    }
+
+    private func chatGUID(for peerID: String) throws -> String {
+        let trimmed = peerID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let known = self.chatGUIDs[trimmed] {
+            return known
+        }
+        if case .chatGUID(let guid)? = try? IMessageTarget.parse(trimmed) {
+            return guid
+        }
+        throw ChannelMessageActionError.invalidParams("Unknown iMessage chat for \(trimmed); use chat_guid:<guid> or a conversation seen inbound")
+    }
+
+    /// Best-effort private-API call; methods that fail once are not retried this session.
+    private func callPrivate(_ method: String, target peerID: String, extra: [String: AnyCodable]) async {
+        guard self.started, !self.unsupportedPrivateMethods.contains(method),
+              let transport = self.transport as? any IMessageInboundTransport,
+              let target = try? IMessageTarget.parse(peerID)
+        else { return }
+        var params = target.rpcParams()
+        params.merge(extra) { _, new in new }
+        do {
+            _ = try await transport.call(method, params: params)
+        } catch {
+            self.unsupportedPrivateMethods.insert(method)
+        }
+    }
+
+    static func tapbackKind(_ value: String) -> String {
+        switch value.trimmingCharacters(in: .whitespacesAndNewlines) {
+        case "❤️", "♥️", "love": "love"
+        case "👍", "like": "like"
+        case "👎", "dislike": "dislike"
+        case "😂", "🤣", "laugh", "haha": "laugh"
+        case "‼️", "❗", "emphasize", "emphasis": "emphasize"
+        case "❓", "?", "question": "question"
+        default: value
         }
     }
 
