@@ -90,6 +90,8 @@ struct ProviderStreamAssembler {
     var reasoningSignatureInvalid = false
     private var toolCallsByIndex: [Int: PartialToolCall] = [:]
     private var toolCallOrder: [Int] = []
+    private var toolCallIndexByID: [String: Int] = [:]
+    private var lastToolCallIndex: Int?
     private(set) var usage: ModelUsage?
     var stopReason: ModelStopReason?
 
@@ -139,6 +141,29 @@ struct ProviderStreamAssembler {
                 argumentsDelta: argumentsDelta
             )
         )
+    }
+
+    /// Resolves the slot for a streamed tool-call fragment (upstream `openai-completions-stream.ts`):
+    /// the stream `index` first, then a previously seen call `id`; a new id without an index gets the
+    /// next free slot, and a fragment with neither continues the most recent call. Both aliases are
+    /// bound so later fragments keyed either way land on the same call.
+    mutating func resolveToolCallIndex(streamIndex: Int?, id: String?) -> Int {
+        let id = id.flatMap { $0.isEmpty ? nil : $0 }
+        let index: Int
+        if let streamIndex {
+            index = streamIndex
+        } else if let id, let bound = self.toolCallIndexByID[id] {
+            index = bound
+        } else if id != nil {
+            index = self.nextToolCallIndex
+        } else {
+            index = self.lastToolCallIndex ?? 0
+        }
+        if let id, self.toolCallIndexByID[id] == nil {
+            self.toolCallIndexByID[id] = index
+        }
+        self.lastToolCallIndex = index
+        return index
     }
 
     /// Replaces a tool call's accumulated arguments with a complete payload (for `…done` events).

@@ -315,6 +315,17 @@ enum GoogleGenerativeAIWire {
         }
     }
 
+    /// Whether a response or stream chunk carries a terminal fact: a candidate `finishReason` other
+    /// than `FINISH_REASON_UNSPECIFIED`, or a prompt block (`promptFeedback.blockReason` without
+    /// candidates). Upstream `google-stream.ts` rejects streams that end without one.
+    static func isTerminal(_ root: AnyCodable) -> Bool {
+        let candidate = root[wireKey: "candidates"]?.arrayValue?.first
+        if let reason = candidate?.wireString("finishReason"), reason.uppercased() != "FINISH_REASON_UNSPECIFIED" {
+            return true
+        }
+        return candidate == nil && root[wireKey: "promptFeedback"]?.dictionaryValue != nil
+    }
+
     /// Applies one response (or stream chunk) to an assembler.
     static func apply(_ root: AnyCodable, assembler: inout ProviderStreamAssembler) -> [ModelStreamChunk] {
         var chunks: [ModelStreamChunk] = []
@@ -401,23 +412,40 @@ struct GoogleGenerativeAIEngine: Sendable {
             var parser = ServerSentEventParser()
             var rawBody = ""
             var sawEvent = false
+            var sawTerminal = false
+            var finishReason: String?
+            func apply(_ root: AnyCodable) {
+                if GoogleGenerativeAIWire.isTerminal(root) {
+                    sawTerminal = true
+                }
+                if let reason = root[wireKey: "candidates"]?.arrayValue?.first?.wireString("finishReason") {
+                    finishReason = reason
+                }
+                GoogleGenerativeAIWire.apply(root, assembler: &assembler).forEach { continuation.yield($0) }
+            }
             for try await line in lines {
                 if !sawEvent, rawBody.utf8.count < 1_048_576 {
                     rawBody += line + "\n"
                 }
                 guard let event = parser.consume(line), let object = ProviderWireJSON.object(from: event.data) else { continue }
                 sawEvent = true
-                GoogleGenerativeAIWire.apply(AnyCodable(.object(object)), assembler: &assembler).forEach { continuation.yield($0) }
+                apply(AnyCodable(.object(object)))
             }
             if let event = parser.finish(), let object = ProviderWireJSON.object(from: event.data) {
                 sawEvent = true
-                GoogleGenerativeAIWire.apply(AnyCodable(.object(object)), assembler: &assembler).forEach { continuation.yield($0) }
+                apply(AnyCodable(.object(object)))
             }
             if !sawEvent, let data = rawBody.data(using: .utf8), let root = try? ProviderWireJSON.decode(data) {
                 let elements = root.arrayValue ?? [root]
                 for element in elements {
-                    GoogleGenerativeAIWire.apply(element, assembler: &assembler).forEach { continuation.yield($0) }
+                    apply(element)
                 }
+            }
+            if !sawTerminal {
+                throw OpenClawCoreError.unavailable("\(providerID) stream ended before a terminal finish reason")
+            }
+            if assembler.stopReason == .error {
+                throw OpenClawCoreError.unavailable("\(providerID) generation stopped (\(finishReason ?? "error"))")
             }
             continuation.yield(.completed(response: assembler.response()))
         }

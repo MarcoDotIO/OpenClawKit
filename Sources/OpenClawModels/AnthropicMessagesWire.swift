@@ -491,6 +491,30 @@ enum AnthropicMessagesWire {
         var outputTokens = 0
         var sawUsage = false
         var failure: String?
+        var sawMessageStart = false
+        var sawMessageStop = false
+        var sawStopReason = false
+        var sawContentBlock = false
+        /// Content blocks started but not yet stopped, with whether each is a `tool_use` block.
+        var openBlocks: [Int: Bool] = [:]
+
+        /// Error for a stream that ended before its terminal event (upstream
+        /// `anthropic-stream-reducer.ts`); `nil` when the stream is complete.
+        ///
+        /// Direct Anthropic always ends with `message_stop`. Compatible proxies may omit it, but a
+        /// started response still needs a `stop_reason`, and no route may end inside a tool call.
+        func incompleteReason(isDirect: Bool) -> String? {
+            if isDirect, !self.sawMessageStop {
+                return "stream ended before message_stop"
+            }
+            if self.openBlocks.values.contains(true) {
+                return "stream ended with an incomplete tool call"
+            }
+            if self.sawMessageStart || self.sawContentBlock, !self.sawMessageStop, !self.sawStopReason {
+                return "stream ended before a terminal event"
+            }
+            return nil
+        }
     }
 
     static func handleStreamEvent(
@@ -503,6 +527,7 @@ enum AnthropicMessagesWire {
         var chunks: [ModelStreamChunk] = []
         switch payload.wireString("type") ?? event.event ?? "" {
         case "message_start":
+            state.sawMessageStart = true
             let message = payload[wireKey: "message"]
             if let model = message?.wireString("model") {
                 assembler.modelID = model
@@ -513,6 +538,8 @@ enum AnthropicMessagesWire {
         case "content_block_start":
             let blockIndex = payload.wireInt("index") ?? 0
             let block = payload[wireKey: "content_block"]
+            state.sawContentBlock = true
+            state.openBlocks[blockIndex] = block?.wireString("type") == "tool_use"
             switch block?.wireString("type") {
             case "tool_use"?:
                 let toolIndex = assembler.nextToolCallIndex
@@ -561,8 +588,13 @@ enum AnthropicMessagesWire {
             default:
                 break
             }
+        case "content_block_stop":
+            state.openBlocks.removeValue(forKey: payload.wireInt("index") ?? 0)
+        case "message_stop":
+            state.sawMessageStop = true
         case "message_delta":
             if let reason = payload[wireKey: "delta"]?.wireString("stop_reason") {
+                state.sawStopReason = true
                 assembler.stopReason = self.stopReason(reason)
             }
             if let usage = payload[wireKey: "usage"] {
@@ -644,6 +676,9 @@ struct AnthropicMessagesEngine: Sendable {
             if let failure = state.failure {
                 throw OpenClawCoreError.unavailable("\(providerID) stream failed: \(failure)")
             }
+            if let incomplete = state.incompleteReason(isDirect: prepared.isDirect) {
+                throw OpenClawCoreError.unavailable("\(providerID) \(incomplete)")
+            }
             continuation.yield(.completed(response: assembler.response()))
         }
     }
@@ -651,6 +686,8 @@ struct AnthropicMessagesEngine: Sendable {
     struct Prepared {
         var urlRequest: URLRequest
         var modelID: String
+        /// Whether the request targets first-party Anthropic (which always ends streams with `message_stop`).
+        var isDirect = false
     }
 
     func prepare(_ request: ModelGenerationRequest, stream: Bool) throws -> Prepared {
@@ -749,7 +786,7 @@ struct AnthropicMessagesEngine: Sendable {
             urlRequest.setValue(beta, forHTTPHeaderField: "anthropic-beta")
         }
         urlRequest.httpBody = try ProviderWireJSON.encode(payload)
-        return Prepared(urlRequest: urlRequest, modelID: modelID)
+        return Prepared(urlRequest: urlRequest, modelID: modelID, isDirect: isDirect)
     }
 
     private func credential(for request: ModelGenerationRequest) throws -> String? {

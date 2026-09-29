@@ -244,13 +244,21 @@ struct OllamaChatEngine: Sendable {
             let prepared = try self.prepare(request, stream: true)
             let lines = try await self.exchange.lines(for: prepared.urlRequest)
             var assembler = ProviderStreamAssembler(providerID: providerID, modelID: prepared.modelID)
+            var sawDone = false
             for try await line in lines {
                 let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty, let object = ProviderWireJSON.object(from: trimmed) else { continue }
                 if let error = object["error"]?.stringValue {
                     throw OpenClawCoreError.unavailable("\(providerID) stream failed: \(error)")
                 }
+                if object["done"]?.boolValue == true {
+                    sawDone = true
+                }
                 OllamaChatWire.apply(AnyCodable(.object(object)), assembler: &assembler).forEach { continuation.yield($0) }
+            }
+            // Upstream `OLLAMA_INCOMPLETE_STREAM_ERROR`: every complete NDJSON stream ends with `done: true`.
+            if !sawDone {
+                throw OpenClawCoreError.unavailable("\(providerID) stream ended before the final done chunk")
             }
             continuation.yield(.completed(response: assembler.response()))
         }

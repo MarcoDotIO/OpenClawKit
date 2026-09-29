@@ -102,47 +102,84 @@ public actor ModelStreamingHTTPClient: ModelHTTPStreamingTransport {
         var headers: [String: String]
     }
 
+    /// Holds the request task so cancellation that arrives before the response head can cancel it.
+    private final class StreamingTaskBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var task: Task<Void, Never>?
+        private var cancelled = false
+
+        /// Stores the task, cancelling it at once when cancellation already happened.
+        func store(_ task: Task<Void, Never>) {
+            self.lock.lock()
+            let alreadyCancelled = self.cancelled
+            self.task = task
+            self.lock.unlock()
+            if alreadyCancelled {
+                task.cancel()
+            }
+        }
+
+        func cancel() {
+            self.lock.lock()
+            self.cancelled = true
+            let task = self.task
+            self.lock.unlock()
+            task?.cancel()
+        }
+    }
+
+    /// Starts `URLSession.bytes` and returns once the response head arrives.
+    ///
+    /// Cancelling the caller while it waits for the head cancels the in-flight request (so a proxy
+    /// that holds headers back cannot keep generation and token spend running until the timeout);
+    /// after the head, terminating the line stream cancels it.
     private static func startStreaming(
         session: URLSession,
         request: URLRequest
     ) async throws -> (ResponseHead, AsyncThrowingStream<String, Error>) {
         let (lines, lineContinuation) = AsyncThrowingStream<String, Error>.makeStream()
-        let head: ResponseHead = try await withCheckedThrowingContinuation { headContinuation in
-            let task = Task {
-                var headDelivered = false
-                do {
-                    let (bytes, response) = try await session.bytes(for: request)
-                    guard let http = response as? HTTPURLResponse else {
-                        throw OpenClawCoreError.unavailable("Response was not HTTPURLResponse")
-                    }
-                    headDelivered = true
-                    headContinuation.resume(returning: ResponseHead(statusCode: http.statusCode, headers: Self.headers(of: http)))
-                    var buffer: [UInt8] = []
-                    buffer.reserveCapacity(1024)
-                    for try await byte in bytes {
-                        if byte == 0x0A {
+        let box = StreamingTaskBox()
+        let head: ResponseHead = try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { headContinuation in
+                let task = Task {
+                    var headDelivered = false
+                    do {
+                        try Task.checkCancellation()
+                        let (bytes, response) = try await session.bytes(for: request)
+                        guard let http = response as? HTTPURLResponse else {
+                            throw OpenClawCoreError.unavailable("Response was not HTTPURLResponse")
+                        }
+                        headDelivered = true
+                        headContinuation.resume(returning: ResponseHead(statusCode: http.statusCode, headers: Self.headers(of: http)))
+                        var buffer: [UInt8] = []
+                        buffer.reserveCapacity(1024)
+                        for try await byte in bytes {
+                            if byte == 0x0A {
+                                lineContinuation.yield(ModelHTTPLineSplitter.decodeLine(buffer))
+                                buffer.removeAll(keepingCapacity: true)
+                            } else {
+                                buffer.append(byte)
+                            }
+                        }
+                        if !buffer.isEmpty {
                             lineContinuation.yield(ModelHTTPLineSplitter.decodeLine(buffer))
-                            buffer.removeAll(keepingCapacity: true)
-                        } else {
-                            buffer.append(byte)
+                        }
+                        lineContinuation.finish()
+                    } catch {
+                        let sanitized = ProviderErrorRedaction.sanitize(error)
+                        lineContinuation.finish(throwing: sanitized)
+                        if !headDelivered {
+                            headContinuation.resume(throwing: sanitized)
                         }
                     }
-                    if !buffer.isEmpty {
-                        lineContinuation.yield(ModelHTTPLineSplitter.decodeLine(buffer))
-                    }
-                    lineContinuation.finish()
-                } catch {
-                    if headDelivered {
-                        lineContinuation.finish(throwing: error)
-                    } else {
-                        lineContinuation.finish(throwing: error)
-                        headContinuation.resume(throwing: error)
-                    }
+                }
+                box.store(task)
+                lineContinuation.onTermination = { _ in
+                    task.cancel()
                 }
             }
-            lineContinuation.onTermination = { _ in
-                task.cancel()
-            }
+        } onCancel: {
+            box.cancel()
         }
         return (head, lines)
     }
