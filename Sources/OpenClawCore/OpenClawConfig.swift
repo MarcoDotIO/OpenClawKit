@@ -67,7 +67,7 @@ public struct OpenClawConfig: Codable, Sendable, Equatable {
         self.plugins = plugins
     }
 
-    private enum CodingKeys: String, CodingKey {
+    enum CodingKeys: String, CodingKey, CaseIterable {
         case secrets
         case gateway
         case agents

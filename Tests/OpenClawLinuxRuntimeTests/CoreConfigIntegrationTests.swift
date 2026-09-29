@@ -413,4 +413,41 @@ struct CoreConfigIntegrationTests {
         // The malformed authored port is kept on a no-change projection.
         #expect(config.documentProjection(preserving: original).jsonObject["gateway"] == original.jsonObject["gateway"])
     }
+
+    // MARK: SDK-native config store
+
+    @Test
+    func configStoreSaveRemovesClearedSectionsButKeepsForeignAndUndecodableOnes() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("openclawkit-configstore-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("openclaw-sdk.json")
+        try Data(#"""
+        {"meta": {"lastTouchedVersion": "2026.9.6"}, "wizard": {"lastRunMode": "local"},
+         "mcp": {"servers": {"fs": {"command": "/usr/local/bin/mcp-fs"}}},
+         "skills": {"entries": {"weather": {"enabled": true}}},
+         "memory": 7,
+         "plugins": {"entries": {"canvas": {"enabled": true}}}}
+        """#.utf8).write(to: url)
+        let store = ConfigStore(fileURL: url, cacheTTLms: 0)
+        var config = try await store.load()
+        #expect(config.mcp?.servers?["fs"] != nil)
+        #expect(config.memory == nil)
+        config.mcp = nil
+        config.plugins = nil
+        try await store.save(config)
+
+        let reloaded = try await store.load()
+        #expect(reloaded.mcp == nil)
+        #expect(reloaded.plugins == nil)
+        #expect(reloaded.skills?.entries?["weather"] != nil)
+        let written = try #require(try JSONDecoder().decode(AnyCodable.self, from: Data(contentsOf: url)).dictionaryValue)
+        #expect(written["mcp"] == nil)
+        #expect(written["plugins"] == nil)
+        #expect(written["meta"] != nil)
+        #expect(written["wizard"] != nil)
+        // A malformed section that loaded as nil is kept as written, not silently deleted.
+        #expect(written["memory"] == AnyCodable(.int(7)))
+        #expect(ConfigStore.ownedTopLevelKeys.isSuperset(of: ["mcp", "skills", "memory", "plugins", "gateway", "runtime"]))
+    }
 }
