@@ -206,6 +206,15 @@ private func makeDurableAttachmentViewModel(
         outbox: outbox)
 }
 
+/// A file URL with `name` inside a fresh per-test directory. Parallel test processes (other
+/// checkouts) share the user temp directory, so fixed names there race each other.
+private func uniqueVoiceNoteURL(_ name: String) throws -> URL {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("voice-note-tests-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    return directory.appendingPathComponent(name)
+}
+
 private func makeChatAttachmentJPEG(width: Int, height: Int) throws -> Data {
     guard
         let context = CGContext(
@@ -363,8 +372,8 @@ struct ChatViewModelAttachmentTests {
     }
 
     @Test func voiceNoteAttachmentStagesAudioAndDeletesTemporaryFile() async throws {
-        let fileURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("voice-note-20260706-120000.m4a")
+        let fileURL = try uniqueVoiceNoteURL("voice-note-20260706-120000.m4a")
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
         let data = Data("voice-note-data".utf8)
         try data.write(to: fileURL)
         let viewModel = await MainActor.run {
@@ -393,8 +402,8 @@ struct ChatViewModelAttachmentTests {
     }
 
     @Test func oversizeVoiceNoteIsRejectedAndDeleted() async throws {
-        let fileURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("voice-note-oversize.m4a")
+        let fileURL = try uniqueVoiceNoteURL("voice-note-oversize.m4a")
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
         try Data(repeating: 0x41, count: 5_000_001).write(to: fileURL)
         let viewModel = await MainActor.run {
             OpenClawChatViewModel(sessionKey: "main", transport: AttachmentProcessingTransport())
@@ -409,8 +418,8 @@ struct ChatViewModelAttachmentTests {
     }
 
     @Test func malformedVoiceNoteDurationIsNormalized() async throws {
-        let fileURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("voice-note-malformed-duration.m4a")
+        let fileURL = try uniqueVoiceNoteURL("voice-note-malformed-duration.m4a")
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
         try Data("voice-note".utf8).write(to: fileURL)
         let viewModel = await MainActor.run {
             OpenClawChatViewModel(sessionKey: "main", transport: AttachmentProcessingTransport())
@@ -782,8 +791,8 @@ struct ChatViewModelAttachmentTests {
     @Test func voiceNoteSendUsesExistingAttachmentPayloadAndOptimisticDuration() async throws {
         let capture = AttachmentSendCapture()
         let transport = AttachmentProcessingTransport(capture: capture)
-        let fileURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("voice-note-\(UUID().uuidString).m4a")
+        let fileURL = try uniqueVoiceNoteURL("voice-note-20260706-120001.m4a")
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
         let data = Data("encoded-voice-note".utf8)
         try data.write(to: fileURL)
         let outbox = try makeAttachmentOutbox()
@@ -801,7 +810,7 @@ struct ChatViewModelAttachmentTests {
         let payload = try #require(capturedPayload)
         #expect(payload.type == "file")
         #expect(payload.mimeType == "audio/mp4")
-        #expect(payload.fileName == fileURL.lastPathComponent)
+        #expect(payload.fileName == "voice-note-20260706-120001.m4a")
         #expect(payload.content == data.base64EncodedString())
 
         let optimisticAudio = await MainActor.run {
