@@ -132,11 +132,19 @@ public struct ExecCommandResolution: Sendable, Equatable {
     public var cwd: String?
     /// Effective argv (the executable first).
     public var argv: [String]?
-    /// Wrapper whose semantic use (for example `env` with assignments or `-P`) blocks allowlisting.
+    /// Wrapper whose semantic use blocks allowlisting (upstream `policyBlocked`): `env` with
+    /// assignments or options, privilege and dispatch carriers (`sudo`, `doas`, `su`, `setsid`, …),
+    /// `command`/`builtin`/`exec`, and `busybox`/`toybox` shell applets.
     ///
-    /// Blocked resolutions stay bound to the wrapper itself (`/usr/bin/env`), so only a rule for the
-    /// wrapper (or `*`) can match, and no "always allow" grant is generated.
+    /// Blocked resolutions stay bound to the wrapper itself (`/usr/bin/env`) and never match an
+    /// allowlist (not even `*`), and no "always allow" grant is generated.
     public var blockedWrapper: String?
+    /// Inline payload of a POSIX shell wrapper invoked exactly as `<shell> -c <payload>` (option
+    /// clusters such as `-lc` included, no trailing arguments).
+    ///
+    /// The resolution itself stays bound to the shell, which only an `argPattern`-bound rule (or a
+    /// bare `*`) can authorize; ``ExecAllowlistEvaluator`` otherwise matches the payload's commands.
+    public var shellInlineCommand: String?
 
     /// Creates a resolution.
     /// - Parameters:
@@ -147,6 +155,7 @@ public struct ExecCommandResolution: Sendable, Equatable {
     ///   - cwd: Working directory.
     ///   - argv: Effective argv.
     ///   - blockedWrapper: Wrapper that blocks allowlisting.
+    ///   - shellInlineCommand: Inline payload of a `<shell> -c <payload>` invocation.
     public init(
         rawExecutable: String,
         resolvedPath: String?,
@@ -154,7 +163,8 @@ public struct ExecCommandResolution: Sendable, Equatable {
         executableName: String,
         cwd: String?,
         argv: [String]? = nil,
-        blockedWrapper: String? = nil
+        blockedWrapper: String? = nil,
+        shellInlineCommand: String? = nil
     ) {
         self.rawExecutable = rawExecutable
         self.resolvedPath = resolvedPath
@@ -163,21 +173,50 @@ public struct ExecCommandResolution: Sendable, Equatable {
         self.cwd = cwd
         self.argv = argv
         self.blockedWrapper = blockedWrapper
+        self.shellInlineCommand = shellInlineCommand
     }
 
     /// Maximum transparent wrapper depth (upstream `maxWrapperDepth`).
     public static let maxWrapperDepth = 4
 
-    /// Shells whose inline payloads (`sh -c …`) are not split by this port; they never match an allowlist.
+    /// Maximum nesting of shell payloads matched through ``shellInlineCommand`` (upstream
+    /// `MAX_SHELL_WRAPPER_INLINE_EVAL_DEPTH`).
+    public static let maxShellPayloadDepth = 3
+
+    /// Shell executables (upstream POSIX, `cmd` and PowerShell wrapper names).
+    ///
+    /// A shell invoked with any argument (`sh -c …`, `bash script.sh`, `pwsh -Command …`) runs code
+    /// its path does not describe, so a path-only rule for the shell never authorizes it: only an
+    /// `argPattern`-bound rule or a bare `*` can (upstream `requiresBoundArgPattern`).
     public static let shellWrapperNames: Set<String> = [
-        "sh", "bash", "zsh", "dash", "ksh", "mksh", "fish", "ash", "csh", "tcsh", "pwsh", "powershell", "cmd",
+        "ash", "bash", "csh", "dash", "elvish", "fish", "ksh", "mksh", "nu", "osh", "sh", "tcsh", "xonsh", "yash",
+        "zsh", "cmd", "powershell", "pwsh",
     ]
+
+    /// Wrappers that are never unwrapped and block allowlisting (upstream dispatch wrappers without a
+    /// transparent unwrap, plus `command`/`builtin`/`exec`): privilege changes (`sudo`, `doas`, `su`,
+    /// `pkexec`, `runuser`), sandboxes and namespaces, scheduling and session carriers.
+    ///
+    /// `nice`, `nohup`, `stdbuf` and `timeout` are unwrapped when their options parse; `env` is
+    /// unwrapped only without assignments or options.
+    public static let blockedCarrierNames: Set<String> = [
+        "arch", "builtin", "bwrap", "caffeinate", "catchsegv", "chroot", "chrt", "command", "cpulimit", "doas",
+        "eatmydata", "exec", "firejail", "flock", "gosu", "ionice", "linux32", "linux64", "nsenter", "numactl",
+        "pkexec", "proot", "proxychains", "proxychains4", "runuser", "sandbox-exec", "script", "setarch",
+        "setpriv", "setsid", "su", "sudo", "systemd-run", "taskset", "time", "torify", "torsocks", "unbuffer",
+        "unshare", "watch", "xcrun", "xvfb-run",
+    ]
+
+    /// POSIX shells whose `-c` payload is split and matched command by command.
+    static let parseableShellNames: Set<String> = ["ash", "bash", "dash", "ksh", "mksh", "sh", "yash", "zsh"]
 
     /// Resolves a command's executable for allowlist matching.
     ///
-    /// Transparent `env` invocations (no assignments or options) are unwrapped; `env` with modifiers
-    /// stays bound to `env` and is marked ``blockedWrapper``. Shell wrappers with an inline command
-    /// (`sh -c`, `bash -lc`, …) are marked blocked, because this port does not split shell payloads.
+    /// Transparent `env` invocations (no assignments or options) and `nice`/`nohup`/`stdbuf`/`timeout`
+    /// with parseable options are unwrapped. `env` with modifiers, the ``blockedCarrierNames``
+    /// carriers and `busybox`/`toybox` shell applets stay bound to the wrapper and are marked
+    /// ``blockedWrapper``. A POSIX shell invoked as `<shell> -c <payload>` records the payload in
+    /// ``shellInlineCommand``.
     /// - Parameters:
     ///   - argv: Command argv.
     ///   - cwd: Working directory (defaults to the process directory for relative paths).
@@ -190,39 +229,55 @@ public struct ExecCommandResolution: Sendable, Equatable {
     ) -> ExecCommandResolution? {
         var current = argv
         var blocked: String?
-        for _ in 0..<Self.maxWrapperDepth {
-            guard let first = current.first, ExecCommandToken.basenameLower(first) == "env" else { break }
-            guard let prelude = ExecEnvInvocation.parsePrelude(current) else {
-                blocked = "env"
+        var depth = 0
+        while let first = current.first {
+            let name = Self.normalizedExecutableName(first)
+            if name == "busybox" || name == "toybox" {
+                if ExecDispatchWrapper.isShellMultiplexerInvocation(current) {
+                    blocked = name
+                }
                 break
             }
-            if prelude.usesModifiers {
-                blocked = "env"
+            guard name == "env" || ExecDispatchWrapper.transparentNames.contains(name) || Self.blockedCarrierNames.contains(name) else {
                 break
             }
-            current = Array(current[prelude.commandIndex...])
-        }
-        if blocked == nil, let first = current.first, ExecCommandToken.basenameLower(first) == "env" {
-            // Wrapper depth overflow stays bound to the wrapper.
-            blocked = "env"
-        }
-        if blocked == nil, let first = current.first, Self.shellWrapperNames.contains(ExecCommandToken.basenameLower(first)),
-           current.dropFirst().contains(where: { $0.hasPrefix("-") && !$0.hasPrefix("--") && $0.contains("c") })
-        {
-            blocked = ExecCommandToken.basenameLower(first)
+            guard depth < Self.maxWrapperDepth else {
+                // Wrapper depth overflow stays bound to the wrapper.
+                blocked = name
+                break
+            }
+            depth += 1
+            if name == "env" {
+                guard let prelude = ExecEnvInvocation.parsePrelude(current), !prelude.usesModifiers else {
+                    blocked = name
+                    break
+                }
+                current = Array(current[prelude.commandIndex...])
+                continue
+            }
+            guard let unwrapped = ExecDispatchWrapper.unwrapTransparent(current, name: name), !unwrapped.isEmpty else {
+                blocked = name
+                break
+            }
+            current = unwrapped
         }
         guard let raw = current.first?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
             return nil
         }
         var resolution = Self.resolveExecutable(rawExecutable: raw, argv: current, cwd: cwd, environment: environment)
         resolution.blockedWrapper = blocked
+        if blocked == nil {
+            resolution.shellInlineCommand = Self.posixShellInlineCommand(current)
+        }
         return resolution
     }
 
     /// Resolves each command of a shell command line (`a && b | c`); every segment must resolve.
     ///
     /// Fails closed (`nil`) for command substitution, process substitution, redirections, background
-    /// jobs, comments followed by more lines, or unterminated quotes.
+    /// jobs, comments followed by more lines, unterminated quotes, and executables the shell would
+    /// expand (`$VAR/…`, globs, `~user/…`) or leading `NAME=value` assignments (upstream
+    /// `dynamic-executable` and `shell-env-assignment`, which only a prompt can approve).
     /// - Parameters:
     ///   - commandText: Shell command text.
     ///   - cwd: Working directory.
@@ -238,14 +293,83 @@ public struct ExecCommandResolution: Sendable, Equatable {
         }
         var resolutions: [ExecCommandResolution] = []
         for segment in segments {
-            guard let argv = ExecShellWords.split(segment), !argv.isEmpty,
-                  let resolution = Self.resolve(argv: argv, cwd: cwd, environment: environment)
+            guard let argv = ExecShellWords.split(segment), let first = argv.first, !Self.isDynamicShellWord(first),
+                  first == first.trimmingCharacters(in: .whitespacesAndNewlines),
+                  let resolution = Self.resolve(argv: argv, cwd: cwd, environment: environment),
+                  let executable = resolution.argv?.first, !Self.isDynamicShellWord(executable)
             else {
                 return nil
             }
             resolutions.append(resolution)
         }
         return resolutions
+    }
+
+    /// Whether the resolved executable is a shell (``shellWrapperNames``, checked on the written
+    /// token, the resolved path and the symlink-free path, so `/bin/sh` → `dash` counts).
+    /// - Parameter resolution: Resolution.
+    /// - Returns: `true` for shells.
+    public static func isShellTarget(_ resolution: ExecCommandResolution) -> Bool {
+        [resolution.rawExecutable, resolution.resolvedPath, resolution.resolvedRealPath]
+            .compactMap { $0 }
+            .map(Self.normalizedExecutableName)
+            .contains(where: Self.shellWrapperNames.contains)
+    }
+
+    /// Whether a resolution needs an `argPattern`-bound rule (or a bare `*`): a shell with any
+    /// argument (upstream `requiresBoundArgPattern`).
+    /// - Parameter resolution: Resolution.
+    /// - Returns: `true` when path-only rules must not match.
+    public static func requiresBoundArgPattern(_ resolution: ExecCommandResolution) -> Bool {
+        resolution.shellInlineCommand != nil || (Self.isShellTarget(resolution) && (resolution.argv?.count ?? 0) > 1)
+    }
+
+    /// Whether the resolved executable is a dispatch carrier (``blockedCarrierNames``, the
+    /// transparent wrappers, `env`, `busybox` or `toybox`).
+    static func isDispatchCarrierTarget(_ resolution: ExecCommandResolution) -> Bool {
+        [resolution.rawExecutable, resolution.resolvedPath, resolution.resolvedRealPath]
+            .compactMap { $0 }
+            .map(Self.normalizedExecutableName)
+            .contains {
+                $0 == "env" || $0 == "busybox" || $0 == "toybox" || Self.blockedCarrierNames.contains($0)
+                    || ExecDispatchWrapper.transparentNames.contains($0)
+            }
+    }
+
+    /// Lowercased basename without a Windows `.exe` suffix.
+    static func normalizedExecutableName(_ token: String) -> String {
+        let base = ExecCommandToken.basenameLower(token)
+        return base.hasSuffix(".exe") ? String(base.dropLast(4)) : base
+    }
+
+    /// The payload of `<posix-shell> -c <payload>` (an option cluster with `c` and without the
+    /// value-taking `o`/`O`; no trailing positional arguments, which the payload could expand).
+    static func posixShellInlineCommand(_ argv: [String]) -> String? {
+        guard argv.count == 3, Self.parseableShellNames.contains(Self.normalizedExecutableName(argv[0])) else {
+            return nil
+        }
+        let flag = argv[1]
+        guard flag.range(of: #"^-[A-Za-z]*c[A-Za-z]*$"#, options: .regularExpression) != nil,
+              !flag.contains("o"), !flag.contains("O")
+        else {
+            return nil
+        }
+        return argv[2]
+    }
+
+    /// Whether a command word (after quote removal) is something the shell would expand or treat as
+    /// an assignment, so its text does not name the executable that runs.
+    static func isDynamicShellWord(_ word: String) -> Bool {
+        if ExecEnvInvocation.isAssignment(word) {
+            return true
+        }
+        if word.contains(where: { $0 == "$" || $0 == "`" || $0 == "*" || $0 == "?" || $0 == "{" }) {
+            return true
+        }
+        if word != "[", word.contains("[") {
+            return true
+        }
+        return word.hasPrefix("~") && word != "~" && !word.hasPrefix("~/")
     }
 
     /// Approval working-directory identity: POSIX `realpath` when the directory exists, else the
@@ -470,76 +594,203 @@ public enum ExecEnvInvocation {
     }
 }
 
+/// Transparent dispatch wrappers (upstream `dispatch-wrapper-resolution.ts`): `nice`, `nohup`,
+/// `stdbuf` and `timeout` are unwrapped when every option parses; anything else stays blocked.
+enum ExecDispatchWrapper {
+    static let transparentNames: Set<String> = ["nice", "nohup", "stdbuf", "timeout"]
+
+    private static let niceOptionsWithValue: Set<String> = ["-n", "--adjustment", "--priority"]
+    private static let stdbufOptionsWithValue: Set<String> = ["-i", "--input", "-o", "--output", "-e", "--error"]
+    private static let timeoutFlagOptions: Set<String> = ["--foreground", "--preserve-status", "-v", "--verbose"]
+    private static let timeoutOptionsWithValue: Set<String> = ["-k", "--kill-after", "-s", "--signal"]
+    private static let shellMultiplexerApplets: Set<String> = ["ash", "bash", "dash", "fish", "ksh", "powershell", "pwsh", "sh", "zsh"]
+
+    private enum Directive {
+        case proceed
+        case consumeNext
+        case stop
+        case invalid
+    }
+
+    /// The argv carried by a transparent wrapper, or `nil` when its options do not parse.
+    static func unwrapTransparent(_ argv: [String], name: String) -> [String]? {
+        switch name {
+        case "nice":
+            return self.scanDashOptions(argv) { flag, lower in
+                if lower.range(of: #"^-\d+$"#, options: .regularExpression) != nil {
+                    return .proceed
+                }
+                if self.niceOptionsWithValue.contains(flag) {
+                    return lower.contains("=") ? .proceed : .consumeNext
+                }
+                return lower.hasPrefix("-n") && lower.count > 2 ? .proceed : .invalid
+            }
+        case "nohup":
+            return self.scan(argv) { token, lower in
+                if !token.hasPrefix("-") || token == "-" {
+                    return .stop
+                }
+                return lower == "--help" || lower == "--version" ? .proceed : .invalid
+            }
+        case "stdbuf":
+            return self.scanDashOptions(argv) { flag, lower in
+                guard self.stdbufOptionsWithValue.contains(flag) else { return .invalid }
+                return lower.contains("=") ? .proceed : .consumeNext
+            }
+        case "timeout":
+            // The first operand is the duration; the command follows it.
+            return self.scanDashOptions(argv, commandOffset: 1) { flag, lower in
+                if self.timeoutFlagOptions.contains(flag) {
+                    return .proceed
+                }
+                if self.timeoutOptionsWithValue.contains(flag) {
+                    return lower.contains("=") ? .proceed : .consumeNext
+                }
+                return .invalid
+            }
+        default:
+            return nil
+        }
+    }
+
+    /// Whether `busybox`/`toybox` runs a shell applet.
+    static func isShellMultiplexerInvocation(_ argv: [String]) -> Bool {
+        var appletIndex = 1
+        if appletIndex < argv.count, argv[appletIndex].trimmingCharacters(in: .whitespacesAndNewlines) == "--" {
+            appletIndex += 1
+        }
+        guard appletIndex < argv.count else { return false }
+        return self.shellMultiplexerApplets.contains(ExecCommandResolution.normalizedExecutableName(argv[appletIndex]))
+    }
+
+    private static func scanDashOptions(
+        _ argv: [String],
+        commandOffset: Int = 0,
+        onFlag: (_ flag: String, _ lower: String) -> Directive
+    ) -> [String]? {
+        self.scan(argv, commandOffset: commandOffset) { token, lower in
+            if !token.hasPrefix("-") || token == "-" {
+                return .stop
+            }
+            let flag = lower.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? lower
+            return onFlag(flag, lower)
+        }
+    }
+
+    private static func scan(
+        _ argv: [String],
+        commandOffset: Int = 0,
+        onToken: (_ token: String, _ lower: String) -> Directive
+    ) -> [String]? {
+        var index = 1
+        var expectsValue = false
+        scanning: while index < argv.count {
+            let token = argv[index].trimmingCharacters(in: .whitespacesAndNewlines)
+            if token.isEmpty {
+                index += 1
+                continue
+            }
+            if expectsValue {
+                expectsValue = false
+                index += 1
+                continue
+            }
+            if token == "--" {
+                index += 1
+                break
+            }
+            switch onToken(token, token.lowercased()) {
+            case .stop:
+                break scanning
+            case .invalid:
+                return nil
+            case .consumeNext:
+                expectsValue = true
+            case .proceed:
+                break
+            }
+            index += 1
+        }
+        let commandIndex = index + commandOffset
+        guard !expectsValue, commandIndex < argv.count else { return nil }
+        return Array(argv[commandIndex...])
+    }
+}
+
 /// Shell word helpers (upstream `src/utils/shell-argv.ts`).
 public enum ExecShellWords {
-    private static let doubleQuoteEscapes: Set<Character> = ["\\", "\"", "$", "`", "\n", "\r"]
+    private static let doubleQuoteEscapes: Set<Unicode.Scalar> = ["\\", "\"", "$", "`", "\n", "\r"]
 
     /// Splits a shell-like argv string into tokens (POSIX quoting; `#` starts a comment at a word start).
+    ///
+    /// Works on Unicode scalars, like the shell works on bytes: a combining mark after a quote never
+    /// hides the quote. Words are separated by space, tab and newline only (other Unicode whitespace
+    /// belongs to the word, as in the shell).
     /// - Parameter raw: Command text.
     /// - Returns: Tokens, or `nil` for unterminated quotes or a trailing escape.
     public static func split(_ raw: String) -> [String]? {
         var tokens: [String] = []
-        var buffer = ""
+        var buffer = String.UnicodeScalarView()
         var inSingle = false
         var inDouble = false
         var escaped = false
-        let characters = Array(raw)
+        let scalars = Array(raw.unicodeScalars)
         var index = 0
         func push() {
             if !buffer.isEmpty {
-                tokens.append(buffer)
-                buffer = ""
+                tokens.append(String(buffer))
+                buffer = String.UnicodeScalarView()
             }
         }
-        while index < characters.count {
-            let character = characters[index]
+        while index < scalars.count {
+            let scalar = scalars[index]
             defer { index += 1 }
             if escaped {
-                buffer.append(character)
+                buffer.append(scalar)
                 escaped = false
                 continue
             }
-            if !inSingle, !inDouble, character == "\\" {
+            if !inSingle, !inDouble, scalar == "\\" {
                 escaped = true
                 continue
             }
             if inSingle {
-                if character == "'" {
+                if scalar == "'" {
                     inSingle = false
                 } else {
-                    buffer.append(character)
+                    buffer.append(scalar)
                 }
                 continue
             }
             if inDouble {
-                if character == "\\", index + 1 < characters.count, Self.doubleQuoteEscapes.contains(characters[index + 1]) {
-                    buffer.append(characters[index + 1])
+                if scalar == "\\", index + 1 < scalars.count, Self.doubleQuoteEscapes.contains(scalars[index + 1]) {
+                    buffer.append(scalars[index + 1])
                     index += 1
                     continue
                 }
-                if character == "\"" {
+                if scalar == "\"" {
                     inDouble = false
                 } else {
-                    buffer.append(character)
+                    buffer.append(scalar)
                 }
                 continue
             }
-            if character == "'" {
+            if scalar == "'" {
                 inSingle = true
                 continue
             }
-            if character == "\"" {
+            if scalar == "\"" {
                 inDouble = true
                 continue
             }
-            if character == "#", buffer.isEmpty {
+            if scalar == "#", buffer.isEmpty {
                 break
             }
-            if character.isWhitespace {
+            if Self.isWordSeparator(scalar) {
                 push()
                 continue
             }
-            buffer.append(character)
+            buffer.append(scalar)
         }
         if escaped || inSingle || inDouble {
             return nil
@@ -552,72 +803,81 @@ public enum ExecShellWords {
     ///
     /// Fails closed (`nil`) on unquoted command or process substitution (`$(`, backticks, `<(`, `>(`),
     /// redirections (`<`, `>`), background `&`, and unterminated quotes; `$(` and backticks inside
-    /// double quotes also fail closed.
+    /// double quotes also fail closed. `$` followed by `(` across line continuations (`$\⏎(`) counts
+    /// as substitution (upstream `nextShellSignificantCharacter`). A comment (`#` starting a word)
+    /// followed by more lines fails closed too: the shell ends the comment at the newline even after
+    /// a trailing backslash, while ``split(_:)`` would drop everything after the `#`. Parsing works on
+    /// Unicode scalars, so `\r\n` is a carriage return plus a newline, as in the shell.
     /// - Parameter raw: Command text.
     /// - Returns: Trimmed, non-empty segments, or `nil`.
     public static func splitCommandChain(_ raw: String) -> [String]? {
         var segments: [String] = []
-        var current = ""
+        var current = String.UnicodeScalarView()
         var inSingle = false
         var inDouble = false
         var escaped = false
-        let characters = Array(raw)
+        let scalars = Array(raw.unicodeScalars)
         var index = 0
         func flush() -> Bool {
-            let trimmed = current.trimmingCharacters(in: .whitespacesAndNewlines)
-            current = ""
+            let trimmed = Self.trimmingSeparators(current)
+            current = String.UnicodeScalarView()
             guard !trimmed.isEmpty else { return false }
             segments.append(trimmed)
             return true
         }
-        while index < characters.count {
-            let character = characters[index]
-            let next: Character? = index + 1 < characters.count ? characters[index + 1] : nil
+        while index < scalars.count {
+            let scalar = scalars[index]
+            let next: Unicode.Scalar? = index + 1 < scalars.count ? scalars[index + 1] : nil
             if escaped {
-                current.append(character)
+                current.append(scalar)
                 escaped = false
                 index += 1
                 continue
             }
-            if !inSingle, character == "\\" {
+            if !inSingle, scalar == "\\" {
                 if next == "\n" {
                     // Line continuation.
                     index += 2
                     continue
                 }
-                current.append(character)
+                current.append(scalar)
                 escaped = true
                 index += 1
                 continue
             }
             if inSingle {
-                if character == "'" { inSingle = false }
-                current.append(character)
+                if scalar == "'" { inSingle = false }
+                current.append(scalar)
                 index += 1
                 continue
             }
             if inDouble {
-                if character == "`" || (character == "$" && next == "(") {
+                if scalar == "`" || (scalar == "$" && Self.nextSignificantScalar(scalars, after: index) == "(") {
                     return nil
                 }
-                if character == "\"" { inDouble = false }
-                current.append(character)
+                if scalar == "\"" { inDouble = false }
+                current.append(scalar)
                 index += 1
                 continue
             }
-            switch character {
+            switch scalar {
             case "'":
                 inSingle = true
             case "\"":
                 inDouble = true
             case "`":
                 return nil
-            case "$" where next == "(":
+            case "$" where Self.nextSignificantScalar(scalars, after: index) == "(":
                 return nil
             case "<", ">":
                 return nil
+            case "#" where Self.mayStartComment(scalars, at: index, current: current):
+                // Over-approximates word starts on purpose: a false positive only fails closed.
+                if scalars[(index + 1)...].contains(where: { $0 == "\n" || $0 == "\r" }) {
+                    return nil
+                }
             case ";", "\n", "\r":
-                guard flush() || character != ";" else { return nil }
+                guard flush() || scalar != ";" else { return nil }
                 index += 1
                 continue
             case "|":
@@ -631,7 +891,7 @@ public enum ExecShellWords {
             default:
                 break
             }
-            current.append(character)
+            current.append(scalar)
             index += 1
         }
         if escaped || inSingle || inDouble {
@@ -639,6 +899,48 @@ public enum ExecShellWords {
         }
         _ = flush()
         return segments
+    }
+
+    /// Shell word separators (space, tab, newline).
+    static func isWordSeparator(_ scalar: Unicode.Scalar) -> Bool {
+        scalar == " " || scalar == "\t" || scalar == "\n"
+    }
+
+    private static func trimmingSeparators(_ scalars: String.UnicodeScalarView) -> String {
+        let isSeparator: (Unicode.Scalar) -> Bool = { Self.isWordSeparator($0) || $0 == "\r" }
+        guard let first = scalars.firstIndex(where: { !isSeparator($0) }),
+              let last = scalars.lastIndex(where: { !isSeparator($0) })
+        else {
+            return ""
+        }
+        return String(String.UnicodeScalarView(scalars[first...last]))
+    }
+
+    /// The next scalar after `index`, skipping line continuations (`\⏎` and `\␍⏎`).
+    private static func nextSignificantScalar(_ scalars: [Unicode.Scalar], after index: Int) -> Unicode.Scalar? {
+        var cursor = index + 1
+        while cursor < scalars.count {
+            if scalars[cursor] == "\\", cursor + 1 < scalars.count {
+                if scalars[cursor + 1] == "\n" {
+                    cursor += 2
+                    continue
+                }
+                if scalars[cursor + 1] == "\r", cursor + 2 < scalars.count, scalars[cursor + 2] == "\n" {
+                    cursor += 3
+                    continue
+                }
+            }
+            return scalars[cursor]
+        }
+        return nil
+    }
+
+    /// Whether an unquoted `#` may start a comment: at the start of a segment, or after whitespace
+    /// or an operator character.
+    private static func mayStartComment(_ scalars: [Unicode.Scalar], at index: Int, current: String.UnicodeScalarView) -> Bool {
+        guard index > 0, !current.isEmpty else { return true }
+        let previous = scalars[index - 1]
+        return previous.properties.isWhitespace || ";&|()<>".unicodeScalars.contains(previous)
     }
 }
 
@@ -651,17 +953,21 @@ public enum ExecAllowlistMatcher {
 
     /// Returns the first rule that authorizes `resolution`.
     ///
-    /// A bare `*` rule without `argPattern` (not generated) matches any resolved command. Path
-    /// patterns match the symlink-free trust path; basename patterns match only PATH-resolved commands.
-    /// Rules with an `argPattern` must match the argv (generated grants only through their cwd-bound
-    /// hash) and win over path-only rules; generated grants without a cwd-bound hash never match.
-    /// Resolutions blocked by a wrapper only match rules for the wrapper itself.
+    /// Resolutions blocked by a wrapper (``ExecCommandResolution/blockedWrapper``) never match, not
+    /// even `*` (upstream `policyBlocked`). Otherwise a bare `*` rule without `argPattern` (not
+    /// generated) matches any command. Path patterns match the symlink-free trust path; basename
+    /// patterns match only PATH-resolved commands. Rules with an `argPattern` must match the argv
+    /// (generated grants only through their cwd-bound hash) and win over path-only rules; generated
+    /// grants without a cwd-bound hash never match. A shell invoked with arguments (`sh -c …`,
+    /// `bash script.sh`) is only authorized by an `argPattern`-bound rule or `*` (upstream
+    /// `requiresBoundArgPattern`); ``ExecAllowlistEvaluator`` can still authorize `sh -c <payload>`
+    /// through the payload's own commands.
     /// - Parameters:
     ///   - entries: Allowlist rules.
     ///   - resolution: Command resolution.
     /// - Returns: The matching rule, or `nil`.
     public static func match(entries: [ExecAllowlistEntry], resolution: ExecCommandResolution?) -> ExecAllowlistEntry? {
-        guard let resolution, !entries.isEmpty else { return nil }
+        guard let resolution, !entries.isEmpty, resolution.blockedWrapper == nil else { return nil }
         if let wildcard = entries.first(where: {
             $0.pattern.trimmingCharacters(in: .whitespacesAndNewlines) == "*" && ($0.argPattern?.isEmpty ?? true) && !$0.isAllowAlways
         }) {
@@ -670,6 +976,7 @@ public enum ExecAllowlistMatcher {
         guard resolution.resolvedRealPath?.isEmpty == false || resolution.resolvedPath?.isEmpty == false else {
             return nil
         }
+        let requiresBoundArgPattern = ExecCommandResolution.requiresBoundArgPattern(resolution)
         var pathOnlyMatch: ExecAllowlistEntry?
         var cwdBoundHash: String?
         for entry in entries {
@@ -680,8 +987,9 @@ public enum ExecAllowlistMatcher {
             }
             guard self.matchesExecutable(pattern: pattern, resolution: resolution) else { continue }
             guard let argPattern = entry.argPattern, !argPattern.isEmpty else {
-                // Old generated grants were path-only and could authorize changed argv.
-                if !entry.isAllowAlways, pathOnlyMatch == nil {
+                // Old generated grants were path-only and could authorize changed argv; a path-only
+                // rule for a shell would authorize any payload.
+                if !entry.isAllowAlways, !requiresBoundArgPattern, pathOnlyMatch == nil {
                     pathOnlyMatch = entry
                 }
                 continue
@@ -700,6 +1008,53 @@ public enum ExecAllowlistMatcher {
             }
         }
         return pathOnlyMatch
+    }
+
+    /// Rules authorizing one resolution, matching a `<shell> -c <payload>` invocation through its
+    /// payload when no rule authorizes the shell itself: every payload command must match (nested
+    /// payloads up to ``ExecCommandResolution/maxShellPayloadDepth``).
+    /// - Parameters:
+    ///   - entries: Allowlist rules.
+    ///   - resolution: Command resolution.
+    ///   - environment: Environment whose `PATH` resolves payload commands.
+    /// - Returns: The matching rules (one per authorized command), or `[]`.
+    public static func matchIncludingShellPayload(
+        entries: [ExecAllowlistEntry],
+        resolution: ExecCommandResolution,
+        environment: [String: String]
+    ) -> [ExecAllowlistEntry] {
+        self.matchIncludingShellPayload(entries: entries, resolution: resolution, environment: environment, depth: 0) ?? []
+    }
+
+    private static func matchIncludingShellPayload(
+        entries: [ExecAllowlistEntry],
+        resolution: ExecCommandResolution,
+        environment: [String: String],
+        depth: Int
+    ) -> [ExecAllowlistEntry]? {
+        if let match = self.match(entries: entries, resolution: resolution) {
+            return [match]
+        }
+        guard resolution.blockedWrapper == nil, let payload = resolution.shellInlineCommand,
+              depth < ExecCommandResolution.maxShellPayloadDepth,
+              let inner = ExecCommandResolution.resolve(commandText: payload, cwd: resolution.cwd, environment: environment),
+              !inner.isEmpty
+        else {
+            return nil
+        }
+        var matches: [ExecAllowlistEntry] = []
+        for innerResolution in inner {
+            guard let innerMatches = self.matchIncludingShellPayload(
+                entries: entries,
+                resolution: innerResolution,
+                environment: environment,
+                depth: depth + 1
+            ) else {
+                return nil
+            }
+            matches.append(contentsOf: innerMatches)
+        }
+        return matches
     }
 
     /// Matches every resolution; returns one rule per resolution, or an empty array when any misses.
@@ -736,14 +1091,16 @@ public enum ExecAllowlistMatcher {
     /// Builds the generated "always allow" grant for an approved command (upstream allow-always
     /// patterns): the trust path plus a cwd-bound argv hash, source `allow-always`.
     ///
-    /// Returns `nil` for blocked wrappers, unresolved executables and interpreter-like targets (a
-    /// durable grant would be too broad; configure a manual rule instead).
+    /// Returns `nil` for blocked wrappers, shells, dispatch carriers, unresolved executables and
+    /// interpreter-like targets (a durable grant would be too broad; configure a manual rule instead).
     /// - Parameters:
     ///   - resolution: Resolution of the approved command.
     ///   - commandText: Display text stored on the rule.
     /// - Returns: The grant, or `nil`.
     public static func allowAlwaysEntry(for resolution: ExecCommandResolution, commandText: String? = nil) -> ExecAllowlistEntry? {
-        guard resolution.blockedWrapper == nil, !ExecCommandResolution.isInterpreterLikePersistentGrantTarget(resolution),
+        guard resolution.blockedWrapper == nil, !ExecCommandResolution.isShellTarget(resolution),
+              !ExecCommandResolution.isInterpreterLikePersistentGrantTarget(resolution),
+              !ExecCommandResolution.isDispatchCarrierTarget(resolution),
               let pattern = resolution.resolvedRealPath ?? resolution.resolvedPath, !pattern.isEmpty,
               let argv = resolution.argv
         else {

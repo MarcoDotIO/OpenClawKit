@@ -216,4 +216,80 @@ struct ConfigRuntimeBridgeTests {
         try store.saveAllowlist([], agentID: "default")
         #expect(try ExecApprovalsSQLiteStore.read(stateDirectoryURL: stateDirectory)?.document.agents == nil)
     }
+
+    @Test
+    func securityRuntimeNeverServesOrWritesBackRevokedRules() async throws {
+        let stateDirectory = try self.makeDirectory()
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
+        let store = ExecApprovalsSQLiteAllowlistStore(stateDirectoryURL: stateDirectory)
+        let path = ["PATH": "/usr/bin:/bin"]
+        let printf = try #require(ExecCommandResolution.resolve(argv: ["printf"], environment: path)?.resolvedRealPath)
+        let echo = try #require(ExecCommandResolution.resolve(argv: ["echo"], environment: path)?.resolvedRealPath)
+        let ruleA = ExecAllowlistEntry(id: "a", pattern: printf)
+        let ruleB = ExecAllowlistEntry(id: "b", pattern: echo)
+        let security = SecurityRuntime(allowlistStore: store)
+        try await security.setExecAllowlist([ruleA, ruleB])
+        #expect(try await security.evaluateExec(argv: ["echo", "hi"], cwd: "/", environment: path)?.id == "b")
+
+        // Another writer (the gateway, `system.execApprovals.set`) revokes B and adds C.
+        try ExecApprovalsSQLiteStore.write(
+            ExecApprovalsDocument(
+                version: 1,
+                agents: ["main": ExecApprovalsAgentDocument(allowlist: [
+                    ExecApprovalsAllowlistEntry(id: "a", pattern: printf),
+                    ExecApprovalsAllowlistEntry(id: "c", pattern: "rg"),
+                ])]
+            ),
+            stateDirectoryURL: stateDirectory
+        )
+        #expect(try await security.evaluateExec(argv: ["echo", "hi"], cwd: "/", environment: path) == nil)
+        #expect(try await security.allowlistEvaluator(environment: path).allows(commandText: "echo hi") == false)
+        #expect(try store.loadAllowlist(agentID: "main").map(\.id) == ["a", "c"])
+
+        // An allowed use of A records usage without dropping C or restoring B.
+        #expect(try await security.evaluateExec(argv: ["printf", "ok"], cwd: "/", environment: path)?.id == "a")
+        let stored = try store.loadAllowlist(agentID: "main")
+        #expect(stored.map(\.id) == ["a", "c"])
+        #expect((stored.first?.lastUsedAt ?? 0) > Int64(0))
+        #expect(stored.first?.lastUsedCommand == "printf ok")
+
+        // Adds and allow-always grants are merged into the current document too.
+        try await security.addExecAllowlistEntry(ExecAllowlistEntry(id: "d", pattern: "ls"))
+        #expect(try store.loadAllowlist(agentID: "main").map(\.id) == ["a", "c", "d"])
+    }
+
+    @Test
+    func legacyDefaultAgentFoldsIntoMainSoRevocationsStick() async throws {
+        let stateDirectory = try self.makeDirectory()
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
+        let store = ExecApprovalsSQLiteAllowlistStore(stateDirectoryURL: stateDirectory)
+        try ExecApprovalsSQLiteStore.write(
+            ExecApprovalsDocument(
+                version: 1,
+                agents: [
+                    "main": ExecApprovalsAgentDocument(allowlist: [ExecApprovalsAllowlistEntry(id: "a", pattern: "/usr/bin/a")]),
+                    "default": ExecApprovalsAgentDocument(
+                        security: .allowlist,
+                        allowlist: [
+                            ExecApprovalsAllowlistEntry(id: "a-dup", pattern: "/USR/BIN/A"),
+                            ExecApprovalsAllowlistEntry(id: "b", pattern: "/usr/bin/b"),
+                        ]
+                    ),
+                ]
+            ),
+            stateDirectoryURL: stateDirectory
+        )
+        // Reads show the union upstream enforces.
+        #expect(try store.loadAllowlist(agentID: "main").map(\.id) == ["a", "b"])
+        #expect(try store.loadAllowlist(agentID: "default").map(\.id) == ["a", "b"])
+
+        // Revoking B through the SDK removes it from the one merged list and drops `default`.
+        let security = SecurityRuntime(allowlistStore: store)
+        try await security.setExecAllowlist(try await security.execAllowlist().filter { $0.id != "b" })
+        let record = try #require(try ExecApprovalsSQLiteStore.read(stateDirectoryURL: stateDirectory))
+        #expect(record.document.agents?["default"] == nil)
+        #expect(record.document.agents?["main"]?.allowlist?.map(\.id) == ["a"])
+        #expect(record.document.agents?["main"]?.security == .allowlist)
+        #expect(!record.rawJSON.contains("\"default\""))
+    }
 }
