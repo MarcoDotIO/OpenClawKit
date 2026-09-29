@@ -1,4 +1,5 @@
 import AppIntents
+import OpenClawAppIntents
 
 /// Starts the OpenClaw runtime deployment from Siri or Shortcuts.
 struct DeployOpenClawIntent: AppIntent {
@@ -79,8 +80,19 @@ struct PreviewOpenClawIntentGraphIntent: AppIntent {
 }
 
 /// App Shortcut catalog for core OpenClaw controls.
+///
+/// An app declares exactly one `AppShortcutsProvider`; SDK intents from `OpenClawAppIntents`
+/// (here `AskOpenClawIntent`) are listed next to the app's own intents.
 struct OpenClawAppShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
+        AppShortcut(
+            intent: AskOpenClawIntent(),
+            phrases: [
+                "Ask \(.applicationName)",
+            ],
+            shortTitle: "Ask OpenClaw",
+            systemImageName: "bubble.left.and.text.bubble.right"
+        )
         AppShortcut(
             intent: DeployOpenClawIntent(),
             phrases: [

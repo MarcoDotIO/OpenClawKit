@@ -4,6 +4,9 @@
 #
 # Usage: Scripts/check-apple-weak-links.sh [ios|tvos|watchos|visionos|macos|all] [--no-build]
 #        (default platform: ios)
+#        Scripts/check-apple-weak-links.sh <platform> --binary <Mach-O>
+#        (checks an already linked app or framework binary, e.g. MyApp.app/MyApp, instead of
+#        building the package probe)
 #
 # How it works:
 #   1. Builds scheme OpenClawKit-Package with xcodebuild for `generic/platform=<P>`
@@ -17,42 +20,82 @@
 #      LC_LOAD_DYLIB (strong) fails the check, and the strongly referenced symbols are listed
 #      with `nm -m`. A strong load of a framework that is missing at runtime makes dyld abort
 #      at launch on older OS versions (for example iOS 17-26 for 27-only frameworks).
+#   4. Symbol-level check: fails when the probe has a strong (non-weak) undefined reference to a
+#      Swift runtime symbol that only exists in the 27 runtimes. Framework-level checks cannot
+#      see these, because libswift_Concurrency and friends are always loaded. Example: the
+#      Swift 6.4 compiler inlines `withTaskCancellationShield` into strong references to
+#      `swift_task_cancellationShieldPush`/`Pop`, even behind `#available`; iOS 26.x does not
+#      export them, so an app at the iOS 17 floor would fail to launch before iOS 27.
 #
 # A framework is weak-linked only when EVERY symbol referenced from it is availability-gated
 # (`@available`/`#available` with a version newer than the deployment target). Frameworks that
 # are not linked at all pass.
 #
+# Watched frameworks (defaults):
+#   - 27-only, every platform: CoreAI StateReporting NowPlaying MediaIntelligence
+#     MusicUnderstanding SuggestedActions TrustInsights LinkSecurity
+#   - newer than the iOS 17 / macOS 14 / tvOS 17 / watchOS 10 floors but already present at the
+#     visionOS 26 floor, so exempt on visionOS: FoundationModels, TelephonyMessagingKit (iOS 26),
+#     ImagePlayground (iOS 18.1 / macOS 15.1), ManagedApp (iOS 18.4 / macOS 27)
+#   A framework a platform does not ship at all is reported as "not linked" there.
+#
 # Environment:
 #   OPENCLAW_WEAK_LINK_FRAMEWORKS  space-separated framework names to watch (overrides defaults)
+#   OPENCLAW_STRONG_SYMBOL_DENYLIST
+#                                  space-separated extended regexes of runtime symbols that must
+#                                  never be strongly referenced (overrides the default list)
 #   OPENCLAW_SCHEME                scheme to build (default: OpenClawKit-Package)
 set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Relative --binary paths are resolved against the caller's directory, before the cd below.
+CALLER_DIR="$(pwd)"
 cd "${ROOT_DIR}"
 
 SCHEME="${OPENCLAW_SCHEME:-OpenClawKit-Package}"
 WORK_DIR="${ROOT_DIR}/.build/weak-link-probe"
 LOG_DIR="${ROOT_DIR}/.build/logs"
 
-# Frameworks introduced after the package floors. FoundationModels ships with the 26 SDKs;
-# the rest are new in the 27 SDKs.
+# Frameworks introduced after the package floors. The 27 list is new in the 27 SDKs on every
+# platform. The floor list holds frameworks newer than the iOS 17 / macOS 14 floors that already
+# exist at the visionOS 26 floor (FoundationModels and TelephonyMessagingKit ship with the 26
+# SDKs, ImagePlayground with iOS 18.1 / macOS 15.1, ManagedApp with iOS 18.4 / macOS 27), so
+# they may be strong on visionOS.
 DEFAULT_27_FRAMEWORKS="CoreAI StateReporting NowPlaying MediaIntelligence MusicUnderstanding SuggestedActions TrustInsights LinkSecurity"
-DEFAULT_26_FRAMEWORKS="FoundationModels"
+DEFAULT_FLOOR_FRAMEWORKS="FoundationModels TelephonyMessagingKit ImagePlayground ManagedApp"
+
+# Swift runtime symbols that only exist in the 27 runtimes (extended regexes matched against the
+# C symbol name as `nm` prints it). A strong reference to any of them breaks launch before 27.
+DEFAULT_STRONG_SYMBOL_DENYLIST="^_swift_task_cancellationShieldPush$ ^_swift_task_cancellationShieldPop$ cancellationShield"
 
 usage() {
   echo "Usage: $(basename "$0") [ios|tvos|watchos|visionos|macos|all] [--no-build]" >&2
+  echo "       $(basename "$0") <ios|tvos|watchos|visionos|macos> --binary <Mach-O>" >&2
+  echo "       (--binary inspects an already linked app/framework binary instead of building)" >&2
 }
 
 requested="ios"
 build=1
+binary=""
+expect_binary=0
 for arg in "$@"; do
+  if [[ ${expect_binary} -eq 1 ]]; then
+    binary="${arg}"
+    expect_binary=0
+    continue
+  fi
   case "${arg}" in
     --no-build) build=0 ;;
+    --binary) expect_binary=1 ;;
     -h|--help) usage; exit 0 ;;
     ios|tvos|watchos|visionos|macos|all) requested="${arg}" ;;
     *) usage; exit 2 ;;
   esac
 done
+if [[ ${expect_binary} -eq 1 ]]; then
+  usage
+  exit 2
+fi
 
 case "${requested}" in
   all) platforms=(ios tvos watchos visionos macos) ;;
@@ -104,10 +147,35 @@ watched_frameworks() {
     return
   fi
   case "$1" in
-    # FoundationModels already exists at the visionOS 26 floor, so it may be strong there.
+    # The floor frameworks already exist at the visionOS 26 floor, so they may be strong there.
     visionos) echo "${DEFAULT_27_FRAMEWORKS}" ;;
-    *) echo "${DEFAULT_26_FRAMEWORKS} ${DEFAULT_27_FRAMEWORKS}" ;;
+    *) echo "${DEFAULT_FLOOR_FRAMEWORKS} ${DEFAULT_27_FRAMEWORKS}" ;;
   esac
+}
+
+strong_symbol_denylist() {
+  echo "${OPENCLAW_STRONG_SYMBOL_DENYLIST:-${DEFAULT_STRONG_SYMBOL_DENYLIST}}"
+}
+
+# Prints "<symbol> (from <library>)" for every strong (non-weak) undefined symbol of a binary that
+# matches the denylist. `nm -m` prints weak imports as "(undefined) weak external".
+denied_strong_symbols() {
+  local binary="$1" pattern regex=""
+  for pattern in $(strong_symbol_denylist); do
+    regex="${regex:+${regex}|}(${pattern})"
+  done
+  [[ -z "${regex}" ]] && return 0
+  nm -m "${binary}" \
+    | awk '/\(undefined\)/ && !/\(undefined\) (\[lazy bound\] )?weak external / {
+        if (match($0, /external [^ ]+/)) {
+          sym = substr($0, RSTART + 9, RLENGTH - 9)
+          lib = $0
+          sub(/.*\(from /, "", lib)
+          sub(/\)$/, "", lib)
+          print sym, lib
+        }
+      }' \
+    | awk -v regex="${regex}" '$1 ~ regex { print $1 " (from " $2 ")" }'
 }
 
 # Prints "<LC_LOAD_DYLIB|LC_LOAD_WEAK_DYLIB|...> <install name>" for each dylib load command.
@@ -125,6 +193,48 @@ demangle() {
   else
     cat
   fi
+}
+
+# Checks one linked Mach-O image: watched frameworks must not be strong load commands, and no
+# denylisted 27-only runtime symbol may be strongly referenced.
+# Usage: inspect_binary <platform> <label> <binary>
+inspect_binary() {
+  local platform="$1" label="$2" binary="$3" status=0
+  local commands weak="" unlinked="" strong=""
+  commands="$(load_commands "${binary}")"
+  local framework
+  for framework in $(watched_frameworks "${platform}"); do
+    local line
+    # macOS frameworks use versioned install names (Foo.framework/Versions/A/Foo).
+    line="$(printf '%s\n' "${commands}" | grep -E "/${framework}\.framework/(Versions/[^/]+/)?${framework}\$" || true)"
+    if [[ -z "${line}" ]]; then
+      unlinked="${unlinked:+${unlinked} }${framework}"
+    elif [[ "${line}" == LC_LOAD_WEAK_DYLIB* ]]; then
+      weak="${weak:+${weak} }${framework}"
+    else
+      strong="${strong:+${strong} }${framework}"
+      echo "    [${label}] ${framework}: STRONG (${line%% *}); every reference must be availability-gated"
+      nm -m "${binary}" \
+        | grep -E "\(undefined\) external .*\(from ${framework}\)" \
+        | sed -E 's/^[[:space:]]*\(undefined\) external //; s/ \(from [^)]*\)$//' \
+        | demangle \
+        | head -n 20 \
+        | sed 's/^/        strong ref: /'
+      status=1
+    fi
+  done
+  echo "    [${label}] weak: ${weak:-none}; not linked: ${unlinked:-none}; strong: ${strong:-none}"
+
+  local denied
+  denied="$(denied_strong_symbols "${binary}")"
+  if [[ -n "${denied}" ]]; then
+    echo "    [${label}] STRONG references to 27-only runtime symbols (launch fails before 27):"
+    printf '%s\n' "${denied}" | sed 's/^/        strong ref: /'
+    status=1
+  else
+    echo "    [${label}] runtime symbols: no strong references to 27-only symbols ($(strong_symbol_denylist | wc -w | tr -d ' ') patterns)"
+  fi
+  return "${status}"
 }
 
 build_package() {
@@ -188,30 +298,7 @@ check_platform() {
       continue
     fi
 
-    local commands weak="" unlinked="" strong=""
-    commands="$(load_commands "${probe}")"
-    local framework
-    for framework in $(watched_frameworks "${platform}"); do
-      local line
-      # macOS frameworks use versioned install names (Foo.framework/Versions/A/Foo).
-      line="$(printf '%s\n' "${commands}" | grep -E "/${framework}\.framework/(Versions/[^/]+/)?${framework}\$" || true)"
-      if [[ -z "${line}" ]]; then
-        unlinked="${unlinked:+${unlinked} }${framework}"
-      elif [[ "${line}" == LC_LOAD_WEAK_DYLIB* ]]; then
-        weak="${weak:+${weak} }${framework}"
-      else
-        strong="${strong:+${strong} }${framework}"
-        echo "    [${platform}/${triple}] ${framework}: STRONG (${line%% *}); every reference must be availability-gated"
-        nm -m "${probe}" \
-          | grep -E "\(undefined\) external .*\(from ${framework}\)" \
-          | sed -E 's/^[[:space:]]*\(undefined\) external //; s/ \(from [^)]*\)$//' \
-          | demangle \
-          | head -n 20 \
-          | sed 's/^/        strong ref: /'
-        status=1
-      fi
-    done
-    echo "    [${platform}/${triple}] weak: ${weak:-none}; not linked: ${unlinked:-none}; strong: ${strong:-none}"
+    inspect_binary "${platform}" "${platform}/${triple}" "${probe}" || status=1
   done
 
   if [[ ${status} -eq 0 ]]; then
@@ -221,6 +308,29 @@ check_platform() {
   fi
   return "${status}"
 }
+
+if [[ -n "${binary}" ]]; then
+  if [[ "${requested}" == "all" ]]; then
+    echo "--binary needs one platform (its watched-framework list), not 'all'" >&2
+    exit 2
+  fi
+  if [[ "${binary}" != /* ]]; then
+    binary="${CALLER_DIR}/${binary}"
+  fi
+  if [[ ! -f "${binary}" ]]; then
+    echo "No such binary: ${binary}" >&2
+    exit 2
+  fi
+  echo "==> [${requested}] inspecting ${binary}"
+  if inspect_binary "${requested}" "${requested}/$(basename "${binary}")" "${binary}"; then
+    echo
+    echo "Weak-link check passed for: ${binary}"
+    exit 0
+  fi
+  echo
+  echo "Weak-link check failed for: ${binary}"
+  exit 1
+fi
 
 mkdir -p "${LOG_DIR}" "${WORK_DIR}"
 

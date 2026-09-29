@@ -5,12 +5,20 @@ PROJECT="${PROJECT:-Examples/iOS/OpenClawiOS/OpenClawiOS.xcodeproj}"
 SCHEME="${SCHEME:-OpenClawiOS}"
 CONFIGURATION="${CONFIGURATION:-Debug}"
 DESTINATION="${DESTINATION:-generic/platform=iOS Simulator}"
+# Must match the DerivedData path used for the build (Scripts/build-ios-example.sh sets it).
+DERIVED_DATA_PATH="${DERIVED_DATA_PATH:-}"
+
+derived_data_args=()
+if [[ -n "${DERIVED_DATA_PATH}" ]]; then
+  derived_data_args=(-derivedDataPath "${DERIVED_DATA_PATH}")
+fi
 
 BUILD_SETTINGS="$(xcodebuild \
   -project "$PROJECT" \
   -scheme "$SCHEME" \
   -configuration "$CONFIGURATION" \
   -destination "$DESTINATION" \
+  ${derived_data_args[@]+"${derived_data_args[@]}"} \
   CODE_SIGNING_ALLOWED=NO \
   CODE_SIGNING_REQUIRED=NO \
   -showBuildSettings)"

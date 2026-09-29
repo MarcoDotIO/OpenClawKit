@@ -1,4 +1,5 @@
 import Foundation
+import OpenClawKit
 #if canImport(BackgroundTasks)
 import BackgroundTasks
 #endif
@@ -14,11 +15,22 @@ enum OpenClawBackgroundTaskIdentifiers {
 }
 
 /// Registers and schedules Apple-approved background continuation work.
+///
+/// Submissions go through `OpenClawBackgroundTasks` from OpenClawKit: on iOS 27 it uses the async
+/// `BGTaskScheduler.submitTaskRequest(_:)`, earlier systems use `submit(_:)`, and every error is
+/// returned (and recorded in ``lastSubmissionFailures``) instead of being dropped with `try?`.
 @MainActor
 final class BackgroundContinuationManager {
     static let shared = BackgroundContinuationManager()
 
+    /// Most recent submission failure per task label (`refresh`, `processing`, `continued`).
+    private(set) var lastSubmissionFailures: [String: String] = [:]
+
     private var hasRegisteredHandlers = false
+    /// Identifiers whose launch handler BGTaskScheduler accepted. The scheduler raises an exception
+    /// when a request is submitted for a permitted identifier without a registered handler, so
+    /// requests are only submitted after a successful registration.
+    private var registeredIdentifiers: Set<String> = []
     private var hasScheduledInitialTasks = false
     private var automationTickHandler: (@Sendable () async -> Void)?
 
@@ -30,18 +42,28 @@ final class BackgroundContinuationManager {
         guard !self.hasRegisteredHandlers else { return }
         self.hasRegisteredHandlers = true
 
-        BGTaskScheduler.shared.register(forTaskWithIdentifier: OpenClawBackgroundTaskIdentifiers.refresh, using: nil) { task in
-            self.handleRefreshTask(task)
+        // Launch handlers run on the main queue so they can use this main-actor state directly.
+        if BGTaskScheduler.shared.register(
+            forTaskWithIdentifier: OpenClawBackgroundTaskIdentifiers.refresh,
+            using: .main,
+            launchHandler: { task in self.handleRefreshTask(task) }
+        ) {
+            self.registeredIdentifiers.insert(OpenClawBackgroundTaskIdentifiers.refresh)
         }
-        BGTaskScheduler.shared.register(forTaskWithIdentifier: OpenClawBackgroundTaskIdentifiers.processing, using: nil) { task in
-            self.handleProcessingTask(task)
+        if BGTaskScheduler.shared.register(
+            forTaskWithIdentifier: OpenClawBackgroundTaskIdentifiers.processing,
+            using: .main,
+            launchHandler: { task in self.handleProcessingTask(task) }
+        ) {
+            self.registeredIdentifiers.insert(OpenClawBackgroundTaskIdentifiers.processing)
         }
         if #available(iOS 26.0, *) {
-            BGTaskScheduler.shared.register(
+            if BGTaskScheduler.shared.register(
                 forTaskWithIdentifier: OpenClawBackgroundTaskIdentifiers.continuedProcessingPattern,
-                using: nil
-            ) { task in
-                self.handleContinuedProcessingTask(task)
+                using: .main,
+                launchHandler: { task in self.handleContinuedProcessingTask(task) }
+            ) {
+                self.registeredIdentifiers.insert(OpenClawBackgroundTaskIdentifiers.continuedProcessingPattern)
             }
         }
         #endif
@@ -51,9 +73,11 @@ final class BackgroundContinuationManager {
     func scheduleInitialTasksIfNeeded() {
         guard !self.hasScheduledInitialTasks else { return }
         self.hasScheduledInitialTasks = true
-        self.scheduleMaintenanceTasks()
-        if #available(iOS 26.0, *) {
-            self.scheduleContinuedProcessing()
+        Task {
+            await self.scheduleMaintenanceTasks()
+            if #available(iOS 26.0, *) {
+                await self.scheduleContinuedProcessing()
+            }
         }
     }
 
@@ -72,61 +96,83 @@ final class BackgroundContinuationManager {
     }
 
     /// Schedules refresh and processing maintenance requests.
-    func scheduleMaintenanceTasks() {
+    func scheduleMaintenanceTasks() async {
         #if canImport(BackgroundTasks)
         let scheduler = BGTaskScheduler.shared
 
-        scheduler.cancel(taskRequestWithIdentifier: OpenClawBackgroundTaskIdentifiers.refresh)
-        let refresh = BGAppRefreshTaskRequest(identifier: OpenClawBackgroundTaskIdentifiers.refresh)
-        refresh.earliestBeginDate = Date().addingTimeInterval(15 * 60)
-        try? scheduler.submit(refresh)
+        if self.isRegistered(OpenClawBackgroundTaskIdentifiers.refresh, label: "refresh") {
+            scheduler.cancel(taskRequestWithIdentifier: OpenClawBackgroundTaskIdentifiers.refresh)
+            let refresh = BGAppRefreshTaskRequest(identifier: OpenClawBackgroundTaskIdentifiers.refresh)
+            refresh.earliestBeginDate = Date().addingTimeInterval(15 * 60)
+            self.record(await OpenClawBackgroundTasks.submit(refresh), label: "refresh")
+        }
 
-        scheduler.cancel(taskRequestWithIdentifier: OpenClawBackgroundTaskIdentifiers.processing)
-        let processing = BGProcessingTaskRequest(identifier: OpenClawBackgroundTaskIdentifiers.processing)
-        processing.requiresNetworkConnectivity = false
-        processing.requiresExternalPower = false
-        processing.earliestBeginDate = Date().addingTimeInterval(30 * 60)
-        try? scheduler.submit(processing)
+        if self.isRegistered(OpenClawBackgroundTaskIdentifiers.processing, label: "processing") {
+            scheduler.cancel(taskRequestWithIdentifier: OpenClawBackgroundTaskIdentifiers.processing)
+            let processing = BGProcessingTaskRequest(identifier: OpenClawBackgroundTaskIdentifiers.processing)
+            processing.requiresNetworkConnectivity = false
+            processing.requiresExternalPower = false
+            processing.earliestBeginDate = Date().addingTimeInterval(30 * 60)
+            self.record(await OpenClawBackgroundTasks.submit(processing), label: "processing")
+        }
         #endif
     }
 
     /// Schedules a continued-processing request on iOS 26+.
     @available(iOS 26.0, *)
-    func scheduleContinuedProcessing() {
+    func scheduleContinuedProcessing() async {
         #if canImport(BackgroundTasks)
+        guard self.isRegistered(OpenClawBackgroundTaskIdentifiers.continuedProcessingPattern, label: "continued") else {
+            return
+        }
         let identifier = OpenClawBackgroundTaskIdentifiers.continuedProcessingPrefix + UUID().uuidString
         let request = BGContinuedProcessingTaskRequest(
             identifier: identifier,
             title: "OpenClaw running task",
             subtitle: "Continue active work in background"
         )
+        // `queue` waits for the system; a `fail`-strategy request would fall back to `queue` when the
+        // system cannot start it immediately.
         request.strategy = .queue
         request.requiredResources = []
-        try? BGTaskScheduler.shared.submit(request)
+        self.record(await OpenClawBackgroundTasks.submitContinuedProcessing(request), label: "continued")
+        #endif
+    }
+
+    /// Returns whether a launch handler is registered for `identifier`, recording a failure otherwise.
+    private func isRegistered(_ identifier: String, label: String) -> Bool {
+        guard self.registeredIdentifiers.contains(identifier) else {
+            self.lastSubmissionFailures[label] = "launch handler not registered for \(identifier)"
+            return false
+        }
+        return true
+    }
+
+    private func record(_ error: (any Error)?, label: String) {
+        guard let error else {
+            self.lastSubmissionFailures[label] = nil
+            return
+        }
+        #if canImport(BackgroundTasks)
+        self.lastSubmissionFailures[label] = "\(OpenClawBackgroundTasks.SubmissionFailure(error))"
+        #else
+        self.lastSubmissionFailures[label] = error.localizedDescription
         #endif
     }
 
     #if canImport(BackgroundTasks)
     private func handleRefreshTask(_ task: BGTask) {
         task.expirationHandler = {}
-        if let automationTickHandler = self.automationTickHandler {
-            Task {
-                await automationTickHandler()
-            }
+        self.runAutomationTickAndReschedule {
+            task.setTaskCompleted(success: true)
         }
-        self.scheduleMaintenanceTasks()
-        task.setTaskCompleted(success: true)
     }
 
     private func handleProcessingTask(_ task: BGTask) {
         task.expirationHandler = {}
-        if let automationTickHandler = self.automationTickHandler {
-            Task {
-                await automationTickHandler()
-            }
+        self.runAutomationTickAndReschedule {
+            task.setTaskCompleted(success: true)
         }
-        self.scheduleMaintenanceTasks()
-        task.setTaskCompleted(success: true)
     }
 
     @available(iOS 26.0, *)
@@ -136,14 +182,22 @@ final class BackgroundContinuationManager {
             return
         }
         continuedTask.expirationHandler = {}
-        if let automationTickHandler = self.automationTickHandler {
-            Task {
+        continuedTask.progress.totalUnitCount = 1
+        self.runAutomationTickAndReschedule {
+            continuedTask.progress.completedUnitCount = 1
+            continuedTask.setTaskCompleted(success: true)
+        }
+    }
+
+    private func runAutomationTickAndReschedule(completion: @escaping @MainActor () -> Void) {
+        let automationTickHandler = self.automationTickHandler
+        Task {
+            if let automationTickHandler {
                 await automationTickHandler()
             }
+            await self.scheduleMaintenanceTasks()
+            completion()
         }
-        continuedTask.progress.totalUnitCount = 1
-        continuedTask.progress.completedUnitCount = 1
-        continuedTask.setTaskCompleted(success: true)
     }
     #endif
 }

@@ -8,6 +8,8 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # DocC builds the package with Xcode 27 (Swift 6.4 + the 27 SDKs), like the Apple CI jobs.
+  XCODE_VERSION: "27.1"
 
 concurrency:
   group: docs-${{ github.event.pull_request.number || github.sha }}
@@ -16,17 +18,18 @@ concurrency:
 jobs:
   docc-site:
     name: Build DocC Site
-    runs-on: macos-latest
+    runs-on: macos-26
+    timeout-minutes: 60
     permissions:
       contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Select latest Xcode
+      - name: Select Xcode ${{ env.XCODE_VERSION }}
         uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: latest
+          xcode-version: ${{ env.XCODE_VERSION }}
 
       - name: Print Xcode and Swift versions
         run: |
