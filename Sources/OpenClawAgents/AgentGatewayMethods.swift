@@ -7,7 +7,7 @@ import OpenClawProtocol
 public struct AgentGatewayOptions: Sendable, Equatable {
     /// Forward runtime `AgentEventFrame`s as `agent` gateway events.
     public var forwardAgentEvents: Bool
-    /// Forward approval changes as `exec.approval.*` / `plugin.approval.*` events.
+    /// Forward approval changes as `exec.approval.*` / `plugin.approval.*` / `openclaw.approval.*` events.
     public var forwardApprovalEvents: Bool
     /// Forward question changes as `question.requested` / `question.resolved` events.
     public var forwardQuestionEvents: Bool
@@ -62,8 +62,9 @@ public extension EmbeddedAgentRuntime {
     /// Registers ``gatewayMethodNames``, the tool inventory methods (``toolGatewayMethodNames``) and
     /// the transcript DAG / search methods (``sessionBranchGatewayMethodNames``). One subscription to
     /// ``events(bufferingNewest:)`` feeds `agent`, `chat` (protocol v4), `session.tool`,
-    /// `session.message` and lifecycle `sessions.changed` events; approvals and questions forward as
-    /// `exec.approval.*` / `plugin.approval.*` and `question.*`.
+    /// `session.message` and lifecycle `sessions.changed` events; approvals forward as upstream
+    /// `exec.approval.*` / `plugin.approval.*` / `openclaw.approval.*` events
+    /// (``AgentGatewayApprovalEvents``) and questions as `question.*`.
     /// - Parameters:
     ///   - server: Gateway server.
     ///   - options: Bridging options.
@@ -84,21 +85,30 @@ public extension EmbeddedAgentRuntime {
                 }
             }
         }
+        // Ordered update streams (not per-change listener tasks), so a `requested` event always
+        // precedes its `resolved` event on the wire.
         if options.forwardApprovalEvents {
-            await self.approvals.addListener { [weak server] approval in
-                guard let server else { return }
-                let family = approval.kind == .exec ? "exec" : "plugin"
-                let phase = approval.state == .pending ? "requested" : "resolved"
-                await server.broadcast(event: "\(family).approval.\(phase)", payload: AnyCodable(approval.snapshotPayload))
+            let approvals = await self.approvals.updates(bufferingNewest: 1024)
+            Task { [weak server] in
+                for await approval in approvals {
+                    guard let server else { return }
+                    await server.broadcast(
+                        event: AgentGatewayApprovalEvents.eventName(for: approval),
+                        payload: AnyCodable(AgentGatewayApprovalEvents.payload(for: approval))
+                    )
+                }
             }
         }
         if options.forwardQuestionEvents {
-            await self.questions.addListener { [weak server] question in
-                guard let server else { return }
-                if question.status == .pending {
-                    await server.broadcast(event: GatewayEventName.questionRequested.rawValue, payload: AnyCodable(question.payload))
-                } else {
-                    await server.broadcast(event: GatewayEventName.questionResolved.rawValue, payload: AnyCodable(question.resolvedEventPayload))
+            let questions = await self.questions.updates(bufferingNewest: 1024)
+            Task { [weak server] in
+                for await question in questions {
+                    guard let server else { return }
+                    if question.status == .pending {
+                        await server.broadcast(event: GatewayEventName.questionRequested.rawValue, payload: AnyCodable(question.payload))
+                    } else {
+                        await server.broadcast(event: GatewayEventName.questionResolved.rawValue, payload: AnyCodable(question.resolvedEventPayload))
+                    }
                 }
             }
         }
@@ -132,6 +142,96 @@ public extension EmbeddedAgentRuntime {
         for (method, handler) in handlers.table() {
             await registrar.register(method: method, descriptor: nil, handler: handler)
         }
+    }
+}
+
+/// Upstream wire shapes of the approval events and list rows the runtime publishes.
+///
+/// - Requested (`<family>.approval.requested`) and `*.approval.list` rows:
+///   `{id, approvalKind, request, createdAtMs, expiresAtMs}` (upstream `buildRequestedApprovalEvent`);
+///   exec requests also carry `warningText`, `commandPreview`, `nodeId` and `unavailableDecisions`.
+/// - Resolved (`<family>.approval.resolved`): `{id, decision, resolvedBy, ts, request}`, plus
+///   `terminalStatus` for expired or cancelled system-agent approvals (upstream `publishAppliedApprovalResolution`).
+/// - Families: `exec`, `plugin`, and `openclaw` for system-agent approvals.
+public enum AgentGatewayApprovalEvents {
+    /// Event name for an approval's current state.
+    /// - Parameter approval: Approval.
+    /// - Returns: `exec|plugin|openclaw.approval.requested|resolved`.
+    public static func eventName(for approval: AgentApproval) -> String {
+        let family: String
+        switch approval.kind {
+        case .exec:
+            family = "exec"
+        case .plugin:
+            family = "plugin"
+        case .systemAgent:
+            family = "openclaw"
+        }
+        return "\(family).approval.\(approval.state == .pending ? "requested" : "resolved")"
+    }
+
+    /// Event payload for an approval's current state (requested or resolved shape).
+    /// - Parameter approval: Approval.
+    /// - Returns: The payload.
+    public static func payload(for approval: AgentApproval) -> [String: AnyCodable] {
+        approval.state == .pending ? Self.requestedPayload(approval) : Self.resolvedPayload(approval)
+    }
+
+    /// Requested event payload and list row `{id, approvalKind, request, createdAtMs, expiresAtMs}`.
+    /// - Parameter approval: Approval.
+    /// - Returns: The payload.
+    public static func requestedPayload(_ approval: AgentApproval) -> [String: AnyCodable] {
+        var payload = approval.legacyListPayload
+        payload["request"] = AnyCodable(Self.request(approval))
+        return payload
+    }
+
+    /// Resolved event payload `{id, decision, resolvedBy, ts, request, terminalStatus?}`.
+    /// - Parameter approval: Terminal approval.
+    /// - Returns: The payload.
+    public static func resolvedPayload(_ approval: AgentApproval) -> [String: AnyCodable] {
+        var payload: [String: AnyCodable] = [
+            "id": AnyCodable(approval.id),
+            "decision": AnyCodable((approval.decision ?? .deny).rawValue),
+            "resolvedBy": Self.resolvedBy(approval.reviewer).map { AnyCodable($0) } ?? .nullValue,
+            "ts": AnyCodable(approval.resolvedAtMs ?? SessionTranscriptClock.nowMs()),
+            "request": AnyCodable(Self.request(approval)),
+        ]
+        if approval.kind == .systemAgent, approval.state == .expired || approval.state == .cancelled {
+            payload["terminalStatus"] = AnyCodable(approval.state.rawValue)
+        }
+        return payload
+    }
+
+    /// Upstream request object of an approval (exec requests add the reviewer hints clients render).
+    static func request(_ approval: AgentApproval) -> [String: AnyCodable] {
+        var request = approval.legacyListPayload["request"]?.dictionaryValue ?? [:]
+        guard approval.kind == .exec else { return request }
+        let presentation = approval.presentation
+        if let warning = presentation.warningText {
+            request["warningText"] = AnyCodable(warning)
+        }
+        if let preview = presentation.commandPreview {
+            request["commandPreview"] = AnyCodable(preview)
+        }
+        if let nodeID = presentation.nodeID {
+            request["nodeId"] = AnyCodable(nodeID)
+        }
+        let allowed = Set(presentation.allowedDecisions)
+        let unavailable = [ApprovalDecision.allowOnce, .allowAlways, .deny].filter { !allowed.contains($0) }
+        if !unavailable.isEmpty {
+            request["unavailableDecisions"] = AnyCodable(unavailable.map { AnyCodable($0.rawValue) })
+        }
+        return request
+    }
+
+    /// Upstream `resolvedBy`: the reviewer's device id, else `channel:account:sender`.
+    static func resolvedBy(_ reviewer: AgentApprovalReviewer?) -> String? {
+        if let deviceID = reviewer?.deviceID {
+            return deviceID
+        }
+        let parts = [reviewer?.channel, reviewer?.accountID, reviewer?.senderID].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: ":")
     }
 }
 
@@ -721,7 +821,7 @@ struct AgentGatewayHandlers: Sendable {
     }
 
     private func legacyApprovalList(kind: ApprovalKind) async -> AnyCodable? {
-        AnyCodable(await self.runtime.approvals.pending(kind: kind).map { AnyCodable($0.legacyListPayload) })
+        AnyCodable(await self.runtime.approvals.pending(kind: kind).map { AnyCodable(AgentGatewayApprovalEvents.requestedPayload($0)) })
     }
 
     /// Upstream `MAX_PLUGIN_APPROVAL_TIMEOUT_MS` (plugin approval requests reject longer timeouts).
