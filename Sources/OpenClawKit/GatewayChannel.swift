@@ -367,15 +367,15 @@ public actor GatewayChannelActor {
 
     /// Accepts the pending pin rotation after the user confirmed it, then reconnects.
     ///
-    /// With a ``GatewayTLSPinningSession`` the session's in-memory pin is updated too
-    /// (``GatewayTLSPinningSession/acceptPinRotation(_:)``); other sessions only update
-    /// ``GatewayTLSStore``. Never call this without explicit user confirmation.
+    /// With a ``GatewayTLSPinningSession`` or `NetworkConnectionWebSocketSession` the session's
+    /// in-memory pin is updated too (``GatewayTLSPinningSession/acceptPinRotation(_:)``); other
+    /// sessions only update ``GatewayTLSStore``. Never call this without explicit user confirmation.
     /// - Parameter request: The request from ``pendingTLSPinRotationRequest()``.
     /// - Returns: `false` when `request` is not the pending one or the stored pin changed meanwhile.
     @discardableResult
     public func acceptTLSPinRotation(_ request: GatewayTLSPinRotationRequest) -> Bool {
         guard self.reconnectPausedForTLSFailure, self.pendingTLSPinRotation == request else { return false }
-        let accepted = if let pinningSession = self.session as? GatewayTLSPinningSession {
+        let accepted = if let pinningSession = self.session as? GatewayTLSPinRotationAccepting {
             pinningSession.acceptPinRotation(request)
         } else {
             GatewayTLSStore.acceptRotation(request)
