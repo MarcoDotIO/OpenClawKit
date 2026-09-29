@@ -339,4 +339,78 @@ struct CoreConfigIntegrationTests {
         #expect(populatedHost?["root"]?.stringValue == legacyRoot.path)
         #expect(populatedHost?["enabled"]?.boolValue == true)
     }
+
+    // MARK: Gateway import and projection
+
+    @Test
+    func gatewayImportKeepsAuthoredValuesAndRoundTripsUnchanged() throws {
+        let json = #"""
+        {"gateway": {"port": 19001, "mode": "remote", "bind": "lan",
+                     "auth": {"mode": "password", "password": "${GW_PW}", "rateLimit": {"maxAttempts": 1.5, "windowMs": 60000}},
+                     "http": {"securityHeaders": {"strictTransportSecurity": false}},
+                     "remote": {"url": "wss://gw.example.com"}}}
+        """#
+        let original = try OpenClawConfigDocument.decode(Data(json.utf8))
+        let collector = ConfigDecodeIssueCollector()
+        let config = OpenClawConfig(document: original, issues: collector)
+        #expect(config.gateway.port == 19001)
+        #expect(config.gateway.mode == .remote)
+        #expect(config.gateway.bind == .lan)
+        #expect(config.gateway.auth.mode == .password)
+        #expect(config.gateway.http?.securityHeaders?.strictTransportSecurityDisabled == true)
+        #expect(config.gateway.http?.securityHeaders?.strictTransportSecurity == nil)
+        #expect(config.gateway.auth.rateLimit?.windowMs == 60000)
+        // Only the malformed leaf is dropped, and it is reported.
+        #expect(config.gateway.auth.rateLimit?.maxAttempts == nil)
+        #expect(collector.issues.contains { $0.path.contains("maxAttempts") })
+
+        // A no-change round trip keeps the authored gateway exactly.
+        let projected = config.documentProjection(preserving: original)
+        #expect(projected.jsonObject["gateway"] == original.jsonObject["gateway"])
+
+        // A change writes only the changed key.
+        var changed = config
+        changed.gateway.port = 19002
+        let changedGateway = try #require(changed.documentProjection(preserving: original).jsonObject["gateway"]?.dictionaryValue)
+        #expect(changedGateway["port"] == AnyCodable(.int(19002)))
+        #expect(changedGateway["mode"]?.stringValue == "remote")
+        #expect(changedGateway["bind"]?.stringValue == "lan")
+        #expect(changedGateway["auth"] == original.jsonObject["gateway"]?.dictionaryValue?["auth"])
+        #expect(changedGateway["http"]?.dictionaryValue?["securityHeaders"]?.dictionaryValue?["strictTransportSecurity"]?.boolValue == false)
+
+        // Removing a block in the SDK config removes it from the projection.
+        var removed = config
+        removed.gateway.remote = nil
+        #expect(removed.documentProjection(preserving: original).jsonObject["gateway"]?.dictionaryValue?["remote"] == nil)
+    }
+
+    @Test
+    func gatewayProjectionNeverAddsDefaultsTheDocumentOmitted() throws {
+        let original = try OpenClawConfigDocument.decode(Data(#"{"gateway": {"auth": {"mode": "token", "token": "abc"}}}"#.utf8))
+        let config = OpenClawConfig(document: original)
+        let gateway = try #require(config.documentProjection(preserving: original).jsonObject["gateway"]?.dictionaryValue)
+        #expect(gateway["mode"] == nil)
+        #expect(gateway["port"] == nil)
+        #expect(gateway["bind"] == nil)
+        #expect(gateway == original.jsonObject["gateway"]?.dictionaryValue)
+        // HSTS strings still round-trip through the SDK type.
+        let headers = GatewayHTTPSecurityHeadersConfig(strictTransportSecurity: "max-age=31536000")
+        let decoded = try JSONDecoder().decode(GatewayHTTPSecurityHeadersConfig.self, from: try JSONEncoder().encode(headers))
+        #expect(decoded == headers)
+    }
+
+    @Test
+    func malformedSectionLeavesAreReportedWithoutDroppingTheSection() throws {
+        let json = #"{"gateway": {"port": "19001x", "mode": "remote"}, "secrets": {"defaults": {"env": 7, "file": "vault"}}}"#
+        let original = try OpenClawConfigDocument.decode(Data(json.utf8))
+        let collector = ConfigDecodeIssueCollector()
+        let config = OpenClawConfig(document: original, issues: collector)
+        #expect(config.gateway.mode == .remote)
+        #expect(config.gateway.port == GatewayConfig.defaultPort)
+        #expect(config.secrets.defaults.file == "vault")
+        #expect(collector.issues.contains { $0.path.hasSuffix("port") })
+        #expect(collector.issues.contains { $0.path.hasSuffix("env") })
+        // The malformed authored port is kept on a no-change projection.
+        #expect(config.documentProjection(preserving: original).jsonObject["gateway"] == original.jsonObject["gateway"])
+    }
 }
