@@ -1,17 +1,17 @@
 // ChatUI views ship on iOS, macOS and visionOS. tvOS and watchOS get only the non-UI chat core
 // (view model, transport, models, parsers), because these views rely on APIs such as TextEditor,
 // textSelection and PhotosPicker that are unavailable there.
-//
-// Ported from upstream OpenClaw 2026.9.6 `ChatSessionAttention.swift` (the view half; the attention models live in
-// ChatSessionAttentionModels.swift).
 #if os(iOS) || os(macOS) || os(visionOS)
+import Foundation
 import SwiftUI
 
-/// Warning badge for a pending question or approval; tapping it shows the oldest request in a popover.
-///
-/// Badges share one `presentation` binding so at most one popover is open per sidebar.
+// Ported from upstream OpenClaw 2026.9.6 `ChatSessionAttention.swift` (badge view). The attention models
+// live in ChatSessionAttentionModels.swift.
+
+/// Compact badge for a session's oldest pending question or approval; tapping it toggles the
+/// attention disclosure identified by `presentation`.
 public struct OpenClawChatAttentionBadge: View {
-    /// The pending-attention summary the badge represents.
+    /// The attention summary the badge represents.
     public let summary: OpenClawChatAttentionSummary
     private let targetID: String
     @Binding private var presentation: OpenClawChatAttentionPresentation?
@@ -48,7 +48,6 @@ public struct OpenClawChatAttentionBadge: View {
             })
     }
 
-    /// The badge body.
     public var body: some View {
         Button {
             self.isPresented.wrappedValue.toggle()
@@ -56,7 +55,7 @@ public struct OpenClawChatAttentionBadge: View {
             Image(systemName: self.summary.kind == .question ? "hand.raised.fill" : "checkmark.shield")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(OpenClawChatTheme.warning)
-                #if os(iOS)
+                #if os(iOS) || os(visionOS)
                 .frame(width: 44, height: 44)
                 #else
                 .frame(width: 22, height: 22)
@@ -87,7 +86,7 @@ public struct OpenClawChatAttentionBadge: View {
             }
             .padding(16)
             .frame(minWidth: 220, idealWidth: 300, maxWidth: 360, alignment: .leading)
-            #if os(iOS)
+            #if os(iOS) || os(visionOS)
             .presentationCompactAdaptation(.popover)
             #endif
         }
