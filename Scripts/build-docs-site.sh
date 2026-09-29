@@ -19,8 +19,12 @@ FIRST_PARTY_MODULES=(
     OpenClawMedia
     OpenClawModels
     OpenClawSkills
+    OpenClawMCP
+    OpenClawNativeState
     OpenClawKit
     OpenClawChatUI
+    OpenClawChatStore
+    OpenClawAppIntents
 )
 
 if ! command -v xcodebuild >/dev/null 2>&1; then

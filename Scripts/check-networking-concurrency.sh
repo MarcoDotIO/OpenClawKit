@@ -12,12 +12,14 @@ targets=(
   OpenClawAgents
   OpenClawPlugins
   OpenClawChannels
+  OpenClawMCP
 )
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
   targets+=(
     OpenClawKit
     OpenClawChatUI
+    OpenClawAppIntents
   )
 fi
 
