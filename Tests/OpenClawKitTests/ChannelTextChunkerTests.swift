@@ -13,6 +13,25 @@ struct ChannelTextChunkerTests {
     }
 
     @Test
+    func emojiHeavyRepliesStayWithinUTF16PlatformLimits() {
+        let list = (0..<400).map { _ in "Item 😀 ok" }.joined(separator: "\n")
+        #expect(list.count < 4_000)
+        #expect(list.utf16.count > 4_000)
+        let telegram = ChannelTextChunker.chunk(list, for: .telegram)
+        #expect(telegram.count >= 2)
+        #expect(telegram.allSatisfy { $0.utf16.count <= 4_000 })
+        #expect(telegram.joined(separator: "\n") == list)
+        #expect(ChannelTextChunker.chunk(list, limit: 4_000).allSatisfy { $0.utf16.count <= 4_000 })
+
+        let sms = ChannelTextChunker.chunk(String(list.prefix(1_500)), for: .sms)
+        #expect(sms.allSatisfy { $0.utf16.count <= 1_500 })
+        for channel in [ChannelID.telegram, .sms, .line, .whatsapp, .discord, .signal, .slack] {
+            #expect(channel.metadata.textChunking?.unit == .utf16, "\(channel.rawValue)")
+        }
+        #expect(ChannelID.googlechat.metadata.textChunking?.unit == .bytes)
+    }
+
+    @Test
     func prefersParagraphThenNewlineThenSentenceThenWhitespace() {
         let paragraphs = "First paragraph here.\n\nSecond paragraph here."
         #expect(ChannelTextChunker.chunk(paragraphs, limit: 30) == ["First paragraph here.", "Second paragraph here."])

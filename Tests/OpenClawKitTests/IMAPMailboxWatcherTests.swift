@@ -341,4 +341,23 @@ struct IMAPMailboxWatcherTests {
         await disabled.start()
         #expect(await disabled.transportHealth().state == .blocked)
     }
+
+    @Test
+    func imapConfigResolvesFromTheConfigDocumentPluginEntry() throws {
+        let json = """
+        {"plugins":{"entries":{"imap":{"enabled":true,"config":{"accounts":{"work":{"host":"imap.example.com","user":"me",
+        "password":"pw","agentId":"main","allowedSenders":["boss@example.com"]}}}}}}}
+        """
+        let document = try JSONDecoder().decode(OpenClawConfigDocument.self, from: Data(json.utf8))
+        let config = try IMAPWatcherConfig.resolve(document: document)
+        #expect(config.accounts["work"]?.host == "imap.example.com")
+        #expect(config.accounts["work"]?.allowedSenders == ["boss@example.com"])
+
+        let disabled = try JSONDecoder().decode(
+            OpenClawConfigDocument.self,
+            from: Data(json.replacingOccurrences(of: #""enabled":true"#, with: #""enabled":false"#).utf8)
+        )
+        #expect(try IMAPWatcherConfig.resolve(document: disabled).accounts.isEmpty)
+        #expect(try IMAPWatcherConfig.resolve(document: OpenClawConfigDocument()).accounts.isEmpty)
+    }
 }

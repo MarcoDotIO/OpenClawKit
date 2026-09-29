@@ -152,6 +152,26 @@ public struct IMAPWatcherConfig: Sendable, Equatable {
         self.unavailableAccounts = []
     }
 
+    /// Plugin id of the watcher (`plugins.entries.imap`).
+    public static let pluginID = "imap"
+
+    /// Resolves `plugins.entries.imap.config` from a config document.
+    ///
+    /// Returns an empty configuration when plugins are disabled (`plugins.enabled: false`), the
+    /// entry is missing or disabled (`plugins.entries.imap.enabled: false`), or it has no config.
+    /// - Parameter document: Config document (resolve SecretRefs first).
+    /// - Returns: Resolved configuration.
+    /// - Throws: `OpenClawCoreError.invalidConfiguration` for invalid accounts.
+    public static func resolve(document: OpenClawConfigDocument) throws -> IMAPWatcherConfig {
+        guard let plugins = document.plugins, plugins.enabled != false,
+              let entry = plugins.entries?[self.pluginID], entry.enabled != false,
+              let config = entry.config
+        else {
+            return IMAPWatcherConfig()
+        }
+        return try self.resolve(AnyCodable(config))
+    }
+
     /// Resolves the plugin config object like upstream `resolveImapConfig`.
     /// - Parameter value: `plugins.entries.imap.config` value.
     /// - Returns: Resolved configuration.

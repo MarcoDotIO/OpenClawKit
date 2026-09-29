@@ -62,7 +62,7 @@ enum ChannelCatalogTraitsTable {
     static let slackFormat = ChannelFormatProfile(
         mechanism: .markdown,
         chunkLimit: 4_000,
-        chunkUnit: .chars,
+        chunkUnit: .utf16,
         hardCap: 40_000,
         constructs: [
             .underline: .strip,

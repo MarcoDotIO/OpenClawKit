@@ -17,14 +17,14 @@ public enum ChannelTextChunker {
     /// - Parameters:
     ///   - text: Text to split.
     ///   - limit: Maximum chunk size in `unit`s (values ≤ 0 disable chunking).
-    ///   - unit: Measurement unit.
+    ///   - unit: Measurement unit (default UTF-16 code units, like platform limits and upstream).
     ///   - mode: Chunking mode.
     ///   - maxLines: Optional line cap per chunk.
     /// - Returns: Chunks in order; empty for empty text.
     public static func chunk(
         _ text: String,
         limit: Int,
-        unit: ChannelTextChunkUnit = .chars,
+        unit: ChannelTextChunkUnit = .utf16,
         mode: ChannelTextChunkMode = .length,
         maxLines: Int? = nil
     ) -> [String] {
