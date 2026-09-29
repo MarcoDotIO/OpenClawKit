@@ -349,6 +349,12 @@ extension OpenClawChatViewModel {
         for session: OpenClawChatSessionEntry?,
         modelChoice: OpenClawChatModelChoice?) -> Bool
     {
+        if let reference = Self.thinkingModelReference(
+            session: session, defaults: self.sessionDefaults, modelChoice: modelChoice),
+            Self.hidesThinkingControl(providerID: reference.providerID, modelID: reference.modelID)
+        {
+            return false
+        }
         let resolved = self.resolvedThinkingLevelOptions(for: session, modelChoice: modelChoice)
         return resolved.options.contains { $0.id != "off" } && modelChoice?.reasoning != false
     }
@@ -365,8 +371,96 @@ extension OpenClawChatViewModel {
     {
         let profile = OpenClawChatThinkingProfile.resolve(
             session: currentSession, defaults: self.sessionDefaults, model: modelChoice)
+        if profile == nil, self.usesCatalogThinkingFallback,
+           let catalog = Self.catalogThinkingProfile(
+               session: currentSession, defaults: self.sessionDefaults, modelChoice: modelChoice)
+        {
+            return ThinkingLevelOptionsResolution(
+                options: catalog.levels.map {
+                    OpenClawChatThinkingLevelOption(id: $0.rawValue, label: Self.catalogThinkingLabel($0))
+                },
+                isGatewayMetadata: false,
+                defaultLevel: catalog.defaultLevel?.rawValue)
+        }
         return ThinkingLevelOptionsResolution(
             options: profile?.levels ?? [], isGatewayMetadata: profile != nil, defaultLevel: profile?.defaultLevel)
+    }
+
+    /// Provider/model pair whose thinking support the pickers describe (selected model, then session, then defaults).
+    struct ThinkingModelReference: Equatable {
+        let providerID: String
+        let modelID: String
+        let agentRuntime: String?
+    }
+
+    static func thinkingModelReference(
+        session: OpenClawChatSessionEntry?,
+        defaults: OpenClawChatSessionsDefaults?,
+        modelChoice: OpenClawChatModelChoice?) -> ThinkingModelReference?
+    {
+        let runtime = session?.agentRuntime?.id ?? modelChoice?.agentRuntime?.id ?? defaults?.agentRuntime?.id
+        if let modelChoice {
+            let provider = modelChoice.provider.trimmingCharacters(in: .whitespacesAndNewlines)
+            let model = modelChoice.modelID.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !provider.isEmpty, !model.isEmpty {
+                return ThinkingModelReference(providerID: provider, modelID: model, agentRuntime: runtime)
+            }
+        }
+        let rawModel = (session?.model ?? defaults?.model)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let rawProvider = (session?.modelProvider ?? defaults?.modelProvider)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !rawModel.isEmpty else { return nil }
+        if !rawProvider.isEmpty {
+            let prefix = "\(rawProvider)/"
+            let model = rawModel.hasPrefix(prefix) ? String(rawModel.dropFirst(prefix.count)) : rawModel
+            return ThinkingModelReference(providerID: rawProvider, modelID: model, agentRuntime: runtime)
+        }
+        guard let slash = rawModel.firstIndex(of: "/") else { return nil }
+        return ThinkingModelReference(
+            providerID: String(rawModel[..<slash]),
+            modelID: String(rawModel[rawModel.index(after: slash)...]),
+            agentRuntime: runtime)
+    }
+
+    /// Catalog thinking profile for models the SDK provider catalog knows; `nil` for unknown pairs.
+    static func catalogThinkingProfile(
+        session: OpenClawChatSessionEntry?,
+        defaults: OpenClawChatSessionsDefaults?,
+        modelChoice: OpenClawChatModelChoice?) -> ModelThinkingProfile?
+    {
+        guard let reference = self.thinkingModelReference(session: session, defaults: defaults, modelChoice: modelChoice),
+              OpenClawReferenceProviderCatalog.catalogModel(
+                  providerID: reference.providerID,
+                  modelID: reference.modelID) != nil
+        else { return nil }
+        let profile = OpenClawReferenceProviderCatalog.thinkingProfile(
+            providerID: reference.providerID,
+            modelID: reference.modelID,
+            agentRuntime: reference.agentRuntime)
+        return profile.levels.contains(where: { $0 != .off }) ? profile : nil
+    }
+
+    /// Display label for a catalog thinking level (gateway metadata carries its own labels).
+    nonisolated static func catalogThinkingLabel(_ level: ThinkLevel) -> String {
+        switch level {
+        case .off: String(localized: "Off")
+        case .minimal: String(localized: "Minimal")
+        case .low: String(localized: "Low")
+        case .medium: String(localized: "Medium")
+        case .high: String(localized: "High")
+        case .xhigh: String(localized: "Extra High")
+        case .adaptive: String(localized: "Adaptive")
+        case .max: String(localized: "Max")
+        case .ultra: String(localized: "Ultra")
+        }
+    }
+
+    /// Apple Foundation Models' on-device model does not reason, so its thinking control stays hidden even when
+    /// a gateway advertises levels; Private Cloud Compute (`apple-fm/private-cloud-compute`, alias `pcc`) reasons.
+    nonisolated static func hidesThinkingControl(providerID: String, modelID: String) -> Bool {
+        guard OpenClawReferenceProviderCatalog.normalize(providerID: providerID) == FoundationModelsProvider.providerID
+        else { return false }
+        return AppleFoundationModelTarget(modelID: modelID) == .system
     }
 
     func selectedModelChoice(

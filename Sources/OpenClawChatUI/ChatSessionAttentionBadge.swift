@@ -16,7 +16,11 @@ public struct OpenClawChatAttentionBadge: View {
     private let targetID: String
     @Binding private var presentation: OpenClawChatAttentionPresentation?
 
-    /// Creates a badge for `summary` anchored to `targetID` (for example a session row).
+    /// Creates a badge.
+    /// - Parameters:
+    ///   - summary: Pending-attention summary.
+    ///   - targetID: Stable identifier of the row hosting the badge.
+    ///   - presentation: Shared popover presentation state.
     public init(
         summary: OpenClawChatAttentionSummary,
         targetID: String,
