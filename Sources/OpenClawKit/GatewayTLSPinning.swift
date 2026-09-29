@@ -145,6 +145,47 @@ public protocol GatewayDeviceTokenRetryTrustProviding: AnyObject {
     var allowsDeviceTokenRetryAuth: Bool { get }
 }
 
+/// Supplies a TLS client identity (mutual TLS) and optional extra trust anchors to a
+/// ``GatewayTLSPinningSession``, for gateways behind edge proxies that require client certificates.
+///
+/// `ManagedGatewayClientIdentity` (managed app configuration) conforms; hosts can supply their own.
+public protocol GatewayClientIdentityProviding: Sendable {
+    /// Credential answering `NSURLAuthenticationMethodClientCertificate` challenges.
+    func urlCredential() async throws -> URLCredential
+    /// Extra trust anchors added to server-trust evaluation (system roots stay trusted); empty for none.
+    func anchorCertificates() async throws -> [SecCertificate]
+}
+
+extension GatewayClientIdentityProviding {
+    /// No extra trust anchors.
+    public func anchorCertificates() async throws -> [SecCertificate] {
+        []
+    }
+}
+
+/// Carries a URLSession challenge completion across the hop that loads the client identity.
+private final class GatewayTLSChallengeCompletion: @unchecked Sendable {
+    private let lock = NSLock()
+    private var handler: ((URLSession.AuthChallengeDisposition, URLCredential?) -> Void)?
+
+    init(_ handler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        self.handler = handler
+    }
+
+    func resume(_ disposition: URLSession.AuthChallengeDisposition, _ credential: URLCredential?) {
+        let handler = self.lock.withLock { () -> ((URLSession.AuthChallengeDisposition, URLCredential?) -> Void)? in
+            defer { self.handler = nil }
+            return self.handler
+        }
+        handler?(disposition, credential)
+    }
+}
+
+/// Carries a challenge's `SecTrust` across the hop that loads extra anchors.
+private struct GatewayTLSTrustBox: @unchecked Sendable {
+    let trust: SecTrust
+}
+
 enum GatewayTLSFirstUsePolicy {
     static func allowsFirstUsePin(systemTrustOk: Bool) -> Bool {
         systemTrustOk
@@ -930,6 +971,7 @@ public final class GatewayTLSPinningSession: NSObject, WebSocketSessioning, URLS
     private let params: GatewayTLSParams
     private let allowsRedirects: Bool
     private let allowsStoredCredentials: Bool
+    private let clientIdentity: (any GatewayClientIdentityProviding)?
     private let failureLock = NSLock()
     private var lastTLSFailure: GatewayTLSValidationFailure?
     private var pinningState: GatewayTLSPinningState
@@ -955,14 +997,18 @@ public final class GatewayTLSPinningSession: NSObject, WebSocketSessioning, URLS
     ///   - allowsRedirects: Whether HTTP redirects are followed (disable for origin-bound credentials).
     ///   - allowsStoredCredentials: When `false`, uses an ephemeral configuration without cookies,
     ///     credential storage or cache.
+    ///   - clientIdentity: Client certificate (mutual TLS) and extra trust anchors, for example a
+    ///     `ManagedGatewayClientIdentity`; `nil` answers client-certificate challenges with default handling.
     public init(
         params: GatewayTLSParams,
         allowsRedirects: Bool = true,
-        allowsStoredCredentials: Bool = true)
+        allowsStoredCredentials: Bool = true,
+        clientIdentity: (any GatewayClientIdentityProviding)? = nil)
     {
         self.params = params
         self.allowsRedirects = allowsRedirects
         self.allowsStoredCredentials = allowsStoredCredentials
+        self.clientIdentity = clientIdentity
         self.pinningState = GatewayTLSPinningState(expectedFingerprint: params.expectedFingerprint)
         super.init()
     }
@@ -980,6 +1026,27 @@ public final class GatewayTLSPinningSession: NSObject, WebSocketSessioning, URLS
         self.failureLock.lock()
         defer { self.failureLock.unlock() }
         return self.pinningState.acceptedFingerprint
+    }
+
+    /// Accepts a pin rotation the user reviewed: replaces the stored pin (compare-and-swap through
+    /// ``GatewayTLSStore/acceptRotation(_:)``) and makes this session enforce the presented fingerprint,
+    /// so the same session can reconnect.
+    ///
+    /// Refused for another store key and for explicitly configured pins (`params.expectedFingerprint`),
+    /// which only the host configuration can change.
+    /// - Parameter request: Rotation request from the pin mismatch.
+    /// - Returns: `true` when the rotation was stored and applied.
+    @discardableResult
+    public func acceptPinRotation(_ request: GatewayTLSPinRotationRequest) -> Bool {
+        guard self.params.expectedFingerprint == nil,
+              let storeKey = self.params.storeKey, storeKey == request.storeKey,
+              GatewayTLSStore.acceptRotation(request)
+        else { return false }
+        self.failureLock.lock()
+        self.pinningState.enforceFingerprint(normalizeFingerprint(request.presentedFingerprint))
+        self.lastTLSFailure = nil
+        self.failureLock.unlock()
+        return true
     }
 
     /// Returns and clears the most recent TLS validation failure.
@@ -1143,13 +1210,31 @@ public final class GatewayTLSPinningSession: NSObject, WebSocketSessioning, URLS
         self.urlSession(session, didReceive: challenge, completionHandler: completionHandler)
     }
 
-    /// Evaluates server-trust challenges against the expected authority and pinning policy.
+    /// Evaluates server-trust challenges against the expected authority and pinning policy, and
+    /// answers client-certificate challenges with the configured client identity.
     public func urlSession(
         _ session: URLSession,
         didReceive challenge: URLAuthenticationChallenge,
         completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void)
     {
-        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+        let method = challenge.protectionSpace.authenticationMethod
+        if method == NSURLAuthenticationMethodClientCertificate {
+            guard let clientIdentity = self.clientIdentity else {
+                completionHandler(.performDefaultHandling, nil)
+                return
+            }
+            let completion = GatewayTLSChallengeCompletion(completionHandler)
+            Task {
+                do {
+                    completion.resume(.useCredential, try await clientIdentity.urlCredential())
+                } catch {
+                    // A required client certificate that cannot be loaded fails the handshake locally.
+                    completion.resume(.cancelAuthenticationChallenge, nil)
+                }
+            }
+            return
+        }
+        guard method == NSURLAuthenticationMethodServerTrust,
               let trust = challenge.protectionSpace.serverTrust
         else {
             completionHandler(.performDefaultHandling, nil)
@@ -1158,6 +1243,31 @@ public final class GatewayTLSPinningSession: NSObject, WebSocketSessioning, URLS
 
         let host = challenge.protectionSpace.host
         let port = challenge.protectionSpace.port
+        guard let clientIdentity = self.clientIdentity else {
+            self.evaluateServerTrust(trust, host: host, port: port, completionHandler: completionHandler)
+            return
+        }
+        let completion = GatewayTLSChallengeCompletion(completionHandler)
+        let box = GatewayTLSTrustBox(trust: trust)
+        Task {
+            let anchors = (try? await clientIdentity.anchorCertificates()) ?? []
+            if !anchors.isEmpty {
+                // Managed anchors extend (never replace) the system roots.
+                SecTrustSetAnchorCertificates(box.trust, anchors as CFArray)
+                SecTrustSetAnchorCertificatesOnly(box.trust, false)
+            }
+            self.evaluateServerTrust(box.trust, host: host, port: port) { disposition, credential in
+                completion.resume(disposition, credential)
+            }
+        }
+    }
+
+    private func evaluateServerTrust(
+        _ trust: SecTrust,
+        host: String,
+        port: Int,
+        completionHandler: (URLSession.AuthChallengeDisposition, URLCredential?) -> Void)
+    {
         let expected = self.currentEnforcedFingerprint()
         guard let expectedAuthority = self.currentExpectedAuthority(),
               expectedAuthority.matches(host: host, port: port)

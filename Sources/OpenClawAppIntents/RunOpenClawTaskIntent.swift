@@ -82,7 +82,9 @@ public struct RunOpenClawTaskIntent: LongRunningIntent, CancellableIntent {
                 },
                 onCancel: { _ in
                     guard let sessionKey = tracker.sessionKey else { return }
-                    Task { await host.abort(sessionKey: sessionKey) }
+                    // The cancelled intent must not cancel its own cleanup: the abort helper sends
+                    // chat.abort through CancellationShieldSupport so the gateway run actually stops.
+                    Task { await OpenClawIntentActions.abort(sessionKey: sessionKey, host: host) }
                 })
             return .result(value: text)
         } catch {

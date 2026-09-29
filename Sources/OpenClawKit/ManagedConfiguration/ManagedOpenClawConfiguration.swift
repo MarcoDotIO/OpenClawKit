@@ -323,6 +323,12 @@ public struct ManagedGatewayClientIdentity: Sendable {
     }
 }
 
+/// Managed identities plug straight into ``GatewayTLSPinningSession/init(params:allowsRedirects:allowsStoredCredentials:clientIdentity:)``:
+/// the session answers client-certificate challenges with ``ManagedGatewayClientIdentity/urlCredential()``
+/// and adds ``ManagedGatewayClientIdentity/anchorCertificates()`` to server-trust evaluation.
+@available(iOS 18.4, visionOS 2.4, macOS 27.0, *)
+extension ManagedGatewayClientIdentity: GatewayClientIdentityProviding {}
+
 @available(iOS 18.4, visionOS 2.4, macOS 27.0, *)
 enum ManagedAppErrorMapping {
     static func coreError(_ error: any Error, identifier: String) -> OpenClawCoreError {

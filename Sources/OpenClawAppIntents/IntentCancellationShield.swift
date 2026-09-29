@@ -1,8 +1,10 @@
 import Foundation
+import OpenClawCore
 
 /// Runs cleanup work (for example `chat.abort`) so it still completes when the caller was cancelled.
 ///
-/// The work runs in an unstructured task, which does not inherit the caller's cancellation.
+/// Forwards to OpenClawCore's `CancellationShieldSupport.run(_:)` (an unstructured task that does not
+/// inherit the caller's cancellation), which GatewayNodeSession also uses for `node.invoke.result`.
 ///
 /// `withTaskCancellationShield` (Swift 6.4, OS 27) is deliberately not used: its inlined body
 /// strongly references `swift_task_cancellationShieldPush`/`Pop` in `libswift_Concurrency`, which
@@ -10,8 +12,6 @@ import Foundation
 /// on those systems even though the call sits behind `#available`.
 enum IntentCancellationShield {
     static func run<T: Sendable>(_ operation: @escaping @Sendable () async throws -> T) async throws -> T {
-        try await Task {
-            try await operation()
-        }.value
+        try await CancellationShieldSupport.run(operation)
     }
 }

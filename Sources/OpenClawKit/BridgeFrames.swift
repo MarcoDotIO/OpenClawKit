@@ -151,6 +151,11 @@ public struct BridgeHello: Codable, Sendable {
 public struct BridgeHelloOk: Codable, Sendable {
     public let type: String
     public let serverName: String
+    /// Removed upstream with protocol v4 plugin surfaces; still decoded (optional) for old frames.
+    @available(
+        *,
+        deprecated,
+        message: "Removed upstream; use hello-ok pluginSurfaceUrls (GatewayNodeSession.pluginSurfaceURL(\"canvas\"))")
     public let canvasHostUrl: String?
     public let mainSessionKey: String?
 

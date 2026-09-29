@@ -86,7 +86,7 @@ struct DeviceIdentityStateRootState {
 enum DeviceIdentityPaths {
     private static let stateDirEnv = ["OPENCLAW_STATE_DIR"]
     /// Info.plist key naming the App Group whose container holds shared OpenClaw state.
-    static let appGroupIdentifierInfoKey = "OpenClawAppGroupIdentifier"
+    static let appGroupIdentifierInfoKey = OpenClawAppGroup.infoPlistKey
     @TaskLocal static var scopedStateDirURL: URL?
     private static let configuredStateLock = NSLock()
     nonisolated(unsafe) private static var configuredState = DeviceIdentityStateRootState()
@@ -95,11 +95,10 @@ enum DeviceIdentityPaths {
     ///
     /// SDK adaptation: upstream falls back to its own `group.ai.openclawfoundation.app.shared`, which
     /// belongs to the official app's team. SDK hosts opt in by setting `OpenClawAppGroupIdentifier`.
-    static let appGroupIdentifier: String? = {
-        let raw = Bundle.main.object(forInfoDictionaryKey: DeviceIdentityPaths.appGroupIdentifierInfoKey) as? String
-        let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return trimmed.isEmpty ? nil : trimmed
-    }()
+    ///
+    /// Resolved through ``OpenClawAppGroup/identifier`` (the same `OpenClawAppGroupIdentifier` key, then
+    /// ``OpenClawAppGroup/overrideIdentifier``) once per process, so set an override before first use.
+    static let appGroupIdentifier: String? = OpenClawAppGroup.identifier
 
     /// Entitlements are baked into the code signature, so resolve the gate once per process.
     /// Every identity load and DeviceAuthStore read/write resolves the state dir through here;

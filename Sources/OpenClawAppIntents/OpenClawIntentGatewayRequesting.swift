@@ -3,14 +3,7 @@ import OpenClawKit
 
 /// Minimal gateway RPC surface used by ``GatewayOpenClawIntentHost``.
 ///
-/// `GatewayChannelActor` conforms (see `GatewayChannelActor+OpenClawIntentGatewayRequesting.swift`);
-/// tests and custom transports can supply their own implementation.
-public protocol OpenClawIntentGatewayRequesting: Sendable {
-    /// Sends a request frame and returns the response payload JSON.
-    /// - Parameters:
-    ///   - method: Gateway method name.
-    ///   - params: Request parameters.
-    ///   - timeoutMs: Request timeout in milliseconds, or `nil` for the transport default.
-    /// - Returns: Encoded response payload.
-    func request(method: String, params: [String: AnyCodable]?, timeoutMs: Double?) async throws -> Data
-}
+/// This is the shared OpenClawKit ``GatewayRequestSending`` seam (one protocol for every typed
+/// gateway helper), so `GatewayChannelActor` already conforms and a fake or custom transport written
+/// for any other OpenClawKit helper also drives the App Intents host.
+public typealias OpenClawIntentGatewayRequesting = GatewayRequestSending

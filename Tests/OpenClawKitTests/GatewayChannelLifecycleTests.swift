@@ -45,7 +45,14 @@ struct GatewayChannelLifecycleTests {
         let channel = try makeChannel(session: session, options: nil)
         defer { Task { await channel.shutdown() } }
 
-        try await channel.connect()
+        // Platform defaults include the device identity. Scope it to a private state directory
+        // (task-local) so a concurrently running env-pinning suite cannot swap or remove the store
+        // under this connect ("attempt to write a readonly database").
+        let stateDirectory = try gatewayCoreTemporaryStateDirectory()
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
+        try await DeviceIdentityStore.withStateDirectory(stateDirectory) {
+            try await channel.connect()
+        }
 
         let params = try #require(session.latestSocket?.connectParams())
         #expect(params["minProtocol"] as? Int == 4)

@@ -35,6 +35,10 @@ public final class TalkSystemSpeechSynthesizer: NSObject, TalkSystemSpeaking {
     public var nowPlayingTitle: String?
     /// Called with `true` when an utterance starts playing and `false` when it finishes or stops.
     public var onSpeakingChanged: (@MainActor (Bool) -> Void)?
+    /// Destination for ``OpenClawStateDomain/talk`` reports (`speaking` while an utterance plays,
+    /// idle afterwards); `nil` uses ``OpenClawSystemState/shared``, which only forwards while
+    /// ``OpenClawSystemState/isEnabled``.
+    public var stateReporter: (any OpenClawSystemStateReporting)?
 
     private let synth = AVSpeechSynthesizer()
     private var speakContinuation: CheckedContinuation<Void, Error>?
@@ -232,6 +236,12 @@ public final class TalkSystemSpeechSynthesizer: NSObject, TalkSystemSpeaking {
         guard self.isReportingSpeaking != speaking else { return }
         self.isReportingSpeaking = speaking
         self.onSpeakingChanged?(speaking)
+        let reporter = OpenClawTalkStateReporter(reporter: self.stateReporter)
+        if speaking {
+            reporter.speaking(provider: "system")
+        } else {
+            reporter.idle()
+        }
     }
 }
 

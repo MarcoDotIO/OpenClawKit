@@ -64,11 +64,16 @@ public enum OpenClawIntentActions {
     }
 
     /// Aborts the active run of a session.
+    ///
+    /// The abort runs through a cancellation shield, so a cancelled caller (an intent's `onCancel`
+    /// path or a cancelled `perform()`) still sends `chat.abort`.
     /// - Parameters:
     ///   - sessionKey: Session key.
     ///   - host: Intent backend.
     public static func abort(sessionKey: String, host: any OpenClawIntentHost = OpenClawAppIntents.host) async {
-        await host.abort(sessionKey: sessionKey)
+        _ = try? await IntentCancellationShield.run {
+            await host.abort(sessionKey: sessionKey)
+        }
     }
 
     /// Dialog text for a finished ask.

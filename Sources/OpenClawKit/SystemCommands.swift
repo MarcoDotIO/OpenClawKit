@@ -87,6 +87,10 @@ public struct OpenClawSystemRunParams: Codable, Sendable, Equatable {
     public var runId: String?
     /// Suppresses the exit notification for this run.
     public var suppressNotifyOnExit: Bool?
+    /// Persisted exec policy the approval was granted under (delayed authority). Exec hosts compare
+    /// it with the policy re-read right before launch (``OpenClawSystemRunApprovalPolicySnapshot/isCurrent(_:)``)
+    /// and deny with `SYSTEM_RUN_DENIED` when it no longer holds.
+    public var policySnapshot: OpenClawSystemRunApprovalPolicySnapshot?
 
     /// Creates `system.run` params.
     public init(
@@ -103,7 +107,8 @@ public struct OpenClawSystemRunParams: Codable, Sendable, Equatable {
         runId: String? = nil,
         systemRunPlan: AnyCodable? = nil,
         approvalSource: String? = nil,
-        suppressNotifyOnExit: Bool? = nil)
+        suppressNotifyOnExit: Bool? = nil,
+        policySnapshot: OpenClawSystemRunApprovalPolicySnapshot? = nil)
     {
         self.command = command
         self.rawCommand = rawCommand
@@ -119,6 +124,7 @@ public struct OpenClawSystemRunParams: Codable, Sendable, Equatable {
         self.approvalSource = approvalSource
         self.runId = runId
         self.suppressNotifyOnExit = suppressNotifyOnExit
+        self.policySnapshot = policySnapshot
     }
 
     /// Timeout to apply: the explicit positive ``timeoutMs`` or, when absent, the host default (the

@@ -177,6 +177,20 @@ public enum ShareGatewayRelaySettings {
         return config
     }
 
+    /// Loads the relay config and, when it has no stable gateway ID, discards the share-extension
+    /// profile's unscoped device-auth tokens (upstream behavior).
+    ///
+    /// Uses ``DeviceIdentityStore/loadOrCreatePersisted(profile:)`` with
+    /// ``GatewayDeviceIdentityProfile/shareExtension`` and
+    /// ``DeviceAuthStore/discardUnscopedTokens(deviceId:profile:)``. When no identity can be
+    /// persisted there are no tokens to discard, and the config is returned unchanged.
+    public static func loadConfigDiscardingUnscopedDeviceAuth() -> ShareGatewayRelayConfig? {
+        self.loadConfigDiscardingUnscopedDeviceAuth {
+            guard let identity = DeviceIdentityStore.loadOrCreatePersisted(profile: .shareExtension) else { return }
+            DeviceAuthStore.discardUnscopedTokens(deviceId: identity.deviceId, profile: .shareExtension)
+        }
+    }
+
     /// Persists the relay configuration: secrets to the Keychain first, then metadata.
     ///
     /// - Returns: `false` when the Keychain write failed; the stored config is then removed and a

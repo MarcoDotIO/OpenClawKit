@@ -182,6 +182,42 @@ struct ShareGatewayRelayMigrationTests {
         }
     }
 
+    @Test func `default discard drops only unscoped share-extension tokens`() throws {
+        let fixture = RelayFixture()
+        defer { fixture.cleanUp() }
+        let stateDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("openclaw-share-relay-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: stateDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
+        try DeviceIdentityPaths.$scopedStateDirURL.withValue(stateDirectory) {
+            let identity = try DeviceIdentityStore.loadOrCreatePersistedOrThrow(profile: .shareExtension)
+            for gatewayID in [nil, "gateway-a"] as [String?] {
+                _ = DeviceAuthStore.storeTokenResult(
+                    deviceId: identity.deviceId,
+                    role: "operator",
+                    token: "token-\(gatewayID ?? "unscoped")",
+                    scopes: [],
+                    gatewayID: gatewayID,
+                    profile: .shareExtension)
+            }
+            try fixture.run {
+                let unscoped = ShareGatewayRelayConfig(
+                    gatewayURLString: "wss://relay.example.com",
+                    token: "token",
+                    password: nil,
+                    sessionKey: "main")
+                #expect(ShareGatewayRelaySettings.saveConfig(unscoped))
+                let loaded = try #require(ShareGatewayRelaySettings.loadConfigDiscardingUnscopedDeviceAuth())
+                #expect(loaded.token == "token")
+            }
+            #expect(DeviceAuthStore.loadToken(
+                deviceId: identity.deviceId, role: "operator", gatewayID: nil, profile: .shareExtension) == nil)
+            #expect(DeviceAuthStore.loadToken(
+                deviceId: identity.deviceId, role: "operator", gatewayID: "gateway-a", profile: .shareExtension)?
+                .token == "token-gateway-a")
+        }
+    }
+
     @Test func `clear config removes metadata and credentials`() {
         let fixture = RelayFixture()
         defer { fixture.cleanUp() }

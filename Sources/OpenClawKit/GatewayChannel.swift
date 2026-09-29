@@ -97,6 +97,17 @@ public actor GatewayChannelActor {
     private var receivedDeviceAuthRoles = Set<String>()
     private var persistedDeviceAuthRoles = Set<String>()
     private var reconnectPausedForAuthFailure = false
+    /// Set when a TLS pin mismatch stopped automatic reconnects; cleared by
+    /// ``resumeAfterTLSRepair()``.
+    private var reconnectPausedForTLSFailure = false
+    private var lastTLSFailure: GatewayTLSValidationFailure?
+    private var pendingTLSPinRotation: GatewayTLSPinRotationRequest?
+    /// Scheduled automatic resume after an `AUTH_RATE_LIMITED` rejection that carried `retryAfterMs`.
+    private var rateLimitResumeTask: Task<Void, Never>?
+    private var rateLimitRetryAfterMs: Int?
+    /// Lifecycle reporter for ``OpenClawStateDomain/gateway`` (drops reports unless
+    /// ``OpenClawSystemState/isEnabled`` is set or a reporter is injected).
+    private var gatewayStateReporter: OpenClawGatewayStateReporter
     private let defaultRequestTimeoutMs: Double = 15000
     private let extraHeadersProvider: (@Sendable () -> [String: String])?
     /// Fast state admission for clients that must inspect hello before their
@@ -125,6 +136,8 @@ public actor GatewayChannelActor {
     ///   - connectOptions: Connect-frame options (defaults to ``GatewayConnectOptions/defaultOperator(displayName:)``).
     ///   - disconnectHandler: Receives the disconnect reason and the retired socket generation.
     ///   - extraHeadersProvider: Custom proxy headers, read on every `wss://` upgrade.
+    ///   - stateReporter: Destination for ``OpenClawStateDomain/gateway`` lifecycle reports; `nil`
+    ///     uses ``OpenClawSystemState/shared``, which only forwards while ``OpenClawSystemState/isEnabled``.
     public init(
         url: URL,
         token: String?,
@@ -136,7 +149,8 @@ public actor GatewayChannelActor {
         pushHandler: (@Sendable (GatewayPush, UInt64) async -> Void)? = nil,
         connectOptions: GatewayConnectOptions? = nil,
         disconnectHandler: (@Sendable (String, UInt64) async -> Void)? = nil,
-        extraHeadersProvider: (@Sendable () -> [String: String])? = nil)
+        extraHeadersProvider: (@Sendable () -> [String: String])? = nil,
+        stateReporter: (any OpenClawSystemStateReporting)? = nil)
     {
         self.url = url
         self.token = token
@@ -149,6 +163,9 @@ public actor GatewayChannelActor {
         self.pushHandler = pushHandler
         self.connectOptions = connectOptions
         self.disconnectHandler = disconnectHandler
+        self.gatewayStateReporter = OpenClawGatewayStateReporter(
+            reporter: stateReporter,
+            context: OpenClawGatewayStateContext(url: url, options: connectOptions))
         Task { [weak self] in
             await self?.startWatchdog()
         }
@@ -259,8 +276,12 @@ public actor GatewayChannelActor {
         self.keepaliveTask?.cancel()
         self.keepaliveTask = nil
 
+        self.rateLimitResumeTask?.cancel()
+        self.rateLimitResumeTask = nil
+
         self.task?.cancel(with: .goingAway, reason: nil)
         self.task = nil
+        self.gatewayStateReporter.disconnected()
 
         self.failPending(NSError(
             domain: "Gateway",
@@ -309,12 +330,75 @@ public actor GatewayChannelActor {
     /// Call this on network path changes instead of waiting for the 30 s watchdog. It never
     /// overrides an auth-failure pause.
     public func nudgeReconnect() {
-        guard self.shouldReconnect, !self.reconnectPausedForAuthFailure else { return }
+        guard self.shouldReconnect, !self.reconnectPausedForAuthFailure, !self.reconnectPausedForTLSFailure else {
+            return
+        }
         self.backoffMs = 500
         self.connectFailureBackoff.reset()
         guard !self.connected, self.connectAttemptTask == nil else { return }
         Task { [weak self] in
             try? await self?.connect()
+        }
+    }
+
+    /// Why automatic reconnects are currently stopped, or `nil` while they run.
+    public func reconnectPauseReason() -> GatewayReconnectPauseReason? {
+        if self.reconnectPausedForTLSFailure { return .tlsPinMismatch }
+        if self.reconnectPausedForAuthFailure { return .authFailure }
+        return nil
+    }
+
+    /// Re-trust request from the TLS pin mismatch that stopped automatic reconnects.
+    ///
+    /// Present both fingerprints to the user. Only after they confirm, call
+    /// ``acceptTLSPinRotation(_:)``, which updates the stored pin (and a ``GatewayTLSPinningSession``'s
+    /// in-memory pin) and reconnects.
+    /// - Returns: `nil` unless a pin mismatch paused reconnects and the failure carried both fingerprints.
+    public func pendingTLSPinRotationRequest() -> GatewayTLSPinRotationRequest? {
+        guard self.reconnectPausedForTLSFailure else { return nil }
+        return self.pendingTLSPinRotation
+    }
+
+    /// Classification of the most recent TLS failure a connect attempt reported, or `nil` when the
+    /// last attempt had none.
+    public func lastTLSFailureClassification() -> GatewayTLSFailureClassification? {
+        self.lastTLSFailure.map(GatewayTLSFailureClassification.init(failure:))
+    }
+
+    /// Accepts the pending pin rotation after the user confirmed it, then reconnects.
+    ///
+    /// With a ``GatewayTLSPinningSession`` the session's in-memory pin is updated too
+    /// (``GatewayTLSPinningSession/acceptPinRotation(_:)``); other sessions only update
+    /// ``GatewayTLSStore``. Never call this without explicit user confirmation.
+    /// - Parameter request: The request from ``pendingTLSPinRotationRequest()``.
+    /// - Returns: `false` when `request` is not the pending one or the stored pin changed meanwhile.
+    @discardableResult
+    public func acceptTLSPinRotation(_ request: GatewayTLSPinRotationRequest) -> Bool {
+        guard self.reconnectPausedForTLSFailure, self.pendingTLSPinRotation == request else { return false }
+        let accepted = if let pinningSession = self.session as? GatewayTLSPinningSession {
+            pinningSession.acceptPinRotation(request)
+        } else {
+            GatewayTLSStore.acceptRotation(request)
+        }
+        guard accepted else { return false }
+        self.resumeAfterTLSRepair()
+        return true
+    }
+
+    /// Clears a TLS pin-mismatch pause and reconnects.
+    ///
+    /// Call after the user reviewed the certificate (for example after
+    /// ``GatewayTLSStore/acceptRotation(_:)``). Never call this automatically.
+    public func resumeAfterTLSRepair() {
+        guard self.reconnectPausedForTLSFailure else { return }
+        self.reconnectPausedForTLSFailure = false
+        self.pendingTLSPinRotation = nil
+        self.lastTLSFailure = nil
+        self.backoffMs = 500
+        self.connectFailureBackoff.reset()
+        guard self.shouldReconnect, !self.connected, self.connectAttemptTask == nil else { return }
+        Task { [weak self] in
+            await self?.reconnectAfterPause(context: "gateway reconnect after TLS repair")
         }
     }
 
@@ -331,25 +415,60 @@ public actor GatewayChannelActor {
         while self.shouldReconnect {
             guard await self.sleepUnlessCancelled(nanoseconds: 30 * 1_000_000_000) else { return } // 30s cadence
             guard self.shouldReconnect else { return }
-            if self.reconnectPausedForAuthFailure { continue }
+            if self.reconnectPausedForAuthFailure || self.reconnectPausedForTLSFailure { continue }
             if self.connected { continue }
-            do {
-                try await self.connect()
-            } catch {
-                if self.shouldPauseReconnectAfterAuthFailure(error) {
-                    self.reconnectPausedForAuthFailure = true
-                    let failure = error.localizedDescription
-                    self.logger.error(
-                        """
-                        gateway watchdog reconnect paused for non-recoverable auth failure \
-                        \(failure, privacy: .public)
-                        """)
-                    continue
-                }
-                let wrapped = self.wrap(error, context: "gateway watchdog reconnect")
-                self.logger.error("gateway watchdog reconnect failed \(wrapped.localizedDescription, privacy: .public)")
-            }
+            await self.reconnectAfterPause(context: "gateway watchdog reconnect")
         }
+    }
+
+    /// Reconnects once, pausing automatic reconnects when the failure is a non-recoverable auth rejection.
+    private func reconnectAfterPause(context: String) async {
+        do {
+            try await self.connect()
+        } catch {
+            if self.shouldPauseReconnectAfterAuthFailure(error) {
+                self.pauseReconnectAfterAuthFailure(error, context: context)
+                return
+            }
+            let wrapped = self.wrap(error, context: context)
+            self.logger.error("\(context, privacy: .public) failed \(wrapped.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func pauseReconnectAfterAuthFailure(_ error: Error, context: String) {
+        self.reconnectPausedForAuthFailure = true
+        let failure = error.localizedDescription
+        self.logger.error(
+            "\(context, privacy: .public) paused for non-recoverable auth failure \(failure, privacy: .public)")
+        self.scheduleRateLimitResumeIfNeeded(error)
+    }
+
+    /// `AUTH_RATE_LIMITED` is a pause, not a permanent stop: when the gateway says how long to wait
+    /// (`retryAfterMs`), resume once after that delay (clamped to 1 s ... 15 min) instead of looping
+    /// pairing requests on every reconnect.
+    private func scheduleRateLimitResumeIfNeeded(_ error: Error) {
+        guard let authError = error as? GatewayConnectAuthError,
+              authError.detail == .authRateLimited,
+              let retryAfterMs = self.rateLimitRetryAfterMs, retryAfterMs > 0
+        else { return }
+        let delayMs = UInt64(min(max(retryAfterMs, 1000), 15 * 60 * 1000))
+        self.rateLimitResumeTask?.cancel()
+        self.rateLimitResumeTask = Task { [weak self] in
+            guard let self else { return }
+            guard await self.sleepUnlessCancelled(nanoseconds: delayMs * 1_000_000) else { return }
+            await self.resumeAfterRateLimit()
+        }
+    }
+
+    private func resumeAfterRateLimit() async {
+        self.rateLimitResumeTask = nil
+        guard self.shouldReconnect, self.reconnectPausedForAuthFailure, !self.reconnectPausedForTLSFailure else {
+            return
+        }
+        self.reconnectPausedForAuthFailure = false
+        self.rateLimitRetryAfterMs = nil
+        guard !self.connected, self.connectAttemptTask == nil else { return }
+        await self.reconnectAfterPause(context: "gateway reconnect after rate limit")
     }
 
     func currentWorkerEdgeCredentials() -> [String: String]? {
@@ -501,6 +620,9 @@ public actor GatewayChannelActor {
         let connectionGeneration = self.connectionGeneration
         self.task?.cancel(with: .goingAway, reason: nil)
         let attemptID = UUID()
+        self.gatewayStateReporter.context.tlsPinned = self.isTLSPinned()
+        self.gatewayStateReporter.connecting(
+            backoffMs: self.automaticReconnectRequested ? Int(self.connectFailureBackoff.currentDelayMs) : nil)
         let connectTask = self.session.makeWebSocketTask(request: self.makeUpgradeRequest())
         self.activeConnectAttemptID = attemptID
         self.task = connectTask
@@ -545,7 +667,12 @@ public actor GatewayChannelActor {
         self.backoffMs = 500
         self.connectFailureBackoff.reset()
         self.lastSeq = nil
+        self.lastTLSFailure = nil
+        self.rateLimitRetryAfterMs = nil
         self.handshakePhase = .helloReceived
+        self.gatewayStateReporter.context.protocolVersion = self.negotiatedProtocol ?? GATEWAY_PROTOCOL_VERSION
+        self.gatewayStateReporter.context.tlsPinned = self.isTLSPinned()
+        self.gatewayStateReporter.connected(pendingRequests: self.pending.count, lastSeq: self.lastSeq)
         self.listen(connectionGeneration: connectionGeneration)
         self.startTickWatchdog(connectionGeneration: connectionGeneration)
         self.startKeepalive(connectionGeneration: connectionGeneration)
@@ -570,6 +697,13 @@ public actor GatewayChannelActor {
             error: error,
             pendingDeviceTokenRetry: self.pendingDeviceTokenRetry,
             supportedProtocols: self.supportedProtocols)
+        let pinMismatch = self.recordTLSFailure(from: wrapped)
+        if pinMismatch {
+            // A changed certificate must never be retried (or silently re-pinned) behind the
+            // user's back: stop automatic reconnects until the host resolves the rotation request.
+            self.automaticReconnectRequested = false
+        }
+        self.reportConnectFailure(wrapped, pinMismatch: pinMismatch)
         await self.transitionToDisconnected(
             reason: "connect failed: \(wrapped.localizedDescription)",
             error: wrapped,
@@ -577,6 +711,41 @@ public actor GatewayChannelActor {
             shouldReconnect: self.automaticReconnectRequested)
         self.logger.error("gateway ws connect failed \(wrapped.localizedDescription, privacy: .public)")
         throw wrapped
+    }
+
+    /// Records a typed TLS failure; a pin mismatch pauses reconnects with a rotation request.
+    /// - Returns: `true` when the failure was a pin mismatch.
+    private func recordTLSFailure(from error: Error) -> Bool {
+        guard let tlsError = error as? GatewayTLSValidationError else {
+            self.lastTLSFailure = nil
+            return false
+        }
+        self.lastTLSFailure = tlsError.failure
+        guard tlsError.failure.kind == .pinMismatch else { return false }
+        self.reconnectPausedForTLSFailure = true
+        self.pendingTLSPinRotation = GatewayTLSPinRotationRequest(failure: tlsError.failure)
+        return true
+    }
+
+    private func reportConnectFailure(_ error: Error, pinMismatch: Bool) {
+        let problemKind = GatewayConnectionProblemMapper.map(error: error)?.kind.rawValue
+        if pinMismatch {
+            self.gatewayStateReporter.failed(problemKind: problemKind)
+        } else if self.shouldPauseReconnectAfterAuthFailure(error) {
+            self.gatewayStateReporter.authPaused(authDetailCode: (error as? GatewayConnectAuthError)?.detailCodeRaw)
+        } else if self.automaticReconnectRequested, self.shouldReconnect {
+            self.gatewayStateReporter.reconnecting(
+                backoffMs: Int(self.connectFailureBackoff.currentDelayMs),
+                pendingRequests: self.pending.count,
+                problemKind: problemKind)
+        } else if !(error is CancellationError) {
+            self.gatewayStateReporter.failed(problemKind: problemKind)
+        }
+    }
+
+    /// Whether the session enforces a TLS pin (so the state report can say so without the fingerprint).
+    private func isTLSPinned() -> Bool {
+        (self.session as? GatewayTLSRouteMetadataProviding)?.effectiveTLSFingerprintSHA256 != nil
     }
 
     private func startKeepalive(connectionGeneration: UInt64) {
@@ -646,6 +815,7 @@ public actor GatewayChannelActor {
             deviceIdentityProfile: deviceIdentityProfile,
             deviceId: identity?.deviceId,
             requestedScopes: requestedScopes)
+        self.gatewayStateReporter.context.authSource = selectedAuth.authSource.rawValue
         let scopes = self.resolveConnectScopes(
             role: role,
             requestedScopes: requestedScopes,
@@ -680,6 +850,7 @@ public actor GatewayChannelActor {
         try self.ensureCurrentConnectAttempt(attemptID, task: task)
         try self.requireCurrentConnection(connectionGeneration)
         self.handshakePhase = .challengeReceived
+        self.gatewayStateReporter.authenticating()
         if includeDeviceIdentity, let identity {
             let deviceAuthFields = GatewayDeviceAuthPayload.Fields(
                 deviceId: identity.deviceId,
@@ -736,6 +907,11 @@ public actor GatewayChannelActor {
             if outcome.persistedRoles.contains(role) {
                 // Only a token persisted from this endpoint may unlock stored auth for its role.
                 self.connectOptions?.allowStoredDeviceAuth = true
+                if selectedAuth.authSource == .bootstrapToken {
+                    // The gateway consumed the setup code. Reconnects must use the persisted device
+                    // token (or an explicit password) instead of replaying the stale bootstrap token.
+                    self.bootstrapToken = nil
+                }
             }
             self.pendingDeviceTokenRetry = false
             self.deviceTokenRetryBudgetUsed = false
@@ -972,15 +1148,22 @@ extension GatewayChannelActor {
 
     private func shouldPersistBootstrapHandoffTokens() -> Bool {
         guard self.lastAuthSource == .bootstrapToken else { return false }
-        let scheme = self.url.scheme?.lowercased()
-        if scheme == "wss" {
-            return true
-        }
-        guard scheme == "ws", let host = self.url.host else { return false }
         // Setup codes intentionally allow plaintext WebSocket bootstrap on local networks
         // for QR pairing. Persist the resulting server-bounded device token so reconnects do not
-        // fall back to auth=none after the single-use bootstrap token is cleared.
-        return LoopbackHost.isLocalNetworkHost(host)
+        // fall back to auth=none after the single-use bootstrap token is cleared. Public cleartext
+        // routes and non-routable hosts never persist handoff tokens.
+        return Self.allowsBootstrapHandoffPersistence(url: self.url)
+    }
+
+    /// Transport rule for persisting bootstrap handoff tokens: TLS, loopback, or cleartext LAN only
+    /// (``GatewayTransportSecurityPolicy/evaluate(url:)`` is `.ok` or `.warnCleartextLAN`).
+    nonisolated static func allowsBootstrapHandoffPersistence(url: URL) -> Bool {
+        switch GatewayTransportSecurityPolicy.evaluate(url: url) {
+        case .ok, .warnCleartextLAN:
+            true
+        case .requireTLS, .rejectNonRoutable:
+            false
+        }
     }
 
     nonisolated static func filteredBootstrapHandoffScopes(role: String, scopes: [String]) -> [String]? {
@@ -1088,9 +1271,13 @@ extension GatewayChannelActor {
         let deviceIdentityProfile = options.deviceIdentityProfile
         if res.ok == false {
             let error = res.error
+            let details = gatewayErrorDetails(error)
             let rejection = GatewayConnectAuthError(
                 message: error?.message ?? "gateway connect failed",
-                details: gatewayErrorDetails(error))
+                details: details)
+            self.rateLimitRetryAfterMs = rejection.detail == .authRateLimited
+                ? gatewayIntValue(details["retryAfterMs"])
+                : nil
             if let error, error.isStartupUnavailable {
                 throw GatewayStartupUnavailableConnectError(
                     rejection: rejection,
@@ -1216,6 +1403,10 @@ extension GatewayChannelActor {
         else { return }
         let wrapped = self.wrap(err, context: "gateway receive")
         self.logger.error("gateway ws receive failed \(wrapped.localizedDescription, privacy: .public)")
+        self.gatewayStateReporter.reconnecting(
+            backoffMs: Int(self.backoffMs),
+            pendingRequests: self.pending.count,
+            problemKind: GatewayConnectionProblemMapper.map(error: wrapped)?.kind.rawValue)
         await self.transitionToDisconnected(
             reason: "receive failed: \(wrapped.localizedDescription)",
             error: wrapped,
@@ -1286,6 +1477,10 @@ extension GatewayChannelActor {
             self.finishRequest(id: res.id, result: .success(.res(res)))
         case let .event(evt):
             if evt.event == "connect.challenge" { return }
+            if evt.event == "tick" {
+                // Volatile and coalesced by the reporter (at most one update per second).
+                self.gatewayStateReporter.update(OpenClawGatewayVolatileState(lastSeq: evt.seq, lastTickAt: Date()))
+            }
             if let seq = evt.seq {
                 if let last = lastSeq, seq > last + 1 {
                     await self.pushHandler?(
@@ -1388,6 +1583,9 @@ extension GatewayChannelActor {
                 let delta = Self.milliseconds(from: last, to: ContinuousClock.now)
                 if delta > tolerance {
                     self.logger.error("gateway tick missed; reconnecting")
+                    self.gatewayStateReporter.reconnecting(
+                        backoffMs: Int(self.backoffMs),
+                        pendingRequests: self.pending.count)
                     let error = NSError(
                         domain: "Gateway",
                         code: 4,
@@ -1406,7 +1604,7 @@ extension GatewayChannelActor {
 
     private func scheduleReconnect(after connectionGeneration: UInt64) async {
         guard self.shouldReconnect else { return }
-        guard !self.reconnectPausedForAuthFailure else { return }
+        guard !self.reconnectPausedForAuthFailure, !self.reconnectPausedForTLSFailure else { return }
         guard self.automaticReconnectRequested else { return }
         guard self.connectionGeneration == connectionGeneration,
               self.disconnectedConnectionGeneration == connectionGeneration
@@ -1415,7 +1613,7 @@ extension GatewayChannelActor {
         self.backoffMs = min(self.backoffMs * 2, 30000)
         guard await self.sleepUnlessCancelled(nanoseconds: UInt64(delay * 1_000_000_000)) else { return }
         guard self.shouldReconnect else { return }
-        guard !self.reconnectPausedForAuthFailure else { return }
+        guard !self.reconnectPausedForAuthFailure, !self.reconnectPausedForTLSFailure else { return }
         guard self.automaticReconnectRequested else { return }
         guard self.connectionGeneration == connectionGeneration,
               self.disconnectedConnectionGeneration == connectionGeneration
@@ -1424,10 +1622,7 @@ extension GatewayChannelActor {
             try await self.connect()
         } catch {
             if self.shouldPauseReconnectAfterAuthFailure(error) {
-                self.reconnectPausedForAuthFailure = true
-                let failure = error.localizedDescription
-                self.logger.error(
-                    "gateway reconnect paused for non-recoverable auth failure \(failure, privacy: .public)")
+                self.pauseReconnectAfterAuthFailure(error, context: "gateway reconnect")
                 return
             }
             let wrapped = self.wrap(error, context: "gateway reconnect")
@@ -1840,6 +2035,9 @@ extension GatewayChannelActor {
             if let failure = (self.session as? GatewayTLSFailureProviding)?.consumeLastTLSFailure() {
                 return GatewayTLSValidationError(failure: failure, context: context)
             }
+            if let failure = self.synthesizedTLSFailure(for: urlError) {
+                return GatewayTLSValidationError(failure: failure, context: context)
+            }
             let desc = urlError.localizedDescription.isEmpty ? "cancelled" : urlError.localizedDescription
             return NSError(
                 domain: URLError.errorDomain,
@@ -1849,6 +2047,28 @@ extension GatewayChannelActor {
         let ns = error as NSError
         let desc = ns.localizedDescription.isEmpty ? "unknown" : ns.localizedDescription
         return NSError(domain: ns.domain, code: ns.code, userInfo: [NSLocalizedDescriptionKey: "\(context): \(desc)"])
+    }
+
+    /// Typed evidence for a certificate rejection reported by a plain `URLSession` (no pinning
+    /// session to supply fingerprints), classified with ``GatewayTLSFailureClassification``.
+    /// Handshake failures without a certificate decision stay transport errors.
+    private func synthesizedTLSFailure(for urlError: URLError) -> GatewayTLSValidationFailure? {
+        let reason: GatewayTLSTrustFailureReason
+        switch GatewayTLSFailureClassification(error: urlError) {
+        case .untrustedChain?: reason = .untrustedChain
+        case .hostnameMismatch?: reason = .hostnameMismatch
+        case .expired?: reason = .expired
+        case .pinMismatch?, .handshakeFailed?, nil: return nil
+        }
+        return GatewayTLSValidationFailure(
+            kind: .untrustedCertificate,
+            host: self.url.host ?? "",
+            storeKey: nil,
+            expectedFingerprint: nil,
+            observedFingerprint: nil,
+            systemTrustOk: false,
+            port: self.url.port,
+            trustFailureReason: reason)
     }
 
     private func connectOrThrow(context: String) async throws {

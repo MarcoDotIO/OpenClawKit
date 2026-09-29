@@ -39,6 +39,8 @@ public enum OpenClawGatewayConnectionStateLabel: String, Sendable, CaseIterable 
     case reconnecting
     /// Reconnects are paused after a non-recoverable auth failure.
     case authPaused
+    /// The connect failed and no automatic reconnect is scheduled (for example a TLS pin mismatch).
+    case failed
 }
 
 /// Identity of a gateway connection, reported as stable metadata.
@@ -240,6 +242,12 @@ public struct OpenClawGatewayStateReporter: Sendable {
     /// - Parameter authDetailCode: `GatewayConnectAuthError.detailCodeRaw`.
     public func authPaused(authDetailCode: String?) {
         self.report(.authPaused, volatile: .init(authDetailCode: authDetailCode))
+    }
+
+    /// Reports `failed` (the connect failed and no automatic reconnect is scheduled).
+    /// - Parameter problemKind: Optional connection problem classification.
+    public func failed(problemKind: String? = nil) {
+        self.report(.failed, volatile: .init(problemKind: problemKind))
     }
 
     /// Reports a volatile update for the current state (tick, pending request count, sequence).

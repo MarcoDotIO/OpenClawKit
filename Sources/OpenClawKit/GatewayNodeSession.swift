@@ -32,6 +32,18 @@ public struct GatewayNodeSessionRoute: Sendable, Equatable {
     }
 }
 
+/// Node pairing state as the gateway reported it on the current route.
+public enum GatewayNodePairingState: Sendable, Equatable {
+    /// No connect result yet on this route.
+    case unknown
+    /// The gateway needs an operator to approve this device (or a role, scope or metadata upgrade).
+    ///
+    /// The gateway hides the node's commands, caps and permissions until then.
+    case pending(requestId: String?)
+    /// hello-ok admitted the node.
+    case approved
+}
+
 /// Owns a server-event stream until its caller is finished or cancelled.
 public struct GatewayServerEventSubscription: Sendable {
     /// Filtered server events.
@@ -63,8 +75,6 @@ public actor GatewayNodeSession {
     private static let pluginSurfaceRefreshTimeoutMs = 8000.0
 
     private static let staleRouteInvokeMessage = "UNAVAILABLE: node route changed before dispatch"
-    /// `NODE_NOT_READY`, resolved by raw value so this compiles before and after the error-code sync.
-    private static let notReadyErrorCode = OpenClawNodeErrorCode(rawValue: "NODE_NOT_READY") ?? .unavailable
 
     private enum ComputerInvokeReceiptState {
         case inFlight(Task<BridgeInvokeResponse, Never>)
@@ -159,6 +169,8 @@ public actor GatewayNodeSession {
 
     private var serverEventSubscribers: [UUID: ServerEventSubscriber] = [:]
     private var pluginSurfaceUrls: [String: String] = [:]
+    private var pairing: GatewayNodePairingState = .unknown
+    private let stateReporter: (any OpenClawSystemStateReporting)?
 
     private struct PluginSurfaceRefresh {
         let id: UUID
@@ -177,7 +189,11 @@ public actor GatewayNodeSession {
     }
 
     /// Creates an empty node session that can be connected later.
-    public init() {}
+    /// - Parameter stateReporter: Destination for gateway and node-invoke state reports; `nil` uses
+    ///   ``OpenClawSystemState/shared``, which only forwards while ``OpenClawSystemState/isEnabled``.
+    public init(stateReporter: (any OpenClawSystemStateReporting)? = nil) {
+        self.stateReporter = stateReporter
+    }
 
     private func connectOptionsKey(_ options: GatewayConnectOptions) -> ConnectOptionsKey {
         func sorted(_ values: [String]) -> String {
@@ -308,8 +324,10 @@ public actor GatewayNodeSession {
                 // Intentionally outside the shouldReconnect identity key: the channel re-reads
                 // the provider on every upgrade, so header edits ride the next reconnect
                 // without forcing a new channel.
-                extraHeadersProvider: extraHeadersProvider)
+                extraHeadersProvider: extraHeadersProvider,
+                stateReporter: self.stateReporter)
             self.channel = channel
+            self.pairing = .unknown
             self.connectOptions = connectOptions
             self.onConnected = onConnected
             self.onDisconnected = onDisconnected
@@ -343,7 +361,14 @@ public actor GatewayNodeSession {
         // An in-place disconnect keeps the channel object/generation but advances
         // admission, so a drained snapshot waiter must not report a stale connect.
         let expectedAdmissionGeneration = self.admissionGeneration
-        try await channel.connect()
+        do {
+            try await channel.connect()
+        } catch {
+            if self.channelGeneration == channelGeneration, self.channel === channel {
+                self.recordPairingState(afterConnectError: error)
+            }
+            throw error
+        }
         guard self.channelGeneration == channelGeneration,
               self.admissionGeneration == expectedAdmissionGeneration,
               self.channel === channel
@@ -510,6 +535,29 @@ public actor GatewayNodeSession {
     public func currentDeviceAuthRoles() async -> (received: Set<String>, persisted: Set<String>) {
         guard let channel else { return ([], []) }
         return await channel.currentDeviceAuthRoles()
+    }
+
+    /// Pairing state of the current route, from the last connect error or hello-ok.
+    ///
+    /// While ``GatewayNodePairingState/pending(requestId:)``, the gateway hides this node's declared
+    /// commands, caps and permissions: do not assume advertised commands are live until approved.
+    public func pairingState() -> GatewayNodePairingState {
+        self.pairing
+    }
+
+    /// Protocol version the live socket negotiated, or `nil` before hello-ok.
+    ///
+    /// Use it to gate protocol-4-only node commands, for example
+    /// ``FileTransferNodeCommands/advertisedCommands(negotiatedProtocol:)``.
+    public func negotiatedProtocolVersion() -> Int? {
+        self.workerHello?.protocolVersion
+    }
+
+    private func recordPairingState(afterConnectError error: Error) {
+        guard let authError = error as? GatewayConnectAuthError else { return }
+        if GatewayConnectionProblemMapper.map(error: authError)?.needsPairingApproval == true {
+            self.pairing = .pending(requestId: authError.requestId)
+        }
     }
 
     /// Canonical URL of one plugin surface from hello-ok `pluginSurfaceUrls` (for example `canvas`).
@@ -1005,6 +1053,7 @@ extension GatewayNodeSession {
                     EventFrame(type: "event", event: "seqGap", payload: nil, seq: nil, stateversion: nil))
             }
             self.hasEverConnected = true
+            self.pairing = .approved
             self.markSnapshotReceived()
             await self.notifyConnectedIfNeeded(
                 admissionGeneration: admissionGeneration)
@@ -1298,13 +1347,15 @@ extension GatewayNodeSession {
                     id: request.id,
                     ok: false,
                     error: OpenClawNodeError(
-                        code: Self.notReadyErrorCode,
+                        code: .notReady,
                         message: "Node lifecycle transition in progress")),
                 channel: channel,
                 socketGeneration: socketGeneration)
             return
         }
         self.logger.info("node invoke executing id=\(request.id, privacy: .public)")
+        let invokeReporter = OpenClawNodeInvokeStateReporter(reporter: self.stateReporter)
+        invokeReporter.invoking(command: request.command, invokeId: request.id)
         let bridgeRequest = BridgeInvokeRequest(
             id: request.id,
             command: request.command,
@@ -1333,7 +1384,10 @@ extension GatewayNodeSession {
         // command is running must discard it instead of disclosing it to the replacement.
         guard self.isCurrentRoute(route),
               self.channel === channel
-        else { return }
+        else {
+            invokeReporter.finished(ok: false)
+            return
+        }
         self.logger.info(
             "node invoke completed id=\(request.id, privacy: .public) ok=\(response.ok, privacy: .public)")
         await self.sendInvokeResult(
@@ -1341,6 +1395,7 @@ extension GatewayNodeSession {
             response: response,
             channel: channel,
             socketGeneration: socketGeneration)
+        invokeReporter.finished(ok: response.ok)
     }
 
     private func invokeIfCurrentRoute(
