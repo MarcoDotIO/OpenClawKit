@@ -1,5 +1,12 @@
 import Foundation
 import OpenClawProtocol
+#if canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#elseif canImport(Darwin)
+import Darwin
+#endif
 
 /// Resolves a ``SecretRef`` to its secret value using a ``SecretsConfig``.
 public protocol SecretRefResolver: Sendable {
@@ -241,8 +248,12 @@ public struct DefaultSecretRefResolver: SecretRefResolver {
             arguments: provider.args,
             environment: childEnvironment,
             input: request,
-            timeoutMs: provider.timeoutMs,
-            maxOutputBytes: provider.maxOutputBytes
+            limits: ExecSecretProcess.Limits(
+                providerName: providerName,
+                timeoutMs: provider.timeoutMs,
+                noOutputTimeoutMs: provider.noOutputTimeoutMs,
+                maxOutputBytes: provider.maxOutputBytes
+            )
         )
         return try Self.parseExecResponse(output, id: ref.id, providerName: providerName, jsonOnly: provider.jsonOnly)
         #else
@@ -287,22 +298,40 @@ public struct DefaultSecretRefResolver: SecretRefResolver {
 }
 
 #if os(macOS) || os(Linux)
-/// Runs an exec secret provider with stdin input, a timeout and an output cap.
+/// Runs an exec secret provider (upstream `runCommandWithTimeout` with `killProcessTree`,
+/// `noOutputTimeoutMs`, head capture and `terminateOnOutputLimit`).
+///
+/// The child runs in its own process group (Foundation `Process` makes it the group leader). Stdout
+/// is read incrementally: exceeding `maxOutputBytes`, the overall `timeoutMs` deadline or
+/// `noOutputTimeoutMs` without output sends `SIGTERM` and then `SIGKILL` to the whole group, and the
+/// call fails with a distinct error. After the direct child exits, stdout is drained only briefly,
+/// so a backgrounded helper that inherited stdout cannot hold the call open. Writing the request
+/// never raises `SIGPIPE`.
 enum ExecSecretProcess {
+    /// Limits and labels for one run.
+    struct Limits: Sendable {
+        var providerName: String
+        var timeoutMs: Int
+        var noOutputTimeoutMs: Int
+        var maxOutputBytes: Int
+        /// Grace between `SIGTERM` and `SIGKILL`.
+        var killGraceMs: Int = 500
+        /// How long stdout is drained after the direct child exits.
+        var exitDrainMs: Int = 250
+    }
+
     static func run(
         command: String,
         arguments: [String],
         environment: [String: String],
         input: Data,
-        timeoutMs: Int,
-        maxOutputBytes: Int
+        limits: Limits
     ) async throws -> Data {
         try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
                     continuation.resume(returning: try self.runBlocking(
-                        command: command, arguments: arguments, environment: environment, input: input,
-                        timeoutMs: timeoutMs, maxOutputBytes: maxOutputBytes
+                        command: command, arguments: arguments, environment: environment, input: input, limits: limits
                     ))
                 } catch {
                     continuation.resume(throwing: error)
@@ -311,13 +340,46 @@ enum ExecSecretProcess {
         }
     }
 
+    private enum Termination {
+        case timeout
+        case noOutput
+        case outputLimit
+    }
+
+    private final class ExitSignal: @unchecked Sendable {
+        let semaphore = DispatchSemaphore(value: 0)
+        private let lock = NSLock()
+        private var exited = false
+
+        var hasExited: Bool {
+            self.lock.lock()
+            defer { self.lock.unlock() }
+            return self.exited
+        }
+
+        func markExited() {
+            self.lock.lock()
+            self.exited = true
+            self.lock.unlock()
+            self.semaphore.signal()
+        }
+
+        /// Waits until the process exits or `deadline` passes.
+        func wait(until deadline: UInt64) -> Bool {
+            if self.hasExited { return true }
+            let now = DispatchTime.now().uptimeNanoseconds
+            guard deadline > now else { return false }
+            _ = self.semaphore.wait(timeout: .now() + .nanoseconds(Int(min(deadline - now, UInt64(Int.max)))))
+            return self.hasExited
+        }
+    }
+
     private static func runBlocking(
         command: String,
         arguments: [String],
         environment: [String: String],
         input: Data,
-        timeoutMs: Int,
-        maxOutputBytes: Int
+        limits: Limits
     ) throws -> Data {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: command)
@@ -329,28 +391,174 @@ enum ExecSecretProcess {
         process.standardInput = stdin
         process.standardOutput = stdout
         process.standardError = FileHandle.nullDevice
+        let exitSignal = ExitSignal()
+        process.terminationHandler = { _ in exitSignal.markExited() }
+
+        let start = DispatchTime.now().uptimeNanoseconds
+        let deadline = start + UInt64(max(1, limits.timeoutMs)) * 1_000_000
         try process.run()
-        stdin.fileHandleForWriting.write(input)
-        try? stdin.fileHandleForWriting.close()
-        let timeout = DispatchWorkItem { [process] in
-            if process.isRunning {
-                process.terminate()
+        try? stdout.fileHandleForWriting.close()
+        let pid = process.processIdentifier
+        // Foundation makes the child a process-group leader on Darwin and Linux; only signal the
+        // group when that holds, never our own group.
+        let groupID: pid_t? = (pid > 0 && getpgid(pid) == pid && pid != getpgrp()) ? pid : nil
+        func signalTree(_ signal: Int32) {
+            if let groupID {
+                _ = kill(-groupID, signal)
+            } else if pid > 0, !exitSignal.hasExited {
+                _ = kill(pid, signal)
             }
         }
-        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(max(1, timeoutMs)), execute: timeout)
-        let data = stdout.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        timeout.cancel()
+
+        Self.writeRequest(input, to: stdin.fileHandleForWriting.fileDescriptor, deadline: deadline)
+        try? stdin.fileHandleForWriting.close()
+
+        let readFD = stdout.fileHandleForReading.fileDescriptor
+        let (output, termination) = Self.readOutput(from: readFD, limits: limits, deadline: deadline, exitSignal: exitSignal)
+        try? stdout.fileHandleForReading.close()
+
+        var failure = termination
+        if failure == nil, !exitSignal.wait(until: deadline) {
+            failure = .timeout
+        }
+        if let failure {
+            signalTree(SIGTERM)
+            let graceDeadline = DispatchTime.now().uptimeNanoseconds + UInt64(limits.killGraceMs) * 1_000_000
+            _ = exitSignal.wait(until: graceDeadline)
+            // Stragglers that ignored SIGTERM (or outlived the direct child) are killed too.
+            signalTree(SIGKILL)
+            _ = exitSignal.wait(until: DispatchTime.now().uptimeNanoseconds + 2_000_000_000)
+            switch failure {
+            case .timeout:
+                throw OpenClawCoreError.unavailable("Exec provider \"\(limits.providerName)\" timed out after \(limits.timeoutMs)ms.")
+            case .noOutput:
+                throw OpenClawCoreError.unavailable(
+                    "Exec provider \"\(limits.providerName)\" produced no output for \(limits.noOutputTimeoutMs)ms."
+                )
+            case .outputLimit:
+                throw OpenClawCoreError.unavailable(
+                    "Exec provider \"\(limits.providerName)\" output exceeded maxOutputBytes (\(limits.maxOutputBytes))."
+                )
+            }
+        }
         guard process.terminationReason == .exit else {
-            throw OpenClawCoreError.unavailable("Exec secret provider timed out or was terminated.")
+            throw OpenClawCoreError.unavailable(
+                "Exec provider \"\(limits.providerName)\" was terminated by signal \(process.terminationStatus)."
+            )
         }
         guard process.terminationStatus == 0 else {
-            throw OpenClawCoreError.unavailable("Exec secret provider exited with status \(process.terminationStatus).")
+            throw OpenClawCoreError.unavailable(
+                "Exec provider \"\(limits.providerName)\" exited with status \(process.terminationStatus)."
+            )
         }
-        guard data.count <= maxOutputBytes else {
-            throw OpenClawCoreError.unavailable("Exec secret provider output exceeded maxOutputBytes (\(maxOutputBytes)).")
+        return output
+    }
+
+    /// Reads stdout without blocking past the deadlines, keeping at most `maxOutputBytes`.
+    private static func readOutput(
+        from fd: Int32,
+        limits: Limits,
+        deadline: UInt64,
+        exitSignal: ExitSignal
+    ) -> (Data, Termination?) {
+        let flags = fcntl(fd, F_GETFL)
+        if flags >= 0 {
+            _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
         }
-        return data
+        let noOutputNanos = UInt64(max(1, limits.noOutputTimeoutMs)) * 1_000_000
+        var output = Data()
+        var lastOutput = DispatchTime.now().uptimeNanoseconds
+        var drainDeadline: UInt64?
+        var buffer = [UInt8](repeating: 0, count: 65_536)
+        while true {
+            let now = DispatchTime.now().uptimeNanoseconds
+            if exitSignal.hasExited, drainDeadline == nil {
+                drainDeadline = now + UInt64(limits.exitDrainMs) * 1_000_000
+            }
+            if let drainDeadline {
+                if now >= drainDeadline {
+                    // The direct child is gone; a helper that inherited stdout must not hold us open.
+                    return (output, nil)
+                }
+            } else if now >= deadline {
+                return (output, .timeout)
+            } else if now - lastOutput >= noOutputNanos {
+                return (output, .noOutput)
+            }
+            let nextEvent = min(deadline, lastOutput + noOutputNanos, drainDeadline ?? UInt64.max)
+            // Wake at least every 50 ms to notice the child's exit.
+            let waitMs = Int32(min(50, max(1, (nextEvent - now) / 1_000_000)))
+            var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+            let ready = poll(&descriptor, 1, waitMs)
+            if ready < 0 {
+                if errno == EINTR { continue }
+                return (output, nil)
+            }
+            if ready == 0 {
+                continue
+            }
+            let count = buffer.withUnsafeMutableBytes { read(fd, $0.baseAddress, $0.count) }
+            if count > 0 {
+                guard output.count + count <= limits.maxOutputBytes else {
+                    return (output, .outputLimit)
+                }
+                output.append(contentsOf: buffer[0..<count])
+                lastOutput = DispatchTime.now().uptimeNanoseconds
+            } else if count == 0 {
+                return (output, nil)
+            } else if errno != EAGAIN, errno != EWOULDBLOCK, errno != EINTR {
+                return (output, nil)
+            }
+        }
+    }
+
+    /// Writes the request without raising `SIGPIPE` (the child may exit without reading) and without
+    /// blocking past the deadline.
+    private static func writeRequest(_ data: Data, to fd: Int32, deadline: UInt64) {
+        let flags = fcntl(fd, F_GETFL)
+        if flags >= 0 {
+            _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
+        }
+        #if canImport(Darwin)
+        _ = fcntl(fd, F_SETNOSIGPIPE, 1)
+        #else
+        var pipeSignal = sigset_t()
+        sigemptyset(&pipeSignal)
+        sigaddset(&pipeSignal, SIGPIPE)
+        var previousMask = sigset_t()
+        pthread_sigmask(SIG_BLOCK, &pipeSignal, &previousMask)
+        defer {
+            // Consume a SIGPIPE raised by this thread's write before restoring the mask.
+            var pending = sigset_t()
+            if sigpending(&pending) == 0, sigismember(&pending, SIGPIPE) == 1 {
+                var zero = timespec(tv_sec: 0, tv_nsec: 0)
+                _ = sigtimedwait(&pipeSignal, nil, &zero)
+            }
+            pthread_sigmask(SIG_SETMASK, &previousMask, nil)
+        }
+        #endif
+        data.withUnsafeBytes { raw in
+            guard var cursor = raw.baseAddress else { return }
+            var remaining = raw.count
+            while remaining > 0 {
+                let written = write(fd, cursor, remaining)
+                if written > 0 {
+                    cursor += written
+                    remaining -= written
+                    continue
+                }
+                if written < 0, errno == EINTR {
+                    continue
+                }
+                guard written < 0, errno == EAGAIN || errno == EWOULDBLOCK else {
+                    return // EPIPE: the child stopped reading.
+                }
+                let now = DispatchTime.now().uptimeNanoseconds
+                guard now < deadline else { return }
+                var descriptor = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+                _ = poll(&descriptor, 1, Int32(min(50, max(1, (deadline - now) / 1_000_000))))
+            }
+        }
     }
 }
 #endif
