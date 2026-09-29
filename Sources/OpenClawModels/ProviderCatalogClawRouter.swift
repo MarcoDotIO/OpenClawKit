@@ -3,6 +3,7 @@ import Foundation
 import FoundationNetworking
 #endif
 import OpenClawCore
+import OpenClawProtocol
 
 /// HTTP transport used by catalog discovery and refresh clients.
 public protocol ProviderCatalogHTTPTransport: Sendable {
@@ -34,6 +35,51 @@ public struct ClawRouterRoute: Codable, Sendable, Equatable {
         case api
         case baseURL = "baseUrl"
         case upstreamModel
+    }
+
+    /// Key of the route metadata stored on each discovered row's `params` (upstream `ROUTE_METADATA_KEY`).
+    public static let paramsKey = "clawrouterRoute"
+
+    /// Route metadata as a `params` value (`{api, baseUrl, upstreamModel?}`).
+    public var paramsValue: AnyCodable {
+        var object: [String: AnyCodable] = [
+            "api": AnyCodable(self.api.rawValue),
+            "baseUrl": AnyCodable(self.baseURL),
+        ]
+        if let upstreamModel {
+            object["upstreamModel"] = AnyCodable(upstreamModel)
+        }
+        return AnyCodable(object)
+    }
+
+    /// Upstream model id to send for a model row, read from its `params.clawrouterRoute`; `nil` when the
+    /// row has no route metadata or the upstream id equals the row id.
+    /// - Parameter model: Model row.
+    /// - Returns: Wire model id for native ClawRouter routes.
+    public static func upstreamModelID(for model: ModelDefinitionConfig?) -> String? {
+        guard let model,
+              let route = model.params?[self.paramsKey]?.dictionaryValue,
+              let upstream = route["upstreamModel"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !upstream.isEmpty,
+              upstream != model.id
+        else {
+            return nil
+        }
+        return upstream
+    }
+
+    /// Row prepared for the wire (upstream `prepareClawRouterRequestModel`): id rewritten to the
+    /// upstream model and route metadata stripped from `params`.
+    /// - Parameter model: Model row carrying route metadata.
+    /// - Returns: The wire row, or `nil` when no rewrite applies.
+    public static func requestModel(for model: ModelDefinitionConfig) -> ModelDefinitionConfig? {
+        guard let upstream = self.upstreamModelID(for: model) else { return nil }
+        var prepared = model
+        prepared.id = upstream
+        var params = model.params ?? [:]
+        params.removeValue(forKey: self.paramsKey)
+        prepared.params = params.isEmpty ? nil : params
+        return prepared
     }
 }
 
@@ -84,8 +130,10 @@ public struct ClawRouterCatalog: Sendable, Equatable {
 
     /// Runtime provider config for the discovered rows.
     ///
-    /// `ModelDefinitionConfig` does not carry per-model base URLs yet; use ``route(forModelID:)`` (or the rows'
-    /// `baseURL`) to send each request to its routed endpoint.
+    /// Each row keeps its routed `api` and `baseUrl`, so ``ModelProviderFactory`` builds a
+    /// ``RoutingModelProvider`` that sends every request to its route. Rows on native routes
+    /// (Anthropic Messages, Google generateContent) carry `params.clawrouterRoute.upstreamModel`, and
+    /// the routing provider sends that upstream id on the wire (upstream `prepareClawRouterRequestModel`).
     /// - Parameter apiKey: ClawRouter API key.
     public func providerConfig(apiKey: String?) -> ModelProviderConfig {
         ModelProviderConfig(
@@ -437,7 +485,8 @@ public actor ClawRouterCatalogDiscovery {
                 cacheRead: (pricing?.cachedInputMicrosPerMillion ?? 0) / 1_000_000,
                 cacheWrite: (pricing?.cacheWrite5mInputMicrosPerMillion ?? pricing?.cacheWrite1hInputMicrosPerMillion ?? 0) / 1_000_000
             ),
-            compat: compat
+            compat: compat,
+            params: [ClawRouterRoute.paramsKey: route.paramsValue]
         )
         return ClawRouterDiscoveredModel(model: row, route: route, routerProviderID: provider.id)
     }

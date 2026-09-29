@@ -260,7 +260,7 @@ public struct RoutingModelProvider: ModelProvider {
     /// - Parameter request: Generation request.
     /// - Returns: Generation response payload.
     public func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
-        try await self.provider(for: request).generate(request)
+        try await self.provider(for: request).generate(self.wireRequest(for: request))
     }
 
     /// Streams chunks through the route of the requested model.
@@ -273,7 +273,16 @@ public struct RoutingModelProvider: ModelProvider {
         } catch {
             return AsyncThrowingStream { $0.finish(throwing: error) }
         }
-        return await provider.generateStream(request)
+        return await provider.generateStream(self.wireRequest(for: request))
+    }
+
+    /// Rewrites the model id to a row's ClawRouter upstream model (native routes send the upstream id).
+    private func wireRequest(for request: ModelGenerationRequest) -> ModelGenerationRequest {
+        let modelID = request.resolvedModelID ?? self.config.defaultModel?.id ?? ""
+        guard let upstream = ClawRouterRoute.upstreamModelID(for: self.config.model(withID: modelID)) else {
+            return request
+        }
+        return request.replacingModelID(upstream)
     }
 
     /// Forwards cancellation to every cached route.
@@ -315,6 +324,13 @@ public struct RoutingModelProvider: ModelProvider {
         if let model, let index = routed.models.firstIndex(where: { $0.id == model.id }) {
             routed.models.remove(at: index)
             routed.models.insert(model, at: 0)
+        }
+        // Native ClawRouter rows are requested by their upstream id; add wire rows under that id so the
+        // engine still finds the row's limits, reasoning flags and compat.
+        for row in routed.models {
+            if let prepared = ClawRouterRoute.requestModel(for: row), !routed.models.contains(where: { $0.id == prepared.id }) {
+                routed.models.append(prepared)
+            }
         }
         let provider = try ModelProviderFactory.makeRoutedProvider(providerID: self.id, config: routed)
         self.cache.store(provider, for: key)

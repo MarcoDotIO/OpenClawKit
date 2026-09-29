@@ -316,6 +316,26 @@ public struct ModelGenerationRequest: Sendable, Equatable {
         )
     }
 
+    /// Returns a copy with a replaced model id, preserving every other field.
+    func replacingModelID(_ modelID: String) -> ModelGenerationRequest {
+        ModelGenerationRequest(
+            sessionKey: self.sessionKey,
+            prompt: self.prompt,
+            systemPrompt: self.systemPrompt,
+            providerID: self.providerID,
+            modelID: modelID,
+            preferredAuthProfileID: self.preferredAuthProfileID,
+            metadata: self.metadata,
+            headers: self.headers,
+            policy: self.policy,
+            attachments: self.attachments,
+            messages: self.messages,
+            tools: self.tools,
+            toolChoice: self.toolChoice,
+            responseFormat: self.responseFormat
+        )
+    }
+
     /// Returns a copy with replaced metadata, preserving every other field.
     func replacingMetadata(_ metadata: [String: String]) -> ModelGenerationRequest {
         ModelGenerationRequest(
