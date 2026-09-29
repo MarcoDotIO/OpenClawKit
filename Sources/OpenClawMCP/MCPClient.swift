@@ -132,10 +132,13 @@ public struct MCPCallToolResult: Sendable, Equatable {
 /// JSON-RPC 2.0 MCP client over any ``MCPTransport``.
 ///
 /// ``connect()`` performs `initialize` (offering ``latestProtocolVersion`` and accepting any of
-/// ``supportedProtocolVersions``) and `notifications/initialized`. Requests time out after the
-/// request timeout and send `notifications/cancelled`, as does task cancellation. Server `ping`
-/// requests are answered; other server requests get `-32601`. `notifications/tools/list_changed`
-/// invokes ``onToolsListChanged(_:)`` handlers.
+/// ``supportedProtocolVersions``) and `notifications/initialized`; when the transport does not start
+/// within the connection timeout the client closes itself and throws
+/// ``MCPTransportError/timeout(method:milliseconds:)``. Requests time out after the request timeout
+/// and send `notifications/cancelled`, as does task cancellation. Server `ping` requests are answered;
+/// other server requests get `-32601`. `notifications/tools/list_changed` invokes
+/// ``onToolsListChanged(_:)`` handlers outside the message reader, so a handler may call back into
+/// the client (for example ``listTools()``).
 public actor MCPClient {
     /// Protocol version offered in `initialize`.
     public static let latestProtocolVersion = "2025-06-18"
@@ -199,8 +202,17 @@ public actor MCPClient {
         self.startReaderIfNeeded()
         let transport = self.transport
         let timeoutMs = self.connectionTimeoutMs
-        try await Self.withTimeout(milliseconds: timeoutMs, method: "connect") {
-            try await transport.start()
+        do {
+            try await Self.withTimeout(milliseconds: timeoutMs, method: "connect") {
+                try await transport.start()
+            }
+        } catch let error as MCPTransportError {
+            if case .timeout = error {
+                // The start may still be pending (it can ignore cancellation); closing the transport
+                // fails its waiters and stops any readers it opened.
+                await self.close()
+            }
+            throw error
         }
         let params: [String: AnyCodable] = [
             "protocolVersion": AnyCodable(Self.latestProtocolVersion),
@@ -240,6 +252,18 @@ public actor MCPClient {
     /// - Returns: The result.
     public func request(method: String, params: AnyCodable? = nil, timeoutMs: Int? = nil) async throws -> AnyCodable {
         if let closedError { throw closedError }
+        return try await self.send(method: method, params: params, timeoutMs: timeoutMs)
+    }
+
+    /// Like ``request(method:params:timeoutMs:)``, but a client that was already closed throws
+    /// ``MCPRequestNotSentError`` so callers can tell that the request provably never left the client
+    /// (and may safely be retried on a fresh connection).
+    func requestIfOpen(method: String, params: AnyCodable? = nil, timeoutMs: Int? = nil) async throws -> AnyCodable {
+        if let closedError { throw MCPRequestNotSentError(underlying: closedError) }
+        return try await self.send(method: method, params: params, timeoutMs: timeoutMs)
+    }
+
+    private func send(method: String, params: AnyCodable?, timeoutMs: Int?) async throws -> AnyCodable {
         self.startReaderIfNeeded()
         let id = MCPRequestID.int(self.nextID)
         self.nextID += 1
@@ -249,7 +273,7 @@ public actor MCPClient {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<AnyCodable, Error>) in
                 self.pending[id] = continuation
                 self.timeouts[id] = Task.detached { [weak self] in
-                    try? await Task.sleep(nanoseconds: UInt64(timeout) * 1_000_000)
+                    try? await Task.sleep(nanoseconds: MCPTimeoutRace.nanoseconds(milliseconds: timeout))
                     guard !Task.isCancelled else { return }
                     await self?.expire(id, method: method, timeoutMs: timeout)
                 }
@@ -301,7 +325,17 @@ public actor MCPClient {
     /// - Returns: The result.
     public func callTool(name: String, arguments: [String: AnyCodable], timeoutMs: Int? = nil) async throws -> MCPCallToolResult {
         let params = AnyCodable(["name": AnyCodable(name), "arguments": AnyCodable(arguments)])
-        let result = try await self.request(method: "tools/call", params: params, timeoutMs: timeoutMs)
+        return Self.callResult(try await self.request(method: "tools/call", params: params, timeoutMs: timeoutMs))
+    }
+
+    /// ``callTool(name:arguments:timeoutMs:)`` that throws ``MCPRequestNotSentError`` when the client was
+    /// already closed, so the manager can reconnect without risking a duplicate (possibly mutating) call.
+    func callToolIfOpen(name: String, arguments: [String: AnyCodable], timeoutMs: Int? = nil) async throws -> MCPCallToolResult {
+        let params = AnyCodable(["name": AnyCodable(name), "arguments": AnyCodable(arguments)])
+        return Self.callResult(try await self.requestIfOpen(method: "tools/call", params: params, timeoutMs: timeoutMs))
+    }
+
+    private static func callResult(_ result: AnyCodable) -> MCPCallToolResult {
         let object = result.dictionaryValue ?? [:]
         return MCPCallToolResult(
             content: object["content"]?.arrayValue ?? [],
@@ -374,8 +408,16 @@ public actor MCPClient {
                 try? await self.transport.send(reply)
             case .notification(let method, _):
                 if method == "notifications/tools/list_changed" {
-                    for handler in self.toolsChangedHandlers {
-                        await handler()
+                    // Never await handlers here: this reader is the only path that delivers responses,
+                    // so a handler that issues a request (tools/list) would otherwise deadlock until
+                    // the request timeout.
+                    let handlers = self.toolsChangedHandlers
+                    if !handlers.isEmpty {
+                        Task {
+                            for handler in handlers {
+                                await handler()
+                            }
+                        }
                     }
                 }
             }
@@ -424,14 +466,13 @@ public actor MCPClient {
     }
 
     static func withTimeout(milliseconds: Int, method: String, _ operation: @escaping @Sendable () async throws -> Void) async throws {
-        try await withThrowingTaskGroup(of: Void.self) { group in
-            group.addTask { try await operation() }
-            group.addTask {
-                try await Task.sleep(nanoseconds: UInt64(max(1, milliseconds)) * 1_000_000)
-                throw MCPTransportError.timeout(method: method, milliseconds: milliseconds)
-            }
-            _ = try await group.next()
-            group.cancelAll()
-        }
+        try await MCPTimeoutRace.run(milliseconds: milliseconds, method: method, operation)
     }
+}
+
+/// A request was not sent because its client was already closed (internal retry signal for
+/// ``MCPClientManager``; the manager rethrows ``underlying`` if the retry fails too).
+struct MCPRequestNotSentError: Error, Sendable {
+    /// The close reason.
+    let underlying: MCPTransportError
 }

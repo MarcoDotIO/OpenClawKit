@@ -161,9 +161,10 @@ enum MCPHTTPSupport {
 ///
 /// Every message is POSTed with `Accept: application/json, text/event-stream`; the response is a JSON
 /// message (or batch) or an SSE stream of messages. The `Mcp-Session-Id` returned by `initialize` is
-/// resent on later requests together with `MCP-Protocol-Version`. After initialization an optional
-/// GET stream receives server-initiated messages (servers answering 405 simply do not offer one). The
-/// session is DELETEd on close.
+/// resent on later requests together with `MCP-Protocol-Version`. Once the server accepts
+/// `notifications/initialized` (any 2xx, normally 202 Accepted) an optional GET stream receives
+/// server-initiated messages such as `notifications/tools/list_changed` (servers answering 405 simply
+/// do not offer one). The session is DELETEd on close.
 public actor MCPStreamableHTTPTransport: MCPTransport {
     /// Messages and close events from the server.
     nonisolated public let events: AsyncStream<MCPTransportEvent>
@@ -213,7 +214,7 @@ public actor MCPStreamableHTTPTransport: MCPTransport {
     /// No-op: the session starts with the `initialize` POST.
     public func start() async throws {}
 
-    /// Records the negotiated protocol version and opens the optional server stream.
+    /// Records the negotiated protocol version (sent as `MCP-Protocol-Version` on later requests).
     public func setProtocolVersion(_ version: String) async {
         self.protocolVersion = version
     }
@@ -227,7 +228,10 @@ public actor MCPStreamableHTTPTransport: MCPTransport {
         request.httpBody = try message.encoded()
         var (response, body) = try await self.http.stream(request)
         if response.statusCode == 401, let authorization = self.authorization,
-           try await authorization.handleUnauthorized(wwwAuthenticate: MCPHTTPSupport.header(response, "WWW-Authenticate")) {
+           try await authorization.handleUnauthorized(
+               wwwAuthenticate: MCPHTTPSupport.header(response, "WWW-Authenticate"),
+               rejectedAuthorization: request.value(forHTTPHeaderField: "Authorization")
+           ) {
             _ = try? await MCPHTTPSupport.collect(body, limit: 64 * 1024)
             if let header = try await authorization.authorizationHeader() {
                 request.setValue(header, forHTTPHeaderField: "Authorization")
@@ -236,6 +240,11 @@ public actor MCPStreamableHTTPTransport: MCPTransport {
         }
         if let session = MCPHTTPSupport.header(response, "Mcp-Session-Id"), !session.isEmpty {
             self.sessionID = session
+        }
+        if (200..<300).contains(response.statusCode), case .notification(let method, _) = message, method == "notifications/initialized" {
+            // Spec-compliant servers answer notifications with 202 Accepted (the TS SDK opens the GET
+            // stream in exactly that branch); accept any 2xx.
+            self.startServerStreamIfNeeded()
         }
         switch response.statusCode {
         case 202, 204:
@@ -250,9 +259,6 @@ public actor MCPStreamableHTTPTransport: MCPTransport {
                         self.continuation.yield(.message(decoded))
                     }
                 }
-            }
-            if case .notification(let method, _) = message, method == "notifications/initialized" {
-                self.startServerStreamIfNeeded()
             }
         case 401:
             let data = (try? await MCPHTTPSupport.collect(body, limit: 64 * 1024)) ?? Data()
@@ -358,7 +364,8 @@ public actor MCPStreamableHTTPTransport: MCPTransport {
 ///
 /// Opens `GET url` with `Accept: text/event-stream`, waits for the `endpoint` event (a URL relative to
 /// the SSE URL), then POSTs every message to that endpoint; responses arrive as `message` events on
-/// the SSE stream.
+/// the SSE stream. Waiting for `endpoint` honours task cancellation, so ``MCPClient``'s connection
+/// timeout fires even when a server (for example a Streamable-HTTP-only one) never sends it.
 public actor MCPLegacySSETransport: MCPTransport {
     /// Messages and close events from the server.
     nonisolated public let events: AsyncStream<MCPTransportEvent>
@@ -369,7 +376,7 @@ public actor MCPLegacySSETransport: MCPTransport {
     private let maxEventBytes: Int
     private let authorization: (any MCPAuthorizationProvider)?
     private var endpoint: URL?
-    private var endpointWaiters: [CheckedContinuation<URL, Error>] = []
+    private var endpointWaiters: [UUID: CheckedContinuation<URL, Error>] = [:]
     private var reader: Task<Void, Never>?
     private var isClosed = false
     private var protocolVersion: String?
@@ -486,7 +493,10 @@ public actor MCPLegacySSETransport: MCPTransport {
         }
         let first = try await self.http.stream(request)
         guard first.response.statusCode == 401,
-              try await authorization.handleUnauthorized(wwwAuthenticate: MCPHTTPSupport.header(first.response, "WWW-Authenticate"))
+              try await authorization.handleUnauthorized(
+                  wwwAuthenticate: MCPHTTPSupport.header(first.response, "WWW-Authenticate"),
+                  rejectedAuthorization: request.value(forHTTPHeaderField: "Authorization")
+              )
         else {
             return first
         }
@@ -500,9 +510,22 @@ public actor MCPLegacySSETransport: MCPTransport {
     private func waitForEndpoint() async throws -> URL {
         if let endpoint { return endpoint }
         if self.isClosed { throw MCPTransportError.closed("transport closed") }
-        return try await withCheckedThrowingContinuation { continuation in
-            self.endpointWaiters.append(continuation)
+        let id = UUID()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URL, Error>) in
+                if Task.isCancelled {
+                    continuation.resume(throwing: CancellationError())
+                } else {
+                    self.endpointWaiters[id] = continuation
+                }
+            }
+        } onCancel: {
+            Task { await self.cancelWaiter(id) }
         }
+    }
+
+    private func cancelWaiter(_ id: UUID) {
+        self.endpointWaiters.removeValue(forKey: id)?.resume(throwing: CancellationError())
     }
 
     private func handle(_ event: MCPSSEParser.Event, continuation: AsyncStream<MCPTransportEvent>.Continuation) {
@@ -516,7 +539,7 @@ public actor MCPLegacySSETransport: MCPTransport {
                 return
             }
             self.endpoint = resolved
-            let waiters = self.endpointWaiters
+            let waiters = self.endpointWaiters.values
             self.endpointWaiters.removeAll()
             for waiter in waiters { waiter.resume(returning: resolved) }
         case "message":
@@ -538,7 +561,7 @@ public actor MCPLegacySSETransport: MCPTransport {
     }
 
     private func failWaiters(_ error: MCPTransportError) {
-        let waiters = self.endpointWaiters
+        let waiters = self.endpointWaiters.values
         self.endpointWaiters.removeAll()
         for waiter in waiters { waiter.resume(throwing: error) }
     }

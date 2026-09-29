@@ -83,8 +83,12 @@ public struct MCPServerProbe: Sendable, Equatable {
 /// Owns MCP clients for the configured servers and exposes their tools as agent tools.
 ///
 /// Servers connect lazily on the first ``tools(reservedNames:overrides:)`` call and are cached across
-/// runs; sessions idle longer than `sessionIdleTtlMs` are closed by ``evictIdle(now:)``. A failed call
-/// reconnects once. ``reload(config:)`` retires servers whose definition changed and keeps the rest.
+/// runs; concurrent callers share one connection attempt per server, and a failed attempt closes its
+/// client (no orphaned stdio processes or HTTP sessions). Sessions idle longer than
+/// `sessionIdleTtlMs` are closed by ``evictIdle(now:)``. A `tools/call` is never replayed once it may
+/// have reached the server: a transport failure recycles the session (the next call reconnects) and
+/// rethrows; only a call whose cached client was already closed is retried on a fresh connection.
+/// ``reload(config:)`` retires servers whose definition changed and keeps the rest.
 public actor MCPClientManager {
     /// Creates a transport for a server.
     public typealias TransportFactory = @Sendable (_ serverName: String, _ config: MCPServerConfig, _ kind: MCPTransportKind) throws -> any MCPTransport
@@ -103,6 +107,10 @@ public actor MCPClientManager {
 
     private var config: MCPConfig
     private var sessions: [String: Session] = [:]
+    private var connecting: [String: Task<MCPClient, Error>] = [:]
+    private var shutdownGeneration = 0
+    private var refreshing: Set<String> = []
+    private var refreshPending: Set<String> = []
     private var extraServers: [(name: String, config: MCPServerConfig)] = []
     private var notices: [MCPServerNotice] = []
     private let transportFactory: TransportFactory
@@ -191,11 +199,18 @@ public actor MCPClientManager {
     public func reload(config: MCPConfig) async {
         self.config = config
         let servers = self.allServers()
+        for name in self.connecting.keys where servers.first(where: { $0.name == name }) == nil {
+            // In-flight connects re-check the definition before storing their session.
+            self.connecting.removeValue(forKey: name)
+        }
         for (name, session) in self.sessions {
             let next = servers.first { $0.name == name }?.config
             if next != session.config {
+                self.connecting.removeValue(forKey: name)
+                if self.sessions[name]?.client === session.client {
+                    self.sessions.removeValue(forKey: name)
+                }
                 await session.client.close()
-                self.sessions.removeValue(forKey: name)
             }
         }
     }
@@ -208,8 +223,9 @@ public actor MCPClientManager {
         self.extraServers.removeAll { $0.name == name }
         self.extraServers.append((name, config))
         if let session = self.sessions[name], session.config != config {
-            await session.client.close()
+            self.connecting.removeValue(forKey: name)
             self.sessions.removeValue(forKey: name)
+            await session.client.close()
         }
     }
 
@@ -217,6 +233,7 @@ public actor MCPClientManager {
     /// - Parameter name: Server name.
     public func removeServer(name: String) async {
         self.extraServers.removeAll { $0.name == name }
+        self.connecting.removeValue(forKey: name)
         if let session = self.sessions.removeValue(forKey: name) {
             await session.client.close()
         }
@@ -288,7 +305,13 @@ public actor MCPClientManager {
         return registered
     }
 
-    /// Calls a server tool, reconnecting once when the session failed.
+    /// Calls a server tool.
+    ///
+    /// The call is never replayed once it may have reached the server (upstream "never replay a possibly
+    /// mutating call"): on a transport failure (process exit, HTTP 5xx, expired session, …) the session
+    /// is recycled so the next call reconnects, and the error is rethrown. Only a call whose cached
+    /// client turned out to be closed before the request was sent is retried once on a fresh connection.
+    /// Timeouts keep the session.
     /// - Parameters:
     ///   - server: Declared server name.
     ///   - tool: Wire tool name.
@@ -298,16 +321,29 @@ public actor MCPClientManager {
         guard let definition = self.allServers().first(where: { $0.name == server })?.config else {
             throw MCPTransportError.closed("MCP server \(server) is not configured")
         }
+        let timeoutMs = definition.effectiveRequestTimeoutMs
         let client = try await self.connectedClient(name: server, server: definition)
         do {
-            let result = try await client.callTool(name: tool, arguments: arguments, timeoutMs: definition.effectiveRequestTimeoutMs)
+            let result = try await client.callToolIfOpen(name: tool, arguments: arguments, timeoutMs: timeoutMs)
             self.touch(server)
             return result
+        } catch is MCPRequestNotSentError {
+            // The cached client closed before the request left it, so nothing reached the server.
+            await self.drop(server, ifClient: client)
+            let retry = try await self.connectedClient(name: server, server: definition)
+            do {
+                let result = try await retry.callTool(name: tool, arguments: arguments, timeoutMs: timeoutMs)
+                self.touch(server)
+                return result
+            } catch let error as MCPTransportError {
+                if case .timeout = error { throw error }
+                await self.drop(server, ifClient: retry)
+                throw error
+            }
         } catch let error as MCPTransportError {
             if case .timeout = error { throw error }
-            await self.drop(server)
-            let retry = try await self.connectedClient(name: server, server: definition)
-            return try await retry.callTool(name: tool, arguments: arguments, timeoutMs: definition.effectiveRequestTimeoutMs)
+            await self.drop(server, ifClient: client)
+            throw error
         }
     }
 
@@ -322,7 +358,7 @@ public actor MCPClientManager {
             let client = try self.makeClient(name: serverName, server: server)
             defer { Task { await client.close() } }
             let initialize = try await client.connect()
-            let tools = MCPToolCatalogNormalizer.normalize(try await client.listTools(), filter: server.toolFilter)
+            let tools = MCPToolCatalogNormalizer.normalize(try await Self.listTools(client), filter: server.toolFilter)
             return MCPServerProbe(
                 ok: true,
                 protocolVersion: initialize.protocolVersion,
@@ -344,8 +380,10 @@ public actor MCPClientManager {
         let ttl = TimeInterval(self.config.effectiveSessionIdleTtlMs) / 1_000
         var evicted: [String] = []
         for (name, session) in self.sessions where reference.timeIntervalSince(session.lastUsed) >= ttl {
+            if self.sessions[name]?.client === session.client {
+                self.sessions.removeValue(forKey: name)
+            }
             await session.client.close()
-            self.sessions.removeValue(forKey: name)
             evicted.append(name)
         }
         return evicted.sorted()
@@ -356,12 +394,15 @@ public actor MCPClientManager {
         self.sessions.keys.sorted()
     }
 
-    /// Closes every session.
+    /// Closes every session (connections still being established are closed when they finish).
     public func shutdown() async {
-        for session in self.sessions.values {
+        self.shutdownGeneration += 1
+        self.connecting.removeAll()
+        let sessions = self.sessions.values
+        self.sessions.removeAll()
+        for session in sessions {
             await session.client.close()
         }
-        self.sessions.removeAll()
     }
 
     // MARK: - Internals
@@ -386,14 +427,60 @@ public actor MCPClientManager {
         if let session = self.sessions[name], await session.client.isConnected {
             return session.client
         }
+        if let inFlight = self.connecting[name] {
+            return try await inFlight.value
+        }
+        let generation = self.shutdownGeneration
+        let task = Task { () throws -> MCPClient in
+            try await self.establish(name: name, server: server, generation: generation)
+        }
+        self.connecting[name] = task
+        defer {
+            if self.connecting[name] == task { self.connecting.removeValue(forKey: name) }
+        }
+        return try await task.value
+    }
+
+    /// Connects a new client and stores its session; a failed attempt, or one that finishes after the
+    /// server was reconfigured, removed or the manager shut down, closes its client.
+    private func establish(name: String, server: MCPServerConfig, generation: Int) async throws -> MCPClient {
         let client = try self.makeClient(name: name, server: server)
-        try await client.connect()
-        let tools = MCPToolCatalogNormalizer.normalize(try await client.listTools(), filter: server.toolFilter)
+        let tools: [MCPToolDefinition]
+        do {
+            try await client.connect()
+            tools = MCPToolCatalogNormalizer.normalize(try await Self.listTools(client), filter: server.toolFilter)
+        } catch {
+            await client.close()
+            throw error
+        }
+        guard generation == self.shutdownGeneration, self.allServers().first(where: { $0.name == name })?.config == server else {
+            await client.close()
+            throw MCPTransportError.closed("MCP server \(name) was reconfigured or shut down while connecting")
+        }
+        let displaced = self.sessions[name]
         self.sessions[name] = Session(client: client, tools: tools, lastUsed: self.now(), config: server)
-        await client.onToolsListChanged { [weak self] in
-            await self?.refreshCatalog(name)
+        await client.onToolsListChanged { [weak self, weak client] in
+            guard let client else { return }
+            await self?.refreshCatalog(name, client: client)
+        }
+        if let displaced, displaced.client !== client {
+            await displaced.client.close()
         }
         return client
+    }
+
+    /// `tools/list`, treating `-32601` as an empty catalog for servers that advertise resources or
+    /// prompts but no tools (upstream parity).
+    static func listTools(_ client: MCPClient) async throws -> [MCPToolDefinition] {
+        do {
+            return try await client.listTools()
+        } catch let error as MCPJSONRPCError where error.code == -32601 {
+            let capabilities = await client.serverInitializeResult?.capabilities ?? [:]
+            if capabilities["tools"] == nil, capabilities["resources"] != nil || capabilities["prompts"] != nil {
+                return []
+            }
+            throw error
+        }
     }
 
     private func makeClient(name: String, server: MCPServerConfig) throws -> MCPClient {
@@ -413,21 +500,34 @@ public actor MCPClientManager {
         )
     }
 
-    private func refreshCatalog(_ name: String) async {
-        guard var session = self.sessions[name] else { return }
-        if let tools = try? await session.client.listTools() {
+    /// Re-lists a server's tools after `notifications/tools/list_changed`; bursts of notifications
+    /// coalesce into at most one follow-up `tools/list`, and results for a replaced session are dropped.
+    private func refreshCatalog(_ name: String, client: MCPClient) async {
+        guard self.sessions[name]?.client === client else { return }
+        guard !self.refreshing.contains(name) else {
+            self.refreshPending.insert(name)
+            return
+        }
+        self.refreshing.insert(name)
+        defer { self.refreshing.remove(name) }
+        repeat {
+            self.refreshPending.remove(name)
+            guard let tools = try? await client.listTools() else { return }
+            guard var session = self.sessions[name], session.client === client else { return }
             session.tools = MCPToolCatalogNormalizer.normalize(tools, filter: session.config.toolFilter)
             self.sessions[name] = session
-        }
+        } while self.refreshPending.contains(name)
     }
 
     private func touch(_ name: String) {
         self.sessions[name]?.lastUsed = self.now()
     }
 
-    private func drop(_ name: String) async {
-        if let session = self.sessions.removeValue(forKey: name) {
-            await session.client.close()
+    /// Closes and forgets the session, unless a concurrent caller already replaced its client.
+    private func drop(_ name: String, ifClient client: MCPClient) async {
+        if let session = self.sessions[name], session.client === client {
+            self.sessions.removeValue(forKey: name)
         }
+        await client.close()
     }
 }
