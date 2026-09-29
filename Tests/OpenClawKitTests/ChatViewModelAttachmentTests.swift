@@ -4,15 +4,11 @@ import ImageIO
 import OpenClawKit
 import UniformTypeIdentifiers
 import Testing
+@testable import OpenClawChatStore
 @testable import OpenClawChatUI
 
-// Ported from upstream OpenClaw 2026.9.6 (XCTest converted to Swift Testing). Trimmed until the GRDB-backed
-// OpenClawChatStore lands (W5d): healthyLegacyGatewayUsesLiveAttachmentPath,
-// indeterminateOutboxRouteRetainsAttachmentAndRetriesOnceAvailable,
-// legacyGatewayRetainsAttachmentUntilOutboxRestoreCompletes,
-// voiceNoteSendUsesExistingAttachmentPayloadAndOptimisticDuration,
-// ambiguousVoiceNoteSurvivesViewModelRecreation and
-// canonicalVoiceNoteConfirmationPreservesDurationAndDeletesDurableBytes (all need OpenClawChatSQLiteTranscriptCache).
+// Ported from upstream OpenClaw 2026.9.6 (XCTest converted to Swift Testing), including the durable-outbox
+// cases backed by the GRDB OpenClawChatStore (`OpenClawChatSQLiteTranscriptCache`).
 
 private actor AttachmentSendCapture {
     private(set) var attachments: [OpenClawChatAttachmentPayload] = []
@@ -191,6 +187,24 @@ private struct AttachmentProcessingTransport: OpenClawChatTransport {
 }
 
 
+
+private func makeAttachmentOutbox() throws -> OpenClawChatSQLiteTranscriptCache {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("attachment-outbox-\(UUID().uuidString)", isDirectory: true)
+    return try OpenClawClientDatabases(directoryURL: directory).store(gatewayID: "attachment-tests")
+}
+
+@MainActor
+private func makeDurableAttachmentViewModel(
+    transport: AttachmentProcessingTransport,
+    outbox: OpenClawChatSQLiteTranscriptCache) -> OpenClawChatViewModel
+{
+    OpenClawChatViewModel(
+        sessionKey: "main",
+        transport: transport,
+        transcriptCache: outbox,
+        outbox: outbox)
+}
 
 private func makeChatAttachmentJPEG(width: Int, height: Int) throws -> Data {
     guard
@@ -578,8 +592,151 @@ struct ChatViewModelAttachmentTests {
         #expect(state.2 == 4)
     }
 
+    @Test func healthyLegacyGatewayUsesLiveAttachmentPath() async throws {
+        let capture = AttachmentSendCapture()
+        let outbox = try makeAttachmentOutbox()
+        let viewModel = await MainActor.run {
+            makeDurableAttachmentViewModel(
+                transport: AttachmentProcessingTransport(
+                    capture: capture,
+                    returnsEmptyHistory: true,
+                    durableOutboxAvailable: false),
+                outbox: outbox)
+        }
+        await MainActor.run { viewModel.load() }
+        // Wait for outbox restore too: until it completes, sends deliberately
+        // route behind the outbox (FIFO gate), which is not the path under test.
+        try await waitUntil("legacy gateway bootstrap completed") {
+            await MainActor.run {
+                viewModel.healthOK && !viewModel.isLoading && viewModel.hasRestoredOutboxMessages
+            }
+        }
+        await MainActor.run {
+            viewModel.attachments = [
+                OpenClawPendingAttachment(
+                    url: nil,
+                    data: Data("legacy-voice-note".utf8),
+                    fileName: "legacy.m4a",
+                    mimeType: "audio/mp4",
+                    preview: nil,
+                    durationSeconds: 3),
+            ]
+            viewModel.send()
+        }
+        try await waitUntil("legacy attachment sent live") {
+            await capture.count() == 1
+        }
 
+        let commands = await outbox.loadCommands()
+        #expect(commands.isEmpty)
+    }
 
+    @Test func indeterminateOutboxRouteRetainsAttachmentAndRetriesOnceAvailable() async throws {
+        let capture = AttachmentSendCapture()
+        let routeLeasePlan = AttachmentRouteLeasePlan([
+            .indeterminate,
+            .available,
+            .available,
+        ])
+        let outbox = try makeAttachmentOutbox()
+        let attachmentData = Data("retry-image".utf8)
+        let viewModel = await MainActor.run {
+            makeDurableAttachmentViewModel(
+                transport: AttachmentProcessingTransport(
+                    capture: capture,
+                    returnsEmptyHistory: true,
+                    routeLeasePlan: routeLeasePlan),
+                outbox: outbox)
+        }
+        await MainActor.run { viewModel.load() }
+        try await waitUntil("attachment outbox bootstrap completed") {
+            await MainActor.run {
+                viewModel.healthOK && !viewModel.isLoading && viewModel.hasRestoredOutboxMessages
+            }
+        }
+        let attachmentID = await MainActor.run {
+            let attachment = OpenClawPendingAttachment(
+                url: nil,
+                data: attachmentData,
+                fileName: "retry.jpg",
+                mimeType: "image/jpeg",
+                preview: nil)
+            viewModel.input = "retry caption"
+            viewModel.attachments = [attachment]
+            viewModel.send()
+            return attachment.id
+        }
+
+        let routeError =
+            "Could not verify this attachment's delivery route. Reconnect, then try again."
+        try await waitUntil("indeterminate attachment route is visible") {
+            await MainActor.run { viewModel.errorText == routeError }
+        }
+        let retainedState = await MainActor.run {
+            (viewModel.input, viewModel.attachments.map(\.id))
+        }
+        #expect(retainedState.0 == "retry caption")
+        #expect(retainedState.1 == [attachmentID])
+        let retainedCommands = await outbox.loadCommands()
+        let initialSendCount = await capture.sendCount()
+        #expect(retainedCommands.isEmpty)
+        #expect(initialSendCount == 0)
+
+        await MainActor.run { viewModel.send() }
+        try await waitUntil("attachment retry sent") {
+            await capture.sendCount() == 1
+        }
+        try await Task.sleep(for: .milliseconds(100))
+
+        let capturedPayload = await capture.first()
+        let payload = try #require(capturedPayload)
+        #expect(payload.fileName == "retry.jpg")
+        #expect(payload.mimeType == "image/jpeg")
+        #expect(payload.content == attachmentData.base64EncodedString())
+        let finalSendCount = await capture.sendCount()
+        #expect(finalSendCount == 1)
+        let sentState = await MainActor.run {
+            (viewModel.input, viewModel.attachments.isEmpty, viewModel.errorText)
+        }
+        #expect(sentState.0 == "")
+        #expect(sentState.1)
+        #expect(sentState.2 == nil)
+    }
+
+    @Test func legacyGatewayRetainsAttachmentUntilOutboxRestoreCompletes() async throws {
+        let capture = AttachmentSendCapture()
+        let outbox = try makeAttachmentOutbox()
+        let viewModel = await MainActor.run {
+            let viewModel = makeDurableAttachmentViewModel(
+                transport: AttachmentProcessingTransport(
+                    capture: capture,
+                    durableOutboxAvailable: false),
+                outbox: outbox)
+            viewModel.attachments = [
+                OpenClawPendingAttachment(
+                    url: nil,
+                    data: Data("restore-race".utf8),
+                    fileName: "restore-race.m4a",
+                    mimeType: "audio/mp4",
+                    preview: nil,
+                    durationSeconds: 2),
+            ]
+            return viewModel
+        }
+
+        await MainActor.run { viewModel.send() }
+        try await waitUntil("legacy draft held during restore") {
+            await MainActor.run { viewModel.errorText?.contains("Restoring queued messages") == true }
+        }
+
+        let state = await MainActor.run { (viewModel.attachments.count, viewModel.input) }
+        let sendCount = await capture.count()
+        let commands = await outbox.loadCommands()
+        #expect(state.0 == 1)
+        #expect(state.1 == "")
+        #expect(sendCount == 0)
+        #expect(commands.isEmpty)
+    }
 
     @Test func failedAttachmentSendWithoutOutboxRestoresDraft() async throws {
         let capture = AttachmentSendCapture()
@@ -622,6 +779,38 @@ struct ChatViewModelAttachmentTests {
         #expect(!state.3)
     }
 
+    @Test func voiceNoteSendUsesExistingAttachmentPayloadAndOptimisticDuration() async throws {
+        let capture = AttachmentSendCapture()
+        let transport = AttachmentProcessingTransport(capture: capture)
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("voice-note-\(UUID().uuidString).m4a")
+        let data = Data("encoded-voice-note".utf8)
+        try data.write(to: fileURL)
+        let outbox = try makeAttachmentOutbox()
+        let viewModel = await MainActor.run {
+            makeDurableAttachmentViewModel(transport: transport, outbox: outbox)
+        }
+
+        await viewModel.addVoiceNoteAttachment(fileURL: fileURL, durationSeconds: 21.2)
+        await MainActor.run { viewModel.send() }
+        try await waitUntil("voice note sent") {
+            await capture.count() == 1
+        }
+
+        let capturedPayload = await capture.first()
+        let payload = try #require(capturedPayload)
+        #expect(payload.type == "file")
+        #expect(payload.mimeType == "audio/mp4")
+        #expect(payload.fileName == fileURL.lastPathComponent)
+        #expect(payload.content == data.base64EncodedString())
+
+        let optimisticAudio = await MainActor.run {
+            viewModel.messages.last?.content.first { $0.mimeType == "audio/mp4" }
+        }
+        #expect(optimisticAudio?.type == "file")
+        #expect(optimisticAudio?.mimeType == "audio/mp4")
+        #expect(optimisticAudio?.durationSeconds == 21.2)
+    }
 
     @Test func voiceNoteSendKeepsCapturedDurationWhenDraftChangesDuringHealthCheck() async throws {
         let capture = AttachmentSendCapture()
@@ -667,7 +856,105 @@ struct ChatViewModelAttachmentTests {
         #expect(optimisticAudio?.durationSeconds == 21.2)
     }
 
+    @Test func ambiguousVoiceNoteSurvivesViewModelRecreation() async throws {
+        let outbox = try makeAttachmentOutbox()
+        var firstViewModel: OpenClawChatViewModel? = await MainActor.run {
+            let viewModel = makeDurableAttachmentViewModel(
+                transport: AttachmentProcessingTransport(failsAmbiguously: true),
+                outbox: outbox)
+            viewModel.attachments = [
+                OpenClawPendingAttachment(
+                    url: nil,
+                    data: Data("durable-voice-note".utf8),
+                    fileName: "durable.m4a",
+                    mimeType: "audio/mp4",
+                    preview: nil,
+                    durationSeconds: 42),
+            ]
+            return viewModel
+        }
 
+        await MainActor.run { firstViewModel?.send() }
+        try await waitUntil("ambiguous voice note is durably parked") {
+            let command = await outbox.loadCommands().first
+            return command?.status == .failed &&
+                command?.lastError == OpenClawChatSQLiteTranscriptCache.outboxUnconfirmedError
+        }
+        let persistedCommands = await outbox.loadCommands()
+        let persisted = try #require(persistedCommands.first)
+        #expect(persisted.attachments.first?.data == Data("durable-voice-note".utf8))
+        #expect(persisted.attachments.first?.durationSeconds == 42)
+
+        await MainActor.run { firstViewModel = nil }
+        let restoredViewModel = await MainActor.run {
+            makeDurableAttachmentViewModel(
+                transport: AttachmentProcessingTransport(returnsEmptyHistory: true),
+                outbox: outbox)
+        }
+        await MainActor.run { restoredViewModel.load() }
+        try await waitUntil("durable voice note bubble is restored") {
+            await MainActor.run {
+                restoredViewModel.messages.contains { message in
+                    message.content.contains { $0.mimeType == "audio/mp4" }
+                }
+            }
+        }
+
+        let restored = try await MainActor.run { () throws -> (String?, Double?, Bool) in
+            let message = try #require(restoredViewModel.messages.first)
+            let audio = try #require(message.content.first { $0.mimeType == "audio/mp4" })
+            return (
+                audio.content?.stringValue,
+                audio.durationSeconds,
+                restoredViewModel.outboxState(for: message.id)?.isFailed == true)
+        }
+        #expect(restored.0 == Data("durable-voice-note".utf8).base64EncodedString())
+        #expect(restored.1 == 42)
+        #expect(restored.2)
+    }
+
+    @Test func canonicalVoiceNoteConfirmationPreservesDurationAndDeletesDurableBytes() async throws {
+        let outbox = try makeAttachmentOutbox()
+        let viewModel = await MainActor.run {
+            let viewModel = makeDurableAttachmentViewModel(
+                transport: AttachmentProcessingTransport(),
+                outbox: outbox)
+            viewModel.attachments = [
+                OpenClawPendingAttachment(
+                    url: nil,
+                    data: Data("confirmed-voice-note".utf8),
+                    fileName: "confirmed.m4a",
+                    mimeType: "audio/mp4",
+                    preview: nil,
+                    durationSeconds: 7),
+            ]
+            return viewModel
+        }
+
+        await MainActor.run { viewModel.send() }
+        try await waitUntil("voice note awaits canonical confirmation") {
+            await outbox.loadCommands().first?.status == .awaitingConfirmation
+        }
+        let awaitingCommands = await outbox.loadCommands()
+        let command = try #require(awaitingCommands.first)
+        let canonical = try JSONDecoder().decode(
+            OpenClawChatMessage.self,
+            from: Data(
+                """
+                {"role":"user","content":"See attached.","__openclaw":{"idempotencyKey":"\(command
+                    .id):user"},"MediaPaths":["media/inbound/media-1.m4a"],"MediaTypes":["audio/mp4"]}
+                """.utf8))
+        await viewModel.confirmOutboxCommandsNow(in: [canonical])
+
+        let remainingCommands = await outbox.loadCommands()
+        #expect(remainingCommands.isEmpty)
+        let cached = await outbox.loadTranscript(sessionKey: "main", agentID: nil)
+        let cachedMessage = try #require(cached.first)
+        let cachedAudio = try #require(cachedMessage.content.first { $0.mimeType == "audio/mp4" })
+        #expect(cachedAudio.fileName == "media-1.m4a")
+        #expect(cachedAudio.content == nil)
+        #expect(cachedAudio.durationSeconds == 7)
+    }
 
     @MainActor
     @Test func canonicalVoiceNotePreservesOptimisticDuration() throws {
