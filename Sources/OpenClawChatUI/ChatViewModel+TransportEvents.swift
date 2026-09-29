@@ -745,7 +745,7 @@ extension OpenClawChatViewModel {
             self.applyProgressCard(ProgressCard(
                 sessionkey: self.sessionKey,
                 revision: self.legacyProgressCardRevision,
-                updatedat: evt.ts ?? 0,
+                updatedat: Int(clamping: evt.tsMilliseconds ?? 0),
                 markdown: explanation?.isEmpty == false ? explanation : nil,
                 steps: steps))
         case "item":
@@ -769,7 +769,7 @@ extension OpenClawChatViewModel {
                 toolCallId: toolCallId,
                 name: name,
                 args: args,
-                startedAt: evt.ts.map(Double.init) ?? Date().timeIntervalSince1970 * 1000,
+                startedAt: evt.tsMilliseconds.map(Double.init) ?? Date().timeIntervalSince1970 * 1000,
                 isError: nil,
                 diffStat: nil,
                 activity: self.turnToolCallsById[toolCallId]?.activity)

@@ -30,7 +30,7 @@ extension OpenClawChatViewModel {
             toolCallId: toolCallId,
             name: activity.name ?? activity.title,
             args: nil,
-            startedAt: evt.ts.map(Double.init),
+            startedAt: evt.tsMilliseconds.map(Double.init),
             isError: nil,
             diffStat: nil)
         pending.activity = activity
