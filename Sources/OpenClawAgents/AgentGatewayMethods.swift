@@ -11,19 +11,34 @@ public struct AgentGatewayOptions: Sendable, Equatable {
     public var forwardApprovalEvents: Bool
     /// Forward question changes as `question.requested` / `question.resolved` events.
     public var forwardQuestionEvents: Bool
-    /// Default timeout (ms) of runs started by `sessions.send` / `chat.send` (`nil` = no timeout).
+    /// Project runs onto protocol-v4 `chat` events (`status`, `delta`, `final`, `aborted`, `error`).
+    public var forwardChatEvents: Bool
+    /// Emit `session.message` / `session.tool` for subscribed sessions and lifecycle `sessions.changed`.
+    public var forwardSessionEvents: Bool
+    /// Default timeout (ms) of runs started by `agent`, `sessions.send` or `chat.send` (`nil` = no timeout).
     public var runTimeoutMs: Int?
 
     /// Creates options.
+    /// - Parameters:
+    ///   - forwardAgentEvents: Forward `agent` events.
+    ///   - forwardApprovalEvents: Forward approval events.
+    ///   - forwardQuestionEvents: Forward question events.
+    ///   - forwardChatEvents: Project runs onto `chat` events.
+    ///   - forwardSessionEvents: Emit `session.message`, `session.tool` and lifecycle `sessions.changed`.
+    ///   - runTimeoutMs: Default run timeout.
     public init(
         forwardAgentEvents: Bool = true,
         forwardApprovalEvents: Bool = true,
         forwardQuestionEvents: Bool = true,
+        forwardChatEvents: Bool = true,
+        forwardSessionEvents: Bool = true,
         runTimeoutMs: Int? = nil
     ) {
         self.forwardAgentEvents = forwardAgentEvents
         self.forwardApprovalEvents = forwardApprovalEvents
         self.forwardQuestionEvents = forwardQuestionEvents
+        self.forwardChatEvents = forwardChatEvents
+        self.forwardSessionEvents = forwardSessionEvents
         self.runTimeoutMs = runTimeoutMs
     }
 }
@@ -31,7 +46,7 @@ public struct AgentGatewayOptions: Sendable, Equatable {
 public extension EmbeddedAgentRuntime {
     /// Methods registered by ``registerGatewayMethods(on:fallbacks:options:)``.
     static let gatewayMethodNames: [String] = [
-        "sessions.create", "sessions.send", "sessions.steer", "sessions.abort", "sessions.compact",
+        "agent", "sessions.create", "sessions.send", "sessions.steer", "sessions.abort", "sessions.compact",
         "sessions.patch", "sessions.reset", "sessions.delete",
         "chat.history", "chat.send", "chat.abort", "agent.wait",
         "approval.get", "approval.resolve", "approval.history",
@@ -41,8 +56,14 @@ public extension EmbeddedAgentRuntime {
         "question.request", "question.waitAnswer", "question.resolve", "question.get", "question.list",
     ]
 
-    /// Registers the runtime's handlers on an in-process gateway server and bridges its events
-    /// (`agent`, `exec.approval.*`, `plugin.approval.*`, `question.*`) into the server's event stream.
+    /// Registers every runtime handler on an in-process gateway server and bridges runtime events
+    /// into the server's event stream.
+    ///
+    /// Registers ``gatewayMethodNames``, the tool inventory methods (``toolGatewayMethodNames``) and
+    /// the transcript DAG / search methods (``sessionBranchGatewayMethodNames``). One subscription to
+    /// ``events(bufferingNewest:)`` feeds `agent`, `chat` (protocol v4), `session.tool`,
+    /// `session.message` and lifecycle `sessions.changed` events; approvals and questions forward as
+    /// `exec.approval.*` / `plugin.approval.*` and `question.*`.
     /// - Parameters:
     ///   - server: Gateway server.
     ///   - options: Bridging options.
@@ -51,12 +72,15 @@ public extension EmbeddedAgentRuntime {
             agentWait: await server.builtinHandler(for: "agent.wait")
         )
         await self.registerGatewayMethods(on: server, fallbacks: fallbacks, options: options)
-        if options.forwardAgentEvents {
-            let events = self.events()
+        await self.registerToolGatewayMethods(on: server)
+        await self.registerSessionBranchGatewayMethods(on: server)
+        if options.forwardAgentEvents || options.forwardChatEvents || options.forwardSessionEvents {
+            let bridge = AgentGatewayEventBridge(runtime: self, server: server, options: options)
+            let events = self.events(bufferingNewest: 4096)
             Task { [weak server] in
                 for await frame in events {
-                    guard let server else { return }
-                    await server.broadcast(event: GatewayEventName.agent.rawValue, payload: frame.gatewayPayload)
+                    guard server != nil else { return }
+                    await bridge.handle(frame)
                 }
             }
         }
@@ -84,7 +108,10 @@ public extension EmbeddedAgentRuntime {
     ///
     /// Upstream wire keys are accepted (`key`/`sessionKey`, `runId`); `sessions.patch`, `sessions.reset`
     /// and `sessions.delete` replace the gateway built-ins so permission-mode changes cancel pending
-    /// approvals and transcripts rotate or disappear with their sessions.
+    /// approvals and transcripts rotate or disappear with their sessions. Session mutations emit
+    /// `sessions.changed`; `agent`, `sessions.create`, `sessions.send` and `chat.send` honor
+    /// `idempotencyKey` (the key becomes the run id, as upstream, and a retry within 10 minutes returns
+    /// the first answer).
     /// - Parameters:
     ///   - registrar: Target registrar (usually a ``GatewayServer``).
     ///   - fallbacks: Built-in handlers to fall back to (for runs this runtime does not own).
@@ -94,7 +121,13 @@ public extension EmbeddedAgentRuntime {
         fallbacks: AgentGatewayFallbacks = AgentGatewayFallbacks(),
         options: AgentGatewayOptions = AgentGatewayOptions()
     ) async {
-        let handlers = AgentGatewayHandlers(runtime: self, fallbacks: fallbacks, options: options)
+        let handlers = AgentGatewayHandlers(
+            runtime: self,
+            fallbacks: fallbacks,
+            options: options,
+            idempotency: GatewayIdempotencyCache(),
+            sessionGroups: (registrar as? GatewayServer)?.sessionGroups
+        )
         for (method, handler) in handlers.table() {
             await registrar.register(method: method, descriptor: nil, handler: handler)
         }
@@ -113,13 +146,40 @@ public struct AgentGatewayFallbacks: Sendable {
     }
 }
 
+/// Decodes upstream attachment objects (`{type?, mimeType?, fileName?, content|data}`, base64 or a
+/// `data:` URL) into runtime ``MediaAttachment``s; entries without decodable bytes are skipped.
+enum AgentGatewayAttachments {
+    static func decode(_ raw: [AnyCodable]?) -> [MediaAttachment] {
+        guard let raw else { return [] }
+        return raw.compactMap { value in
+            guard let object = value.dictionaryValue else { return nil }
+            var mimeType = object["mimeType"]?.stringValue ?? object["mediaType"]?.stringValue
+            guard var encoded = object["content"]?.stringValue ?? object["data"]?.stringValue else { return nil }
+            if encoded.hasPrefix("data:"), let comma = encoded.firstIndex(of: ",") {
+                let header = encoded[encoded.index(encoded.startIndex, offsetBy: 5)..<comma]
+                if mimeType == nil, let type = header.split(separator: ";").first, !type.isEmpty {
+                    mimeType = String(type)
+                }
+                encoded = String(encoded[encoded.index(after: comma)...])
+            }
+            guard let data = Data(base64Encoded: encoded, options: [.ignoreUnknownCharacters]) else { return nil }
+            let kind = object["type"]?.stringValue
+            let resolvedType = mimeType ?? (kind == "image" ? "image/png" : "application/octet-stream")
+            return MediaAttachment(mimeType: resolvedType, data: data, fileName: object["fileName"]?.stringValue)
+        }
+    }
+}
+
 struct AgentGatewayHandlers: Sendable {
     let runtime: EmbeddedAgentRuntime
     let fallbacks: AgentGatewayFallbacks
     let options: AgentGatewayOptions
+    let idempotency: GatewayIdempotencyCache
+    let sessionGroups: GatewaySessionGroupCatalog?
 
     func table() -> [(String, GatewayMethodHandler)] {
         [
+            ("agent", { try await self.agent($0) }),
             ("sessions.create", { try await self.sessionsCreate($0) }),
             ("sessions.send", { try await self.sessionsSend($0, steer: false) }),
             ("sessions.steer", { try await self.sessionsSend($0, steer: true) }),
@@ -130,7 +190,7 @@ struct AgentGatewayHandlers: Sendable {
             ("sessions.delete", { try await self.sessionsDelete($0) }),
             ("chat.history", { try await self.chatHistory($0) }),
             ("chat.send", { try await self.chatSend($0) }),
-            ("chat.abort", { try await self.sessionsAbort($0) }),
+            ("chat.abort", { try await self.chatAbort($0) }),
             ("agent.wait", { try await self.agentWait($0) }),
             ("approval.get", { try await self.approvalGet($0) }),
             ("approval.resolve", { try await self.approvalResolve($0, kind: nil) }),
@@ -183,86 +243,127 @@ struct AgentGatewayHandlers: Sendable {
         AnyCodable(payload)
     }
 
-    private static func recordPayload(_ record: SessionRecord) -> AnyCodable {
-        (try? AnyCodable(encoding: record)) ?? .nullValue
+    private func emitSessionsChanged(_ request: GatewayMethodRequest, key: String, record: SessionRecord?, reason: String) async {
+        await request.events.emit(
+            .sessionsChanged,
+            payload: GatewayServer.sessionsChangedPayload(sessionKey: key, record: record, reason: reason)
+        )
     }
 
-    private static func mutationPayload(key: String, record: SessionRecord?, deleted: Bool? = nil) throws -> AnyCodable {
-        let legacy = GatewaySessionMutationResult(key: key, session: record.map(GatewayServer.sessionInfo(from:)), deleted: deleted)
-        var payload = try GatewayPayloadCodec.encode(legacy).dictionaryValue ?? [:]
-        if let record {
-            payload["entry"] = Self.recordPayload(record)
+    private func registerGroup(of record: SessionRecord) async {
+        if let category = record.category {
+            await self.sessionGroups?.register(category)
         }
-        return AnyCodable(payload)
     }
 
+    /// Starts a runtime run; the idempotency key (when present) becomes the run id, as upstream.
     private func startRun(
         sessionKey: String,
         message: String,
         request: GatewayMethodRequest,
-        record: SessionRecord?
+        record: SessionRecord?,
+        overrides: GatewayAgentRequest? = nil
     ) async -> String {
-        let thinking = ThinkLevel.normalize(request.params["thinking"]?.stringValue) ?? record?.thinkingLevel
-        let timeoutMs = request.params["timeoutMs"]?.intValue ?? self.options.runTimeoutMs
+        let thinking = ThinkLevel.normalize(overrides?.thinking ?? request.params["thinking"]?.stringValue) ?? record?.thinkingLevel
+        let timeoutMs = overrides?.timeoutMs ?? request.params["timeoutMs"]?.intValue ?? self.options.runTimeoutMs
         let model = record?.modelOverride
         let parts = model?.split(separator: "/", maxSplits: 1).map(String.init) ?? []
+        let idempotencyKey = overrides?.idempotencyKey ?? request.stringParam("idempotencyKey")
+        let attachments = AgentGatewayAttachments.decode(overrides?.attachments ?? request.params["attachments"]?.arrayValue)
         let run = AgentRunRequest(
-            runID: request.params["idempotencyKey"]?.stringValue.map { "run-\($0)" } ?? UUID().uuidString.lowercased(),
+            runID: idempotencyKey ?? UUID().uuidString.lowercased(),
             sessionKey: sessionKey,
             prompt: message,
-            modelProviderID: parts.count == 2 ? parts[0] : nil,
-            modelID: parts.count == 2 ? parts[1] : model,
+            modelProviderID: overrides?.modelProviderID ?? (parts.count == 2 ? parts[0] : nil),
+            modelID: overrides?.modelID ?? (parts.count == 2 ? parts[1] : model),
             thinkingLevel: thinking,
             reasoningLevel: record?.reasoningLevel,
             verboseLevel: record?.verboseLevel,
             responseUsage: record?.responseUsage,
             elevatedLevel: record?.elevatedLevel,
             fastMode: record?.fastMode,
-            agentID: record?.agentID ?? request.stringParam("agentId"),
+            workspaceRootPath: overrides?.cwd,
+            attachments: attachments,
+            agentID: record?.agentID ?? overrides?.agentID ?? request.stringParam("agentId"),
+            extraSystemPrompt: overrides?.extraSystemPrompt,
             spawnedBy: record?.spawnedBy
         )
         return await self.runtime.start(run, timeoutMs: timeoutMs, streaming: true)
+    }
+
+    // MARK: - Agent
+
+    /// `agent` (upstream `AgentParams`): `{runId, status: "accepted", sessionKey, agentId, acceptedAt}`.
+    private func agent(_ request: GatewayMethodRequest) async throws -> AnyCodable? {
+        let params = try GatewayServer.agentRequest(from: request)
+        guard let message = params.text else {
+            throw GatewayMethodError.invalidRequest("agent requires message")
+        }
+        return try await self.idempotency.run(key: params.idempotencyKey.map { "agent:\($0)" }) {
+            let agentID = SessionKey.normalizeAgentID(params.agentID ?? SessionKey.agentID(from: params.sessionKey, fallback: self.runtime.defaultAgentID))
+            var record = await self.runtime.sessionStore?.resolveOrCreate(sessionKey: params.sessionKey, defaultAgentID: agentID, route: nil)
+            if let label = params.label, record?.label != label {
+                record = await self.runtime.sessionStore?.update(forKey: params.sessionKey) { $0.label = label } ?? record
+            }
+            let acceptedAt = SessionTranscriptClock.nowMs()
+            let runID = await self.startRun(sessionKey: params.sessionKey, message: message, request: request, record: record, overrides: params)
+            return try GatewayPayloadCodec.encode(
+                GatewayAgentAccepted(runID: runID, sessionKey: params.sessionKey, agentID: record?.agentID ?? agentID, acceptedAt: acceptedAt)
+            )
+        }
     }
 
     // MARK: - Sessions
 
     private func sessionsCreate(_ request: GatewayMethodRequest) async throws -> AnyCodable? {
         let store = try self.requireSessionStore()
+        return try await self.idempotency.run(key: request.stringParam("idempotencyKey").map { "sessions.create:\($0)" }) {
+            try await self.createSession(request, store: store)
+        }
+    }
+
+    private func createSession(_ request: GatewayMethodRequest, store: SessionStore) async throws -> AnyCodable? {
         let agentID = SessionKey.normalizeAgentID(request.stringParam("agentId") ?? self.runtime.defaultAgentID)
-        let key = request.stringParam("key") ?? "agent:\(agentID):session:\(UUID().uuidString.lowercased())"
+        let key = request.stringParam("key") ?? GatewayServer.generatedSessionKey(agentID: agentID)
         var raw = request.params
         raw["key"] = AnyCodable(key)
-        for field in ["message", "task", "timeoutMs", "idempotencyKey", "attachments", "mentions", "parentSessionKey",
-                      "spawnDepth", "fork", "forkFrom", "incognito", "visibility", "catalogId", "emitCommandHooks",
-                      "succeedsParent", "displayName", "titleSource"] {
+        for field in GatewayServer.sessionCreateNonPatchFields {
             raw[field] = nil
         }
-        let outcome: SessionPatchOutcome
-        do {
-            outcome = try await GatewayServer.applySessionPatch(
-                GatewayMethodRequest(
-                    id: request.id,
-                    method: "sessions.patch",
-                    rawParams: AnyCodable(raw),
-                    descriptor: request.descriptor,
-                    connection: request.connection,
-                    events: request.events
-                ),
-                store: store,
-                defaultAgentID: agentID
-            )
-        }
+        let outcome = try await GatewayServer.applySessionPatch(
+            GatewayMethodRequest(
+                id: request.id,
+                method: "sessions.patch",
+                rawParams: AnyCodable(raw),
+                descriptor: request.descriptor,
+                connection: request.connection,
+                events: request.events
+            ),
+            store: store,
+            defaultAgentID: agentID
+        )
         var record = outcome.record
-        if let parent = request.stringParam("parentSessionKey") {
-            record = await store.update(forKey: key) { $0.spawnedBy = parent } ?? record
+        let parent = request.stringParam("parentSessionKey")
+        let spawnDepth = request.params["spawnDepth"]?.intValue
+        if parent != nil || spawnDepth != nil {
+            record = await store.update(forKey: key) { record in
+                if let parent { record.spawnedBy = parent }
+                if let spawnDepth { record.spawnDepth = spawnDepth }
+            } ?? record
+        }
+        if record.sessionID == nil {
+            record = await store.resolveOrCreate(sessionKey: key, defaultAgentID: agentID, route: nil)
         }
         try? await store.save()
+        await self.registerGroup(of: record)
         var payload: [String: AnyCodable] = [
             "ok": AnyCodable(true),
             "key": AnyCodable(key),
             "sessionId": AnyCodable(record.sessionID),
-            "entry": Self.recordPayload(record),
+            "entry": GatewayServer.recordPayload(record),
+            "session": (try? GatewayPayloadCodec.encode(GatewayServer.sessionInfo(from: record))) ?? .nullValue,
         ]
+        await self.emitSessionsChanged(request, key: key, record: record, reason: "create")
         if let message = (request.stringParam("message") ?? request.stringParam("task"))?.trimmingCharacters(in: .whitespacesAndNewlines),
            !message.isEmpty
         {
@@ -273,23 +374,34 @@ struct AgentGatewayHandlers: Sendable {
         return Self.object(payload)
     }
 
+    /// `sessions.send` / `sessions.steer` → `{ok, key, runId, status: "started", runStarted: true}`.
     private func sessionsSend(_ request: GatewayMethodRequest, steer: Bool) async throws -> AnyCodable? {
         let key = try self.requireSessionKey(request)
         let message = try self.requireString(request, "message", "text")
-        if steer {
-            // Steering interrupts the active run and continues with the new message.
-            await self.runtime.abort(sessionKey: key)
+        let idempotencyKey = request.stringParam("idempotencyKey").map { "\(request.method):\(key):\($0)" }
+        return try await self.idempotency.run(key: idempotencyKey) {
+            if steer {
+                // Steering interrupts the active run and continues with the new message.
+                await self.runtime.abort(sessionKey: key)
+            }
+            let record = await self.runtime.sessionStore?.resolveOrCreate(
+                sessionKey: key,
+                defaultAgentID: request.stringParam("agentId") ?? self.runtime.defaultAgentID,
+                route: nil
+            )
+            let runID = await self.startRun(sessionKey: key, message: message, request: request, record: record)
+            return Self.object([
+                "ok": AnyCodable(true),
+                "key": AnyCodable(key),
+                "runId": AnyCodable(runID),
+                "status": AnyCodable("started"),
+                "runStarted": AnyCodable(true),
+            ])
         }
-        let record = await self.runtime.sessionStore?.resolveOrCreate(sessionKey: key, defaultAgentID: self.runtime.defaultAgentID, route: nil)
-        let runID = await self.startRun(sessionKey: key, message: message, request: request, record: record)
-        return Self.object([
-            "ok": AnyCodable(true),
-            "key": AnyCodable(key),
-            "runId": AnyCodable(runID),
-            "status": AnyCodable("started"),
-        ])
     }
 
+    /// `sessions.abort {key?, runId?}` → `{ok, abortedRunId, status: "aborted" | "no-active-run"}`
+    /// (plus `aborted`/`runIds`). Runs the runtime does not own fall back to the built-in abort.
     private func sessionsAbort(_ request: GatewayMethodRequest) async throws -> AnyCodable? {
         var aborted: [String] = []
         if let runID = request.stringParam("runId", "runID") {
@@ -300,11 +412,7 @@ struct AgentGatewayHandlers: Sendable {
             let key = try self.requireSessionKey(request)
             aborted = await self.runtime.abort(sessionKey: key)
         }
-        return Self.object([
-            "ok": AnyCodable(true),
-            "aborted": AnyCodable(!aborted.isEmpty),
-            "runIds": AnyCodable(aborted.map { AnyCodable($0) }),
-        ])
+        return GatewayServer.abortPayload(abortedRunIDs: aborted)
     }
 
     private func sessionsCompact(_ request: GatewayMethodRequest) async throws -> AnyCodable? {
@@ -320,6 +428,13 @@ struct AgentGatewayHandlers: Sendable {
             if let reason = result.reason { payload["reason"] = AnyCodable(reason) }
             if let tokensAfter = result.tokensAfter { payload["tokensAfter"] = AnyCodable(tokensAfter) }
             if let firstKept = result.firstKeptEntryId { payload["firstKeptEntryId"] = AnyCodable(firstKept) }
+            if result.compacted {
+                let record = await self.runtime.sessionStore?.recordForKey(key)
+                await request.events.emit(
+                    .sessionsChanged,
+                    payload: GatewayServer.sessionsChangedPayload(sessionKey: key, record: record, reason: "compact", extra: ["compacted": AnyCodable(true)])
+                )
+            }
             return Self.object(payload)
         } catch AgentRuntimeError.transcriptUnavailable {
             throw GatewayMethodError.unavailable("sessions.compact requires a transcript store")
@@ -334,20 +449,36 @@ struct AgentGatewayHandlers: Sendable {
             // Pending approvals from the old permissions are cancelled, not granted.
             await self.runtime.approvals.cancel(sessionKey: outcome.record.key)
         }
-        return try Self.mutationPayload(key: outcome.record.key, record: outcome.record)
+        await self.registerGroup(of: outcome.record)
+        await self.emitSessionsChanged(request, key: outcome.record.key, record: outcome.record, reason: outcome.created ? "create" : "patch")
+        return try GatewayServer.mutationPayload(key: outcome.record.key, record: outcome.record)
     }
 
     private func sessionsReset(_ request: GatewayMethodRequest) async throws -> AnyCodable? {
         let key = try self.requireSessionKey(request)
         let reason = request.params["reason"]?.stringValue.flatMap(SessionResetReason.init(rawValue:)) ?? .reset
         let record = try await self.runtime.resetSession(sessionKey: key, reason: reason)
-        return try Self.mutationPayload(key: key, record: record)
+        await self.emitSessionsChanged(request, key: key, record: record, reason: "reset")
+        return try GatewayServer.mutationPayload(key: key, record: record)
     }
 
+    /// `sessions.delete` → `{ok, key, deleted, archived: []}` (upstream `SessionsDeleteResult`).
     private func sessionsDelete(_ request: GatewayMethodRequest) async throws -> AnyCodable? {
         let key = try self.requireSessionKey(request)
+        let existing = await self.runtime.sessionStore?.recordForKey(key)
+        if request.params["archivedOnly"]?.boolValue == true, existing?.archived != true {
+            throw GatewayMethodError.invalidRequest("sessions.delete archivedOnly requires an archived session")
+        }
         let deleted = try await self.runtime.deleteSession(sessionKey: key)
-        return try Self.mutationPayload(key: key, record: nil, deleted: deleted)
+        if deleted {
+            var extra: [String: AnyCodable] = [:]
+            if let existing { extra["agentId"] = AnyCodable(existing.agentID) }
+            await request.events.emit(
+                .sessionsChanged,
+                payload: GatewayServer.sessionsChangedPayload(sessionKey: key, record: nil, reason: "delete", extra: extra)
+            )
+        }
+        return try GatewayPayloadCodec.encode(GatewaySessionMutationResult(key: key, deleted: deleted, archived: []))
     }
 
     // MARK: - Chat
@@ -367,14 +498,41 @@ struct AgentGatewayHandlers: Sendable {
         }
     }
 
+    /// `chat.send {sessionKey, message, idempotencyKey, …}` → `{runId, status: "in_flight"}`; the
+    /// idempotency key is the run id (upstream `clientRunId`), so `chat` events match before the ack.
     private func chatSend(_ request: GatewayMethodRequest) async throws -> AnyCodable? {
         let key = try self.requireSessionKey(request)
         let message = try self.requireString(request, "message")
-        let record = await self.runtime.sessionStore?.resolveOrCreate(sessionKey: key, defaultAgentID: self.runtime.defaultAgentID, route: nil)
-        let runID = await self.startRun(sessionKey: key, message: message, request: request, record: record)
-        return Self.object(["runId": AnyCodable(runID), "status": AnyCodable("started")])
+        return try await self.idempotency.run(key: request.stringParam("idempotencyKey").map { "chat.send:\($0)" }) {
+            let record = await self.runtime.sessionStore?.resolveOrCreate(
+                sessionKey: key,
+                defaultAgentID: request.stringParam("agentId") ?? self.runtime.defaultAgentID,
+                route: nil
+            )
+            let runID = await self.startRun(sessionKey: key, message: message, request: request, record: record)
+            return Self.object(["runId": AnyCodable(runID), "status": AnyCodable("in_flight")])
+        }
     }
 
+    /// `chat.abort {sessionKey, runId?}` → `{ok, aborted, runIds}` (upstream chat-abort handler).
+    private func chatAbort(_ request: GatewayMethodRequest) async throws -> AnyCodable? {
+        var aborted: [String] = []
+        if let runID = request.stringParam("runId", "runID") {
+            if await self.runtime.abort(runID: runID) {
+                aborted.append(runID)
+            }
+        } else {
+            let key = try self.requireSessionKey(request)
+            aborted = await self.runtime.abort(sessionKey: key)
+        }
+        return Self.object([
+            "ok": AnyCodable(true),
+            "aborted": AnyCodable(!aborted.isEmpty),
+            "runIds": AnyCodable(aborted.map { AnyCodable($0) }),
+        ])
+    }
+
+    /// `agent.wait {runId, timeoutMs?}` → `{runId, status, startedAt, endedAt?, error?, sessionKey, output?}`.
     private func agentWait(_ request: GatewayMethodRequest) async throws -> AnyCodable? {
         let params = try request.decodeParams(GatewayAgentWaitParams.self)
         guard let result = await self.runtime.wait(runID: params.runID, timeoutMs: params.timeoutMs) else {
@@ -383,17 +541,17 @@ struct AgentGatewayHandlers: Sendable {
             }
             throw GatewayMethodError.unavailable("Agent run '\(params.runID)' is not tracked by this gateway server")
         }
-        let legacy = GatewayAgentWaitResult(
-            runID: result.runID,
-            status: result.status,
-            sessionKey: result.sessionKey,
-            output: result.output,
-            error: result.error
+        return try GatewayPayloadCodec.encode(
+            GatewayAgentWaitResult(
+                runID: result.runID,
+                status: result.status,
+                sessionKey: result.sessionKey,
+                output: result.output,
+                error: result.error,
+                startedAt: result.startedAt,
+                endedAt: result.endedAt
+            )
         )
-        var payload = try GatewayPayloadCodec.encode(legacy).dictionaryValue ?? [:]
-        if let startedAt = result.startedAt { payload["startedAt"] = AnyCodable(startedAt) }
-        if let endedAt = result.endedAt { payload["endedAt"] = AnyCodable(endedAt) }
-        return AnyCodable(payload)
     }
 
     // MARK: - Approvals

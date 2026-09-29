@@ -20,7 +20,12 @@ public protocol GatewaySocket: Sendable {
 /// In-process loopback socket used by tests and local transport flows.
 ///
 /// When backed by a ``GatewayServer`` the socket also forwards server-emitted events
-/// (``GatewayServer/broadcast(event:payload:)`` and handler ``GatewayEventEmitter`` calls) as event frames.
+/// (``GatewayServer/broadcast(event:payload:)`` and handler ``GatewayEventEmitter`` calls) as event
+/// frames. The subscription is bound to the socket's connection (``GatewayEventFilter/connection(_:)``),
+/// so `session.message`/`session.tool` arrive only for sessions subscribed with
+/// `sessions.messages.subscribe`; connecting and closing also update the server's presence
+/// (`system-presence`, `presence` events). Give each socket its own
+/// ``GatewayConnectionContext/connectionID`` when several share one server.
 public actor LoopbackGatewaySocket: GatewaySocket {
     private let server: GatewayServer?
     private let connection: GatewayConnectionContext
@@ -48,7 +53,9 @@ public actor LoopbackGatewaySocket: GatewaySocket {
     public func connect(url _: URL) async throws {
         self.open = true
         guard let server, self.eventPump == nil else { return }
-        let events = await server.events()
+        // Register presence before subscribing so the socket does not receive its own join event.
+        await server.connectionOpened(self.connection)
+        let events = await server.events(filter: .connection(self.connection.connectionID))
         self.eventPump = Task { [weak self] in
             for await frame in events {
                 guard let self else { return }
@@ -103,6 +110,9 @@ public actor LoopbackGatewaySocket: GatewaySocket {
     /// Closes the socket, stops event forwarding, and fails all suspended receivers.
     public func close() async {
         self.open = false
+        if self.eventPump != nil, let server {
+            await server.connectionClosed(connectionID: self.connection.connectionID)
+        }
         self.eventPump?.cancel()
         self.eventPump = nil
         let error = OpenClawCoreError.unavailable("Socket closed")
