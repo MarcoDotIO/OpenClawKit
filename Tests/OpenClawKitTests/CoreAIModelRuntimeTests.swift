@@ -75,6 +75,47 @@ struct CoreAIModelRuntimeTests {
         }
     }
 
+    /// Stateful fake with a real shared "KV cache": every run appends its tokens to the cache and
+    /// suspends; the next token repeats the first token fed since the last reset until the cache
+    /// holds `limit` tokens. Interleaved generations therefore decode garbage.
+    actor SharedCacheExecutor: CoreAITensorExecuting {
+        let limit: Int
+        private(set) var cache: [Int32] = []
+        private(set) var runs = 0
+
+        init(limit: Int) {
+            self.limit = limit
+        }
+
+        func describe() async throws -> CoreAIModelDescriptor {
+            CoreAIModelDescriptor(
+                path: "/models/kv.aimodel",
+                functions: [
+                    CoreAIFunctionDescriptor(
+                        name: "main",
+                        inputs: [CoreAIValueDescriptor(name: "input_ids")],
+                        states: [CoreAIValueDescriptor(name: "kv_cache")],
+                        outputs: [CoreAIValueDescriptor(name: "logits")]
+                    ),
+                ]
+            )
+        }
+
+        func run(function _: String, inputs: [String: CoreAITensor]) async throws -> [String: CoreAITensor] {
+            self.cache += inputs["input_ids"]?.int32Values() ?? []
+            self.runs += 1
+            try await Task.sleep(nanoseconds: 2_000_000)
+            let target = self.cache.count >= self.limit ? 126 : Int(self.cache.first ?? 126)
+            var logits = [Float](repeating: -5, count: 128)
+            logits[target] = 8
+            return ["logits": try CoreAITensor(float32: logits, shape: [1, 128])]
+        }
+
+        func resetStates(function _: String?) async {
+            self.cache = []
+        }
+    }
+
     struct EmbeddingExecutor: CoreAITensorExecuting {
         let perToken: Bool
 
@@ -239,6 +280,54 @@ struct CoreAIModelRuntimeTests {
         #expect(calls[2]["position_ids"]?.int32Values() == [4])
         #expect(calls[2]["attention_mask"]?.shape == [1, 5])
         #expect(await executor.resets == 1)
+    }
+
+    @Test
+    func concurrentGenerationsNeverShareStatefulCache() async throws {
+        let executor = SharedCacheExecutor(limit: 6)
+        let engine = CoreAILocalModelEngine(tokenizer: ScalarTokenizer(), executorFactory: { _, _ in executor })
+        var configuration = LocalModelConfig(enabled: true, runtime: CoreAILocalModelEngine.runtimeID, modelPath: "/m")
+        configuration.temperature = 0
+        try await engine.loadModel(path: "/m", configuration: configuration)
+        async let first = engine.generate(prompt: "a", systemPrompt: nil, configuration: configuration, onToken: nil)
+        async let second = engine.generate(prompt: "b", systemPrompt: nil, configuration: configuration, onToken: nil)
+        let texts = try await [first, second]
+        // Each generation resets and owns the cache until it finishes, so neither sees the other's tokens.
+        #expect(texts == ["aaaaa", "bbbbb"])
+    }
+
+    @Test
+    func cancelStopsOnlyTheRunningGeneration() async throws {
+        let executor = SharedCacheExecutor(limit: 40)
+        let engine = CoreAILocalModelEngine(tokenizer: ScalarTokenizer(), executorFactory: { _, _ in executor })
+        var configuration = LocalModelConfig(enabled: true, runtime: CoreAILocalModelEngine.runtimeID, modelPath: "/m")
+        configuration.temperature = 0
+        try await engine.loadModel(path: "/m", configuration: configuration)
+        let running = Task { try await engine.generate(prompt: "a", systemPrompt: nil, configuration: configuration, onToken: nil) }
+        for _ in 0..<500 where await executor.runs == 0 {
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        let queued = Task { try await engine.generate(prompt: "b", systemPrompt: nil, configuration: configuration, onToken: nil) }
+        await engine.cancelGeneration(token: nil)
+        await #expect(throws: CoreAIRuntimeError.cancelled) {
+            _ = try await running.value
+        }
+        // The queued generation starts afterwards and is not affected by the earlier cancel.
+        #expect(try await queued.value == String(repeating: "b", count: 39))
+    }
+
+    @Test
+    func stateEpochsDetectResetsDuringARun() {
+        var epochs = CoreAIStateEpochs()
+        let before = epochs.token(for: "main")
+        epochs.reset("other")
+        #expect(epochs.token(for: "main") == before)
+        epochs.reset("main")
+        #expect(epochs.token(for: "main") != before)
+        let afterFunctionReset = epochs.token(for: "main")
+        epochs.reset(nil)
+        #expect(epochs.token(for: "main") != afterFunctionReset)
+        #expect(epochs.token(for: "other") != before)
     }
 
     @Test
