@@ -18,22 +18,88 @@ public protocol GatewaySocket: Sendable {
 }
 
 /// In-process loopback socket used by tests and local transport flows.
+///
+/// When backed by a ``GatewayServer`` the socket also forwards server-emitted events
+/// (``GatewayServer/broadcast(event:payload:)`` and handler ``GatewayEventEmitter`` calls) as event
+/// frames. The subscription is bound to the socket's connection (``GatewayEventFilter/connection(_:)``),
+/// so `session.message`/`session.tool` arrive only for sessions subscribed with
+/// `sessions.messages.subscribe`; connecting and closing also update the server's presence
+/// (`system-presence`, `presence` events). Events are filtered by the connection's role and scopes
+/// (``GatewayEventFilter/hasEventScope(_:event:)``). Like the upstream gateway, a server-backed
+/// socket also emits a `tick` event `{ts}` every `tickIntervalMs`, which keeps a ``GatewayClient``
+/// tick watchdog satisfied. Give each socket its own ``GatewayConnectionContext/connectionID``
+/// when several share one server.
 public actor LoopbackGatewaySocket: GatewaySocket {
+    /// Upstream `TICK_INTERVAL_MS`.
+    public static let defaultTickIntervalMs = 30_000
+
     private let server: GatewayServer?
+    private let connection: GatewayConnectionContext
+    private let tickIntervalMs: Int
     private var open = false
     private var queue: [String] = []
     private var waiters: [CheckedContinuation<String, Error>] = []
+    private var eventPump: Task<Void, Never>?
+    private var tickTask: Task<Void, Never>?
 
     /// Creates a loopback socket.
-    /// - Parameter server: Optional in-process gateway server dispatcher.
-    public init(server: GatewayServer? = nil) {
+    /// - Parameters:
+    ///   - server: Optional in-process gateway server dispatcher.
+    ///   - connection: Connection identity and grants presented to the server.
+    ///   - tickIntervalMs: Interval of the `tick` events a server-backed socket emits (at least 10 ms).
+    public init(
+        server: GatewayServer? = nil,
+        connection: GatewayConnectionContext = .inProcess,
+        tickIntervalMs: Int = LoopbackGatewaySocket.defaultTickIntervalMs
+    ) {
         self.server = server
+        self.connection = connection
+        self.tickIntervalMs = max(10, tickIntervalMs)
     }
 
-    /// Marks the loopback socket as connected.
+    deinit {
+        // Ends the server event subscription even when the socket is dropped without `close()`.
+        self.eventPump?.cancel()
+        self.tickTask?.cancel()
+    }
+
+    /// Marks the loopback socket as connected and starts forwarding server events.
     /// - Parameter url: Ignored loopback URL placeholder.
     public func connect(url _: URL) async throws {
         self.open = true
+        guard let server, self.eventPump == nil else { return }
+        // Register presence before subscribing so the socket does not receive its own join event.
+        await server.connectionOpened(self.connection)
+        let events = await server.events(filter: .connection(self.connection.connectionID))
+        self.eventPump = Task { [weak self] in
+            for await frame in events {
+                guard let self else { return }
+                await self.forward(frame)
+            }
+        }
+        let intervalNs = GatewayTimeouts.nanoseconds(milliseconds: self.tickIntervalMs)
+        self.tickTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: intervalNs)
+                } catch {
+                    return
+                }
+                guard let self else { return }
+                await self.forward(Self.tickFrame())
+            }
+        }
+    }
+
+    /// Upstream maintenance `tick` event (`{ts}`, no sequence number).
+    private static func tickFrame() -> EventFrame {
+        EventFrame(
+            type: "event",
+            event: GatewayEventName.tick.rawValue,
+            payload: AnyCodable(["ts": AnyCodable(gatewayNowMs())]),
+            seq: nil,
+            stateversion: nil
+        )
     }
 
     /// Enqueues a synthesized response frame for the provided request frame.
@@ -48,7 +114,7 @@ public actor LoopbackGatewaySocket: GatewaySocket {
         let request = try decoder.decode(RequestFrame.self, from: Data(text.utf8))
         let response: ResponseFrame
         if let server {
-            response = await server.handle(request)
+            response = await server.handle(request, connection: self.connection)
         } else {
             response = ResponseFrame(
                 type: "res",
@@ -79,15 +145,27 @@ public actor LoopbackGatewaySocket: GatewaySocket {
         }
     }
 
-    /// Closes the socket and fails all suspended receivers.
+    /// Closes the socket, stops event forwarding, and fails all suspended receivers.
     public func close() async {
         self.open = false
+        if self.eventPump != nil, let server {
+            await server.connectionClosed(connectionID: self.connection.connectionID)
+        }
+        self.eventPump?.cancel()
+        self.eventPump = nil
+        self.tickTask?.cancel()
+        self.tickTask = nil
         let error = OpenClawCoreError.unavailable("Socket closed")
         let pending = self.waiters
         self.waiters.removeAll()
         for waiter in pending {
             waiter.resume(throwing: error)
         }
+    }
+
+    private func forward(_ frame: EventFrame) {
+        guard self.open, let data = try? JSONEncoder().encode(frame) else { return }
+        self.enqueue(String(decoding: data, as: UTF8.self))
     }
 
     private func enqueue(_ raw: String) {

@@ -2,21 +2,110 @@ import Foundation
 import OpenClawCore
 
 /// Capability bucket advertised by an upstream provider or provider-like plugin.
-public enum ProviderCapability: String, Codable, Sendable, Equatable, CaseIterable {
+///
+/// Raw values follow upstream capability kinds (`src/plugins/inspect-shape.ts`) with two SDK spellings kept for
+/// compatibility: `text` (upstream `text-inference`) and `tool` (upstream `tools` contracts). Decoding accepts the
+/// upstream spellings and the legacy `memory-embedding` value.
+///
+/// - Note: 2026.3.0 renamed the `memoryEmbedding` case to ``embedding`` (raw value `embedding`); `.memoryEmbedding`
+///   remains as a deprecated alias. Exhaustive `switch` statements need the new cases.
+public enum ProviderCapability: String, Codable, Sendable, Equatable, Hashable, CaseIterable {
+    /// Text inference (upstream `text-inference`).
     case text
+    /// Image generation.
     case imageGeneration = "image-generation"
+    /// Video generation.
     case videoGeneration = "video-generation"
+    /// Music generation.
     case musicGeneration = "music-generation"
+    /// Text-to-speech.
     case speech
+    /// Realtime voice sessions.
     case realtimeVoice = "realtime-voice"
+    /// Realtime transcription.
     case realtimeTranscription = "realtime-transcription"
+    /// Image, audio or video understanding.
     case mediaUnderstanding = "media-understanding"
-    case memoryEmbedding = "memory-embedding"
+    /// Embeddings (upstream `embeddingProviders`, formerly `memoryEmbeddingProviders`).
+    case embedding
+    /// Web search.
     case webSearch = "web-search"
+    /// Web page fetching.
+    case webFetch = "web-fetch"
+    /// Document extraction (for example PDF text extraction).
+    case documentExtraction = "document-extractors"
+    /// Web content extraction (for example Readability).
+    case webContentExtraction = "web-content-extractors"
+    /// Transcript sources (meeting or voice-channel transcripts).
+    case transcriptSource = "transcript-source"
+    /// Usage and quota reporting.
+    case usage
+    /// Provider-specific agent tools.
     case tool
+
+    /// Deprecated spelling of ``embedding``.
+    @available(*, deprecated, renamed: "embedding")
+    public static var memoryEmbedding: ProviderCapability {
+        .embedding
+    }
+
+    /// Accepted legacy and upstream spellings, keyed by lowercased value.
+    public static let legacyAliases: [String: ProviderCapability] = [
+        "memory-embedding": .embedding,
+        "memory-embeddings": .embedding,
+        "text-inference": .text,
+        "tools": .tool,
+    ]
+
+    /// Resolves a raw capability identifier, accepting any casing and the legacy/upstream spellings.
+    /// - Parameter raw: Raw identifier.
+    public init?(normalizing raw: String) {
+        let key = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if let capability = ProviderCapability(rawValue: key) {
+            self = capability
+        } else if let capability = Self.legacyAliases[key] {
+            self = capability
+        } else {
+            return nil
+        }
+    }
+
+    /// Decodes a capability, accepting legacy and upstream spellings.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let raw = try container.decode(String.self)
+        guard let capability = ProviderCapability(normalizing: raw) else {
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unknown provider capability \(raw)")
+        }
+        self = capability
+    }
+
+    /// Decodes a capability list, dropping unknown values instead of failing.
+    /// - Parameter raw: Raw identifiers.
+    /// - Returns: Known capabilities in input order, without duplicates.
+    public static func lossyList(_ raw: [String]) -> [ProviderCapability] {
+        var seen: Set<ProviderCapability> = []
+        return raw.compactMap(ProviderCapability.init(normalizing:)).filter { seen.insert($0).inserted }
+    }
 }
 
-/// Canonical provider entry derived from the pinned OpenClaw TS reference snapshot.
+/// Lifecycle status of a provider catalog entry.
+public enum ProviderCatalogStatus: String, Codable, Sendable, Equatable, CaseIterable {
+    /// Supported provider.
+    case available
+    /// Kept for back-compat; see ``ProviderCatalogEntry/replacedBy``.
+    case deprecated
+}
+
+/// How upstream distributes the plugin that owns a provider.
+public enum ProviderDistribution: String, Codable, Sendable, Equatable, CaseIterable {
+    /// Bundled with OpenClaw.
+    case bundled
+    /// Official plugin published as a separate package (npm/ClawHub) since OpenClaw 2026.8.1.
+    case officialExternal = "official-external"
+}
+
+/// Canonical provider entry derived from the pinned OpenClaw reference snapshot.
 public struct ProviderCatalogEntry: Sendable, Equatable {
     /// Stable provider identifier.
     public var providerID: String
@@ -27,7 +116,38 @@ public struct ProviderCatalogEntry: Sendable, Equatable {
     /// Capability groups advertised for this provider entry.
     public var capabilities: [ProviderCapability]
     /// Default provider configuration used when synthesizing built-in providers.
+    ///
+    /// `config.models` lists every catalog row with the default model first.
     public var config: ModelProviderConfig
+    /// Owning upstream plugin id (`nil` for SDK-local entries).
+    public var pluginID: String?
+    /// Capability-provider ids registered for capabilities whose id differs from ``providerID``
+    /// (for example Google's `gemini` embedding id or xAI's `grok` web-search id).
+    public var capabilityProviderIDs: [ProviderCapability: [String]]
+    /// Environment variables that carry the provider credential, in lookup order.
+    public var authEnvVars: [String]
+    /// Environment variables used only for usage/billing APIs (for example `OPENAI_ADMIN_KEY`).
+    public var usageAuthEnvVars: [String]
+    /// Environment variables for plugin-owned auxiliary surfaces, keyed by setup id (for example `volcengine-tts`).
+    public var auxiliaryAuthEnvVars: [String: [String]]
+    /// Upstream auth method ids (`api-key`, `oauth`, `device-code`, `local`, `setup-token`, region variants, …).
+    public var authMethods: [String]
+    /// Upstream catalog discovery lifecycle.
+    public var discovery: ModelCatalogDiscovery?
+    /// Upstream documentation path (for example `/providers/openai`).
+    public var docsPath: String?
+    /// Provider lifecycle status.
+    public var status: ProviderCatalogStatus
+    /// Reason attached to a deprecated status.
+    public var statusReason: String?
+    /// Replacement provider id for deprecated entries.
+    public var replacedBy: String?
+    /// Upstream distribution of the owning plugin.
+    public var distribution: ProviderDistribution
+    /// Whether the entry is defined by OpenClawKit rather than an upstream plugin manifest.
+    public var sdkLocal: Bool
+    /// Full manifest catalog (every model row with context windows, thinking maps, compat and pricing).
+    public var catalog: ModelCatalogProvider
 
     /// Creates one canonical provider catalog entry.
     public init(
@@ -35,13 +155,72 @@ public struct ProviderCatalogEntry: Sendable, Equatable {
         displayName: String,
         aliases: [String] = [],
         capabilities: [ProviderCapability] = [.text],
-        config: ModelProviderConfig
+        config: ModelProviderConfig,
+        pluginID: String? = nil,
+        capabilityProviderIDs: [ProviderCapability: [String]] = [:],
+        authEnvVars: [String] = [],
+        usageAuthEnvVars: [String] = [],
+        auxiliaryAuthEnvVars: [String: [String]] = [:],
+        authMethods: [String] = [],
+        discovery: ModelCatalogDiscovery? = nil,
+        docsPath: String? = nil,
+        status: ProviderCatalogStatus = .available,
+        statusReason: String? = nil,
+        replacedBy: String? = nil,
+        distribution: ProviderDistribution = .bundled,
+        sdkLocal: Bool = false,
+        catalog: ModelCatalogProvider? = nil
     ) {
         self.providerID = providerID
         self.displayName = displayName
         self.aliases = aliases
         self.capabilities = capabilities.isEmpty ? [.text] : capabilities
         self.config = config
+        self.pluginID = pluginID
+        self.capabilityProviderIDs = capabilityProviderIDs
+        self.authEnvVars = authEnvVars
+        self.usageAuthEnvVars = usageAuthEnvVars
+        self.auxiliaryAuthEnvVars = auxiliaryAuthEnvVars
+        self.authMethods = authMethods
+        self.discovery = discovery
+        self.docsPath = docsPath
+        self.status = status
+        self.statusReason = statusReason
+        self.replacedBy = replacedBy
+        self.distribution = distribution
+        self.sdkLocal = sdkLocal
+        self.catalog = catalog ?? ModelCatalogProvider(
+            baseURL: config.baseURL,
+            api: config.api,
+            headers: config.headers.isEmpty ? nil : config.headers,
+            defaultModel: config.defaultModel?.id,
+            models: config.models.map { ModelCatalogModel(definition: $0) }
+        )
+    }
+
+    /// Provider-recommended primary model id.
+    public var defaultModelID: String? {
+        self.catalog.defaultModel ?? self.config.defaultModel?.id
+    }
+
+    /// Provider-recommended small model id for short internal utility tasks.
+    public var defaultUtilityModelID: String? {
+        self.catalog.defaultUtilityModel
+    }
+
+    /// Manifest model rows.
+    public var models: [ModelCatalogModel] {
+        self.catalog.models
+    }
+
+    /// Whether the provider only learns its models at runtime (no static rows).
+    public var requiresDiscovery: Bool {
+        self.catalog.models.isEmpty
+    }
+
+    /// Returns whether the entry advertises a capability.
+    public func supports(_ capability: ProviderCapability) -> Bool {
+        self.capabilities.contains(capability)
     }
 }
 
@@ -57,6 +236,18 @@ public struct ProviderPluginMetadataEntry: Sendable, Equatable {
     public var capabilities: [ProviderCapability]
     /// Whether OpenClawKit currently has a native runtime adapter for this provider.
     public var nativeRuntimeAvailable: Bool
+    /// Owning upstream plugin id (`nil` for SDK-local entries).
+    public var pluginID: String?
+    /// Additional capability-provider ids registered by the plugin (for example `edge` for `microsoft`).
+    public var aliases: [String]
+    /// Environment variables that carry the credential, in lookup order.
+    public var authEnvVars: [String]
+    /// Upstream auth method ids.
+    public var authMethods: [String]
+    /// Upstream distribution of the owning plugin.
+    public var distribution: ProviderDistribution
+    /// Whether the entry is defined by OpenClawKit rather than an upstream plugin manifest.
+    public var sdkLocal: Bool
 
     /// Creates one metadata entry for a provider-like upstream plugin.
     public init(
@@ -64,174 +255,62 @@ public struct ProviderPluginMetadataEntry: Sendable, Equatable {
         displayName: String,
         docsPath: String? = nil,
         capabilities: [ProviderCapability],
-        nativeRuntimeAvailable: Bool = false
+        nativeRuntimeAvailable: Bool = false,
+        pluginID: String? = nil,
+        aliases: [String] = [],
+        authEnvVars: [String] = [],
+        authMethods: [String] = [],
+        distribution: ProviderDistribution = .bundled,
+        sdkLocal: Bool = false
     ) {
         self.providerID = providerID
         self.displayName = displayName
         self.docsPath = docsPath
         self.capabilities = capabilities
         self.nativeRuntimeAvailable = nativeRuntimeAvailable
+        self.pluginID = pluginID
+        self.aliases = aliases
+        self.authEnvVars = authEnvVars
+        self.authMethods = authMethods
+        self.distribution = distribution
+        self.sdkLocal = sdkLocal
     }
 }
 
-/// Shared provider catalog aligned with the pinned OpenClaw TS reference.
+/// Shared provider catalog aligned with the pinned OpenClaw reference.
+///
+/// Entries are generated from upstream plugin manifests by `Scripts/provider-catalog-gen.mjs` (embedded in
+/// `ProviderCatalogData.swift`) and decoded lazily on first access.
 public enum OpenClawReferenceProviderCatalog {
     /// Upstream OpenClaw commit used to derive the built-in provider list.
-    public static let referenceCommit = "6b0c72bec8"
+    public static let referenceCommit = "eb377ac59e"
+    /// Upstream OpenClaw release train of ``referenceCommit``.
+    public static let referenceVersion = "2026.9.6"
+    /// Upstream commit time of ``referenceCommit`` in milliseconds since the Unix epoch.
+    public static let referenceGeneratedAt: Int64 = ProviderCatalogGeneratedData.generatedAt
 
     /// Canonical built-in provider entries exposed by the SDK.
-    public static let entries: [ProviderCatalogEntry] = [
-        entry("openai", "OpenAI", api: .openAIResponses, auth: .apiKey, baseURL: "https://api.openai.com/v1", modelID: "gpt-4.1-mini"),
-        entry("openai-compatible", "OpenAI Compatible", api: .openAICompletions, auth: .apiKey, baseURL: "https://api.openai.com/v1", modelID: "gpt-4.1-mini"),
-        entry("anthropic", "Anthropic", api: .anthropicMessages, auth: .apiKey, baseURL: "https://api.anthropic.com/v1", modelID: "claude-3-5-haiku-latest"),
-        entry("gemini", "Google Gemini", api: .googleGenerativeAI, auth: .apiKey, baseURL: "https://generativelanguage.googleapis.com/v1beta", modelID: "gemini-2.0-flash", inputs: [.text, .image]),
-        entry("foundation", "Apple Foundation Models", api: .openAICompletions, auth: nil, baseURL: "foundation://system", modelID: "apple-foundation-default"),
-        entry("local", "Local", api: .ollama, auth: nil, baseURL: "local://runtime", modelID: "local-default"),
-        entry("xai", "xAI", aliases: ["grok"], api: .openAICompletions, auth: .apiKey, baseURL: "https://api.x.ai/v1", modelID: "grok-3-mini"),
-        entry("openrouter", "OpenRouter", api: .openAICompletions, auth: .apiKey, baseURL: "https://openrouter.ai/api/v1", modelID: "auto", inputs: [.text, .image]),
-        entry("groq", "Groq", api: .openAICompletions, auth: .apiKey, baseURL: "https://api.groq.com/openai/v1", modelID: "llama-3.3-70b-versatile"),
-        entry("mistral", "Mistral", api: .openAICompletions, auth: .apiKey, baseURL: "https://api.mistral.ai/v1", modelID: "mistral-large-latest"),
-        entry("cerebras", "Cerebras", api: .openAICompletions, auth: .apiKey, baseURL: "https://api.cerebras.ai/v1", modelID: "zai-glm-4.7"),
-        entry("moonshot", "Moonshot", api: .openAICompletions, auth: .apiKey, baseURL: "https://api.moonshot.ai/v1", modelID: "kimi-k2.5"),
-        entry("litellm", "LiteLLM", api: .openAICompletions, auth: nil, baseURL: "http://127.0.0.1:4000/v1", modelID: "gpt-4.1-mini"),
-        entry("together", "Together AI", api: .openAICompletions, auth: .apiKey, baseURL: "https://api.together.xyz/v1", modelID: "meta-llama/Llama-3.3-70B-Instruct-Turbo"),
-        entry("huggingface", "Hugging Face", api: .openAICompletions, auth: .apiKey, baseURL: "https://router.huggingface.co/v1", modelID: "deepseek-ai/DeepSeek-R1"),
-        entry("qianfan", "Qianfan", api: .openAICompletions, auth: .apiKey, baseURL: "https://qianfan.baidubce.com/v2", modelID: "deepseek-v3.2"),
-        entry("nvidia", "NVIDIA", api: .openAICompletions, auth: .apiKey, baseURL: "https://integrate.api.nvidia.com/v1", modelID: "nvidia/llama-3.1-nemotron-70b-instruct"),
-        entry("zai", "Z.AI", aliases: ["z.ai", "z-ai"], api: .openAICompletions, auth: .apiKey, baseURL: "https://api.z.ai/api/paas/v4", modelID: "glm-4.7"),
-        entry("minimax", "MiniMax", api: .anthropicMessages, auth: .apiKey, baseURL: "https://api.minimax.io/anthropic", modelID: "MiniMax-M2.5"),
-        entry("minimax-portal", "MiniMax Portal", api: .anthropicMessages, auth: .oauth, baseURL: "https://api.minimax.io/anthropic", modelID: "MiniMax-M2.5"),
-        entry("synthetic", "Synthetic", api: .anthropicMessages, auth: .apiKey, baseURL: "https://api.synthetic.new/anthropic", modelID: "hf:MiniMaxAI/MiniMax-M2.1"),
-        entry("xiaomi", "Xiaomi", api: .anthropicMessages, auth: .apiKey, baseURL: "https://api.xiaomimimo.com/anthropic", modelID: "mimo-v2-flash"),
-        entry("cloudflare-ai-gateway", "Cloudflare AI Gateway", api: .anthropicMessages, auth: .apiKey, baseURL: "https://gateway.ai.cloudflare.com/v1", modelID: "claude-3-5-sonnet-latest"),
-        entry("vercel-ai-gateway", "Vercel AI Gateway", api: .anthropicMessages, auth: .apiKey, baseURL: "https://ai-gateway.vercel.sh/v1", modelID: "anthropic/claude-opus-4.6"),
-        entry("amazon-bedrock", "Amazon Bedrock", api: .bedrockConverseStream, auth: .awsSDK, baseURL: "https://bedrock-runtime.us-east-1.amazonaws.com", modelID: "anthropic.claude-3-5-sonnet"),
-        entry("github-copilot", "GitHub Copilot", api: .githubCopilot, auth: .token, baseURL: "https://api.githubcopilot.com", modelID: "gpt-5"),
-        entry("ollama", "Ollama", api: .ollama, auth: nil, baseURL: "http://127.0.0.1:11434/v1", modelID: "llama3.3"),
-        entry("vllm", "vLLM", api: .openAICompletions, auth: nil, baseURL: "http://127.0.0.1:8000/v1", modelID: "qwen2.5-coder-32b-instruct"),
-        entry("sglang", "SGLang", api: .openAICompletions, auth: .apiKey, baseURL: "http://127.0.0.1:30000/v1", modelID: "Qwen/Qwen3-8B"),
-        entry("qwen-portal", "Qwen Portal", api: .openAICompletions, auth: .oauth, baseURL: "https://portal.qwen.ai/v1", modelID: "coder-model"),
-        entry("openai-codex", "OpenAI Codex", api: .openAICodexResponses, auth: .oauth, baseURL: "https://chatgpt.com/backend-api", modelID: "gpt-5.5"),
-        entry("opencode", "OpenCode Zen", api: .openAICompletions, auth: .apiKey, baseURL: "https://api.opencode.ai/v1", modelID: "claude-opus-4-6"),
-        entry("opencode-go", "OpenCode Go", api: .openAICompletions, auth: .apiKey, baseURL: "https://api.opencode.ai/v1", modelID: "kimi-k2.5"),
-        entry(
-            "anthropic-vertex",
-            "Anthropic Vertex",
-            api: .anthropicMessages,
-            auth: .apiKey,
-            baseURL: "https://aiplatform.googleapis.com",
-            modelID: "claude-sonnet-4-6",
-            inputs: [.text, .image],
-            reasoning: true
-        ),
-        entry(
-            "amazon-bedrock-mantle",
-            "Amazon Bedrock Mantle",
-            api: .openAICompletions,
-            auth: .apiKey,
-            baseURL: "https://bedrock-mantle.us-east-1.api.aws/v1",
-            modelID: "openai.gpt-oss-120b",
-            reasoning: true
-        ),
-        entry("arcee", "Arcee AI", api: .openAICompletions, auth: .apiKey, baseURL: "https://api.arcee.ai/api/v1", modelID: "trinity-large-thinking", reasoning: true),
-        entry("chutes", "Chutes", api: .openAICompletions, auth: .apiKey, baseURL: "https://llm.chutes.ai/v1", modelID: "zai-org/GLM-4.7-TEE", reasoning: true),
-        entry("copilot-proxy", "Copilot Proxy", api: .openAICompletions, auth: nil, baseURL: "http://localhost:3000/v1", modelID: "gpt-5.2", inputs: [.text, .image]),
-        entry("deepseek", "DeepSeek", api: .openAICompletions, auth: .apiKey, baseURL: "https://api.deepseek.com", modelID: "deepseek-v4-flash", reasoning: true),
-        entry(
-            "fireworks",
-            "Fireworks",
-            api: .openAICompletions,
-            auth: .apiKey,
-            baseURL: "https://api.fireworks.ai/inference/v1",
-            modelID: "accounts/fireworks/routers/kimi-k2p5-turbo",
-            inputs: [.text, .image]
-        ),
-        entry("lmstudio", "LM Studio", capabilities: [.text, .memoryEmbedding], api: .openAICompletions, auth: nil, baseURL: "http://localhost:1234/v1", modelID: "qwen/qwen3.5-9b"),
-        entry("microsoft-foundry", "Microsoft Foundry", api: .openAIResponses, auth: .oauth, baseURL: "https://example.services.ai.azure.com/openai/v1", modelID: "gpt-5", inputs: [.text, .image]),
-        entry("qwen", "Qwen", api: .openAICompletions, auth: .apiKey, baseURL: "https://coding-intl.dashscope.aliyuncs.com/v1", modelID: "qwen3.5-plus", inputs: [.text, .image]),
-        entry("stepfun", "StepFun", api: .openAICompletions, auth: .apiKey, baseURL: "https://api.stepfun.ai/v1", modelID: "step-3.5-flash", reasoning: true),
-        entry("stepfun-plan", "StepFun Plan", api: .openAICompletions, auth: .apiKey, baseURL: "https://api.stepfun.ai/step_plan/v1", modelID: "step-3.5-flash", reasoning: true),
-        entry(
-            "tencent-tokenhub",
-            "Tencent TokenHub",
-            aliases: ["tencent"],
-            api: .openAICompletions,
-            auth: .apiKey,
-            baseURL: "https://tokenhub.tencentmaas.com/v1",
-            modelID: "hy3-preview",
-            reasoning: true
-        ),
-        entry(
-            "google-vertex",
-            "Google Vertex",
-            api: .googleGenerativeAI,
-            auth: .oauth,
-            baseURL: "https://us-central1-aiplatform.googleapis.com",
-            modelID: "gemini-3-pro-preview",
-            inputs: [.text, .image]
-        ),
-        entry(
-            "google-antigravity",
-            "Google Antigravity",
-            api: .googleGenerativeAI,
-            auth: .oauth,
-            baseURL: "https://generativelanguage.googleapis.com/v1beta",
-            modelID: "gemini-3-pro-preview",
-            inputs: [.text, .image]
-        ),
-        entry(
-            "google-gemini-cli",
-            "Google Gemini CLI",
-            api: .googleGenerativeAI,
-            auth: .oauth,
-            baseURL: "https://generativelanguage.googleapis.com/v1beta",
-            modelID: "gemini-3-flash-preview",
-            inputs: [.text, .image]
-        ),
-        entry("kilocode", "KiloCode", api: .openAICompletions, auth: .apiKey, baseURL: "https://api.kilo.ai/api/gateway/", modelID: "kilo/auto", inputs: [.text, .image], reasoning: true),
-        entry("kimi-coding", "Kimi Coding", api: .openAICompletions, auth: .apiKey, baseURL: "https://api.kimi.com/coding/", modelID: "k2p5"),
-        entry("venice", "Venice", api: .openAICompletions, auth: .apiKey, baseURL: "https://api.venice.ai/api/v1", modelID: "kimi-k2-5", inputs: [.text, .image], reasoning: true),
-        entry("modelstudio", "Model Studio", api: .openAICompletions, auth: .apiKey, baseURL: "https://coding-intl.dashscope.aliyuncs.com/v1", modelID: "qwen3.5-plus", inputs: [.text, .image]),
-        entry("volcengine", "Volcengine", api: .openAICompletions, auth: .apiKey, baseURL: "https://ark.cn-beijing.volces.com/api/v3", modelID: "doubao-seed-1-8-251228", inputs: [.text, .image]),
-        entry("volcengine-plan", "Volcengine Plan", api: .openAICompletions, auth: .apiKey, baseURL: "https://ark.cn-beijing.volces.com/api/coding/v3", modelID: "ark-code-latest"),
-        entry("byteplus", "BytePlus", api: .openAICompletions, auth: .apiKey, baseURL: "https://ark.ap-southeast.bytepluses.com/api/v3", modelID: "seed-1-8-251228", inputs: [.text, .image]),
-        entry("byteplus-plan", "BytePlus Plan", api: .openAICompletions, auth: .apiKey, baseURL: "https://ark.ap-southeast.bytepluses.com/api/coding/v3", modelID: "ark-code-latest"),
-    ]
+    public static var entries: [ProviderCatalogEntry] {
+        ProviderCatalogStore.shared.entries
+    }
 
     /// Upstream provider-plugin metadata that is config-visible but not a native Swift text provider.
-    public static let providerMetadataEntries: [ProviderPluginMetadataEntry] = [
-        metadata("alibaba", "Alibaba", docsPath: "/providers/alibaba", capabilities: [.videoGeneration]),
-        metadata("brave", "Brave Search", docsPath: "/providers/brave", capabilities: [.webSearch]),
-        metadata("comfy", "Comfy", docsPath: "/providers/comfy", capabilities: [.imageGeneration, .videoGeneration, .musicGeneration]),
-        metadata("deepgram", "Deepgram", docsPath: "/providers/deepgram", capabilities: [.mediaUnderstanding, .realtimeTranscription]),
-        metadata("duckduckgo", "DuckDuckGo", docsPath: "/providers/duckduckgo", capabilities: [.webSearch]),
-        metadata("elevenlabs", "ElevenLabs", docsPath: "/providers/elevenlabs", capabilities: [.speech, .realtimeTranscription]),
-        metadata("exa", "Exa", docsPath: "/providers/exa", capabilities: [.webSearch]),
-        metadata("fal", "fal.ai", docsPath: "/providers/fal", capabilities: [.imageGeneration, .videoGeneration]),
-        metadata("firecrawl", "Firecrawl", docsPath: "/providers/firecrawl", capabilities: [.webSearch]),
-        metadata("gradium", "Gradium", docsPath: "/providers/gradium", capabilities: [.speech]),
-        metadata("inworld", "Inworld", docsPath: "/providers/inworld", capabilities: [.speech]),
-        metadata("perplexity", "Perplexity", docsPath: "/providers/perplexity", capabilities: [.webSearch]),
-        metadata("runway", "Runway", docsPath: "/providers/runway", capabilities: [.videoGeneration]),
-        metadata("searxng", "SearXNG", docsPath: "/providers/searxng", capabilities: [.webSearch]),
-        metadata("senseaudio", "SenseAudio", docsPath: "/providers/senseaudio", capabilities: [.mediaUnderstanding]),
-        metadata("tavily", "Tavily", docsPath: "/providers/tavily", capabilities: [.webSearch]),
-        metadata("tts-local-cli", "TTS Local CLI", docsPath: "/providers/tts-local-cli", capabilities: [.speech]),
-        metadata("voyage", "Voyage", docsPath: "/providers/voyage", capabilities: [.memoryEmbedding]),
-        metadata("vydra", "Vydra", docsPath: "/providers/vydra", capabilities: [.imageGeneration, .videoGeneration, .speech]),
-    ]
+    public static var providerMetadataEntries: [ProviderPluginMetadataEntry] {
+        ProviderCatalogStore.shared.metadataEntries
+    }
 
     /// Normalizes a provider identifier or alias into the canonical built-in provider ID.
+    ///
+    /// Canonical ids win over aliases; unknown ids are returned trimmed and lowercased (upstream
+    /// `normalizeProviderId`).
     public static func normalize(providerID: String) -> String {
         let normalized = providerID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if entries.contains(where: { $0.providerID == normalized }) {
+        let store = ProviderCatalogStore.shared
+        if store.entriesByID[normalized] != nil {
             return normalized
         }
-        if let matched = entries.first(where: { $0.aliases.contains(normalized) }) {
-            return matched.providerID
-        }
-        if normalized.hasPrefix("google/") {
-            return "gemini"
+        if let alias = store.aliases[normalized] {
+            return alias.provider
         }
         return normalized
     }
@@ -239,7 +318,16 @@ public enum OpenClawReferenceProviderCatalog {
     /// Returns the built-in catalog entry for a provider identifier or alias.
     public static func entry(for providerID: String) -> ProviderCatalogEntry? {
         let normalized = normalize(providerID: providerID)
-        return entries.first(where: { $0.providerID == normalized })
+        guard let index = ProviderCatalogStore.shared.entriesByID[normalized] else { return nil }
+        return ProviderCatalogStore.shared.entries[index]
+    }
+
+    /// Returns the metadata entry for a capability-provider id or one of its aliases.
+    public static func metadataEntry(for providerID: String) -> ProviderPluginMetadataEntry? {
+        let normalized = providerID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return ProviderCatalogStore.shared.metadataEntries.first { entry in
+            entry.providerID == normalized || entry.aliases.contains(normalized)
+        }
     }
 
     /// Returns built-in provider configs keyed by their canonical identifier.
@@ -248,52 +336,34 @@ public enum OpenClawReferenceProviderCatalog {
             partial[entry.providerID] = entry.config
         }
     }
+}
 
-    private static func entry(
-        _ providerID: String,
-        _ displayName: String,
-        aliases: [String] = [],
-        capabilities: [ProviderCapability] = [.text],
-        api: ModelAPI,
-        auth: ModelProviderAuthMode?,
-        baseURL: String,
-        modelID: String,
-        inputs: [ModelInputType] = [.text],
-        reasoning: Bool = false
-    ) -> ProviderCatalogEntry {
-        ProviderCatalogEntry(
-            providerID: providerID,
-            displayName: displayName,
-            aliases: aliases,
-            capabilities: capabilities,
-            config: ModelProviderConfig(
-                enabled: false,
-                baseURL: baseURL,
-                auth: auth,
-                api: api,
-                models: [
-                    ModelDefinitionConfig(
-                        id: modelID,
-                        api: api,
-                        reasoning: reasoning,
-                        input: inputs
-                    ),
-                ]
-            )
-        )
-    }
-
-    private static func metadata(
-        _ providerID: String,
-        _ displayName: String,
-        docsPath: String? = nil,
-        capabilities: [ProviderCapability]
-    ) -> ProviderPluginMetadataEntry {
-        ProviderPluginMetadataEntry(
-            providerID: providerID,
-            displayName: displayName,
-            docsPath: docsPath,
-            capabilities: capabilities
+extension ModelCatalogModel {
+    /// Creates a catalog row from a runtime model definition.
+    /// - Parameter definition: Runtime model definition.
+    public init(definition: ModelDefinitionConfig) {
+        self.init(
+            id: definition.id,
+            name: definition.name,
+            api: definition.api,
+            baseURL: definition.baseURL,
+            headers: definition.headers.isEmpty ? nil : definition.headers,
+            input: definition.input,
+            reasoning: definition.reasoning,
+            contextWindow: definition.contextWindow > 0 ? definition.contextWindow : nil,
+            contextTokens: definition.contextTokens,
+            maxTokens: definition.maxTokens > 0 ? definition.maxTokens : nil,
+            thinkingLevelMap: definition.thinkingLevelMap.flatMap { ModelCatalogJSONBridge.convert($0, to: ModelCatalogThinkingLevelMap.self) },
+            cost: ModelCatalogJSONBridge.convert(definition.cost, to: ModelCatalogCost.self)
+                ?? ModelCatalogCost(
+                    input: definition.cost.input,
+                    output: definition.cost.output,
+                    cacheRead: definition.cost.cacheRead,
+                    cacheWrite: definition.cost.cacheWrite
+                ),
+            compat: definition.compat.flatMap { ModelCatalogJSONBridge.convert($0, to: ModelCatalogCompatConfig.self) },
+            mediaInput: definition.mediaInput.flatMap { ModelCatalogJSONBridge.convert($0, to: ModelCatalogMediaInputConfig.self) },
+            params: definition.params
         )
     }
 }
@@ -301,119 +371,13 @@ public enum OpenClawReferenceProviderCatalog {
 /// Factory for constructing runtime providers from canonical provider catalog configs.
 public enum ModelProviderFactory {
     /// Instantiates a model provider implementation for the given provider ID and config.
+    ///
+    /// The runtime factory (per-model routing, legacy `openai-codex` migration, unknown-api refusal)
+    /// lives in `ModelProviderFactoryRouting.swift`.
     public static func makeProvider(
         providerID: String,
         config: ModelProviderConfig
     ) throws -> any ModelProvider {
-        let normalizedProviderID = OpenClawReferenceProviderCatalog.normalize(providerID: providerID)
-        let legacy = config.legacyServiceConfig(providerID: normalizedProviderID)
-        switch normalizedProviderID {
-        case OpenAIModelProvider.providerID:
-            return OpenAIModelProvider(
-                configuration: OpenAIModelConfig(
-                    enabled: config.enabled,
-                    modelID: config.defaultModel?.id ?? "gpt-4.1-mini",
-                    apiKey: config.apiKey,
-                    baseURL: config.baseURL
-                )
-            )
-        case OpenAICompatibleModelProvider.providerID:
-            return OpenAICompatibleModelProvider(
-                configuration: OpenAICompatibleModelConfig(
-                    enabled: config.enabled,
-                    modelID: config.defaultModel?.id ?? "gpt-4.1-mini",
-                    apiKey: config.apiKey,
-                    baseURL: config.baseURL,
-                    chatCompletionsPath: config.chatCompletionsPath
-                )
-            )
-        case AnthropicModelProvider.providerID:
-            return AnthropicModelProvider(
-                configuration: AnthropicModelConfig(
-                    enabled: config.enabled,
-                    modelID: config.defaultModel?.id ?? "claude-3-5-haiku-latest",
-                    apiKey: config.apiKey,
-                    baseURL: config.baseURL,
-                    apiVersion: config.apiVersion ?? "2023-06-01",
-                    maxTokens: config.defaultModel?.maxTokens ?? 8_192
-                )
-            )
-        case GeminiModelProvider.providerID, "google-vertex", "google-antigravity", "google-gemini-cli":
-            return GoogleGenerativeAIModelProvider(id: normalizedProviderID, configuration: legacy)
-        case FoundationModelsProvider.providerID:
-            return FoundationModelsProvider()
-        case LocalModelProvider.providerID:
-            return LocalModelProvider(
-                configuration: LocalModelConfig(
-                    enabled: config.enabled,
-                    runtime: "llmfarm",
-                    modelPath: nil
-                ),
-                engine: StubLocalModelEngine()
-            )
-        case XAIModelProvider.providerID, XAIModelProvider.grokAliasProviderID:
-            return XAIModelProvider(id: normalizedProviderID, configuration: legacy)
-        case MinimaxModelProvider.providerID:
-            return MinimaxModelProvider(configuration: legacy)
-        case MinimaxPortalModelProvider.providerID:
-            return MinimaxPortalModelProvider(configuration: legacy)
-        case SyntheticModelProvider.providerID:
-            return SyntheticModelProvider(configuration: legacy)
-        case XiaomiModelProvider.providerID:
-            return XiaomiModelProvider(configuration: legacy)
-        case CloudflareAIGatewayModelProvider.providerID:
-            return CloudflareAIGatewayModelProvider(configuration: legacy)
-        case VercelAIGatewayModelProvider.providerID:
-            return VercelAIGatewayModelProvider(configuration: legacy)
-        case BedrockConverseModelProvider.providerID:
-            return BedrockConverseModelProvider(configuration: legacy)
-        case GitHubCopilotModelProvider.providerID:
-            return GitHubCopilotModelProvider(configuration: legacy)
-        case OllamaModelProvider.providerID:
-            return OllamaModelProvider(configuration: legacy)
-        case VLLMModelProvider.providerID:
-            return VLLMModelProvider(configuration: legacy)
-        case QwenPortalModelProvider.providerID:
-            return QwenPortalModelProvider(configuration: legacy)
-        case OpenRouterModelProvider.providerID:
-            return OpenRouterModelProvider(configuration: legacy)
-        case GroqModelProvider.providerID:
-            return GroqModelProvider(configuration: legacy)
-        case MistralModelProvider.providerID:
-            return MistralModelProvider(configuration: legacy)
-        case CerebrasModelProvider.providerID:
-            return CerebrasModelProvider(configuration: legacy)
-        case MoonshotModelProvider.providerID:
-            return MoonshotModelProvider(configuration: legacy)
-        case LiteLLMModelProvider.providerID:
-            return LiteLLMModelProvider(configuration: legacy)
-        case TogetherModelProvider.providerID:
-            return TogetherModelProvider(configuration: legacy)
-        case HuggingFaceModelProvider.providerID:
-            return HuggingFaceModelProvider(configuration: legacy)
-        case QianfanModelProvider.providerID:
-            return QianfanModelProvider(configuration: legacy)
-        case NVIDIAModelProvider.providerID:
-            return NVIDIAModelProvider(configuration: legacy)
-        case ZAIModelProvider.providerID:
-            return ZAIModelProvider(configuration: legacy)
-        default:
-            switch config.api ?? .openAICompletions {
-            case .anthropicMessages:
-                return ProviderServiceAnthropicModelProvider(id: normalizedProviderID, configuration: legacy)
-            case .bedrockConverseStream:
-                return BedrockConverseModelProvider(id: normalizedProviderID, configuration: legacy)
-            case .githubCopilot:
-                return GitHubCopilotModelProvider(id: normalizedProviderID, configuration: legacy)
-            case .googleGenerativeAI:
-                return GoogleGenerativeAIModelProvider(id: normalizedProviderID, configuration: legacy)
-            case .openAIResponses, .openAICodexResponses:
-                return OpenAIResponsesModelProvider(id: normalizedProviderID, configuration: legacy)
-            case .ollama:
-                return OllamaModelProvider(id: normalizedProviderID, configuration: legacy)
-            case .openAICompletions:
-                return ProviderServiceOpenAIModelProvider(id: normalizedProviderID, configuration: legacy)
-            }
-        }
+        try self.makeRuntimeProvider(providerID: providerID, config: config)
     }
 }

@@ -88,6 +88,30 @@ public struct AutomationRule: Codable, Sendable, Equatable, Identifiable {
     }
 
     /// Returns a copy with a new execution timestamp.
+    /// The equivalent scheduler job: interval rules become `every` agent turns in the rule's session.
+    ///
+    /// Diagnostics-event rules have no schedule equivalent (an OpenClawKit extension) and return `nil`;
+    /// they keep running through the event-driven automation runner.
+    public var automationJob: AutomationJob? {
+        guard self.trigger.type == .interval, let seconds = self.trigger.intervalSeconds, seconds > 0 else {
+            return nil
+        }
+        let anchor = self.lastExecutedAt.map(AutomationClock.ms)
+        let (intervalMs, overflow) = Int64(seconds).multipliedReportingOverflow(by: 1_000)
+        let everyMs = overflow ? AutomationClock.maxTimestampMs : min(intervalMs, AutomationClock.maxTimestampMs)
+        return AutomationJob(
+            id: self.id,
+            name: self.name,
+            enabled: self.enabled,
+            sessionKey: self.sessionKey,
+            schedule: .every(everyMs: everyMs, anchorMs: anchor),
+            payload: .agentTurn(CronAgentTurnPayload(message: self.prompt, model: self.modelProviderID)),
+            sessionTarget: .session(self.sessionKey),
+            state: CronJobState(lastRunAtMs: anchor)
+        )
+    }
+
+    /// Returns a copy with a new execution timestamp.
     /// - Parameter date: Execution timestamp.
     /// - Returns: Updated rule.
     public func withLastExecuted(at date: Date) -> AutomationRule {
@@ -219,6 +243,13 @@ public actor AutomationRuleStore {
             }
             self.rulesByID[id] = rule.withLastExecuted(at: date)
         }
+    }
+
+    /// Scheduler jobs for every interval rule (see ``AutomationRule/automationJob``).
+    /// - Returns: Jobs sorted like ``allRules()``.
+    public func automationJobs() async -> [AutomationJob] {
+        await self.ensureLoadedIfNeeded()
+        return self.allRules().compactMap(\.automationJob)
     }
 
     private func ensureLoadedIfNeeded() async {

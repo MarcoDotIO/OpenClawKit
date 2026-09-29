@@ -1,0 +1,9 @@
+{
+  models: {
+    // Optional. Hosted catalog updates default on.
+    catalogRefresh: {
+      enabled: true,
+      // url: "https://catalog.example.com/openclaw/catalog.json",
+    },
+  },
+}

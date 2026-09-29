@@ -40,6 +40,61 @@ public struct SecurityAuditFinding: Codable, Sendable, Equatable {
     }
 }
 
+/// An accepted audit finding (upstream `security.audit.suppressions[]`).
+///
+/// A finding matches when its id equals ``checkID`` exactly and every present substring condition
+/// matches case-insensitively (``titleIncludes`` against the summary, ``detailIncludes`` against the detail).
+public struct SecurityAuditSuppression: Codable, Sendable, Equatable {
+    /// Finding id to suppress (exact match).
+    public var checkID: String
+    /// Case-insensitive substring the finding summary must contain.
+    public var titleIncludes: String?
+    /// Case-insensitive substring the finding detail must contain.
+    public var detailIncludes: String?
+    /// Why the finding is accepted.
+    public var reason: String?
+
+    /// Creates a suppression.
+    /// - Parameters:
+    ///   - checkID: Finding id.
+    ///   - titleIncludes: Summary substring condition.
+    ///   - detailIncludes: Detail substring condition.
+    ///   - reason: Acceptance reason.
+    public init(checkID: String, titleIncludes: String? = nil, detailIncludes: String? = nil, reason: String? = nil) {
+        self.checkID = checkID
+        self.titleIncludes = titleIncludes
+        self.detailIncludes = detailIncludes
+        self.reason = reason
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case checkID = "checkId"
+        case titleIncludes
+        case detailIncludes
+        case reason
+    }
+
+    /// Whether this suppression accepts `finding`.
+    /// - Parameter finding: Audit finding.
+    /// - Returns: `true` when every present condition matches.
+    public func matches(_ finding: SecurityAuditFinding) -> Bool {
+        guard finding.id == self.checkID else {
+            return false
+        }
+        if let title = self.titleIncludes?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty,
+           finding.summary.range(of: title, options: .caseInsensitive) == nil
+        {
+            return false
+        }
+        if let detail = self.detailIncludes?.trimmingCharacters(in: .whitespacesAndNewlines), !detail.isEmpty,
+           finding.detail.range(of: detail, options: .caseInsensitive) == nil
+        {
+            return false
+        }
+        return true
+    }
+}
+
 /// Security audit output report.
 public struct SecurityAuditReport: Codable, Sendable, Equatable {
     /// Report generation timestamp.
@@ -48,16 +103,37 @@ public struct SecurityAuditReport: Codable, Sendable, Equatable {
     public let findings: [SecurityAuditFinding]
     /// Optional replay-ledger integrity verification details.
     public let replayLedgerIntegrity: ReplayLedgerVerificationResult?
+    /// Findings accepted by ``SecurityAuditOptions/suppressions`` (omitted from ``findings`` and the summary).
+    public let suppressedFindings: [SecurityAuditFinding]
 
     /// Creates a security audit report.
     public init(
         generatedAt: Date = Date(),
         findings: [SecurityAuditFinding],
-        replayLedgerIntegrity: ReplayLedgerVerificationResult? = nil
+        replayLedgerIntegrity: ReplayLedgerVerificationResult? = nil,
+        suppressedFindings: [SecurityAuditFinding] = []
     ) {
         self.generatedAt = generatedAt
         self.findings = findings
         self.replayLedgerIntegrity = replayLedgerIntegrity
+        self.suppressedFindings = suppressedFindings
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case generatedAt
+        case findings
+        case replayLedgerIntegrity
+        case suppressedFindings
+    }
+
+    /// Decodes a report; `suppressedFindings` defaults to empty for reports written before 2026.3.0.
+    /// - Parameter decoder: Source decoder.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.generatedAt = try container.decode(Date.self, forKey: .generatedAt)
+        self.findings = try container.decode([SecurityAuditFinding].self, forKey: .findings)
+        self.replayLedgerIntegrity = try container.decodeIfPresent(ReplayLedgerVerificationResult.self, forKey: .replayLedgerIntegrity)
+        self.suppressedFindings = try container.decodeIfPresent([SecurityAuditFinding].self, forKey: .suppressedFindings) ?? []
     }
 
     /// Returns number of findings for a specific severity.
@@ -96,6 +172,11 @@ public struct SecurityAuditOptions: Sendable, Equatable {
     public let replayLedgerEnvelopes: [ReplayEventEnvelope]
     /// Requires detached signature verification for all replay-ledger events.
     public let requireReplayLedgerSignatureVerification: Bool
+    /// Upstream `openclaw.json` document scanned for plaintext secrets on upstream-only paths.
+    public let document: OpenClawConfigDocument?
+    /// Accepted findings; matches move to ``SecurityAuditReport/suppressedFindings``. When empty, the
+    /// document's `security.audit.suppressions` are used.
+    public let suppressions: [SecurityAuditSuppression]
 
     /// Creates security audit options.
     public init(
@@ -104,7 +185,9 @@ public struct SecurityAuditOptions: Sendable, Equatable {
         statePaths: [URL] = [],
         plaintextSecretFiles: [URL] = [],
         replayLedgerEnvelopes: [ReplayEventEnvelope] = [],
-        requireReplayLedgerSignatureVerification: Bool = false
+        requireReplayLedgerSignatureVerification: Bool = false,
+        document: OpenClawConfigDocument? = nil,
+        suppressions: [SecurityAuditSuppression] = []
     ) {
         self.config = config
         self.configFileURL = configFileURL
@@ -112,6 +195,16 @@ public struct SecurityAuditOptions: Sendable, Equatable {
         self.plaintextSecretFiles = plaintextSecretFiles
         self.replayLedgerEnvelopes = replayLedgerEnvelopes
         self.requireReplayLedgerSignatureVerification = requireReplayLedgerSignatureVerification
+        self.document = document
+        self.suppressions = suppressions
+    }
+
+    /// Suppressions in effect: explicit ones, else the document's `security.audit.suppressions`.
+    public var effectiveSuppressions: [SecurityAuditSuppression] {
+        if !self.suppressions.isEmpty {
+            return self.suppressions
+        }
+        return self.document?.security?.auditSuppressions ?? []
     }
 }
 
@@ -132,6 +225,17 @@ public enum SecurityAuditRunner {
         if let config = options.config {
             findings.append(contentsOf: self.checkConfigSecrets(config))
             findings.append(contentsOf: self.checkRiskyDefaults(config))
+            findings.append(contentsOf: self.checkGatewaySharedSecret(config.gateway.auth))
+            // Channel-owned findings: plaintext channel secrets (upstream path spelling, plugin
+            // sections and `accounts.*`), BlueBubbles removal and Teams sovereign clouds.
+            findings.append(contentsOf: config.channels.securityAuditFindings())
+        }
+        if let document = options.document {
+            findings.append(contentsOf: self.checkDocumentSecrets(document))
+            if options.config == nil, let channels = document.channels {
+                // Without an SDK-native config, audit the document's channel blocks directly.
+                findings.append(contentsOf: channels.channelsConfig.securityAuditFindings())
+            }
         }
 
         var permissionPaths = options.statePaths
@@ -164,12 +268,115 @@ public enum SecurityAuditRunner {
             }
             return lhsRank > rhsRank
         }
+        let suppressions = options.effectiveSuppressions
+        let suppressed = ordered.filter { finding in suppressions.contains { $0.matches(finding) } }
+        let active = ordered.filter { finding in !suppressions.contains { $0.matches(finding) } }
         return SecurityAuditReport(
-            findings: ordered,
-            replayLedgerIntegrity: replayLedgerIntegrity
+            findings: active,
+            replayLedgerIntegrity: replayLedgerIntegrity,
+            suppressedFindings: suppressed
         )
     }
 
+    /// Plaintext secrets on upstream-only document paths (Control UI GitHub token, remote edge auth,
+    /// provider request auth and headers, skill/Talk/TTS/memory API keys, cron webhook token, hooks token).
+    private static func checkDocumentSecrets(_ document: OpenClawConfigDocument) -> [SecurityAuditFinding] {
+        var exposed: [String] = []
+        func check(_ path: String, _ value: ConfigSecretValue?) {
+            guard let plaintext = value?.plaintext?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !plaintext.isEmpty, value?.isRedacted != true
+            else { return }
+            exposed.append(path)
+        }
+        let gateway = document.gateway
+        check("gateway.auth.token", gateway?.auth?.token)
+        check("gateway.auth.password", gateway?.auth?.password)
+        check("gateway.controlUi.github.token", gateway?.controlUi?.github?.token)
+        check("gateway.remote.token", gateway?.remote?.token)
+        check("gateway.remote.password", gateway?.remote?.password)
+        for (header, value) in gateway?.remote?.edgeAuth ?? [:] {
+            check("gateway.remote.edgeAuth.\(header)", value)
+        }
+        for (providerID, provider) in document.models?.providers ?? [:] {
+            if !ModelAuthMarkers.isNonSecretMarker(provider.apiKey?.plaintext) {
+                check("models.providers.\(providerID).apiKey", provider.apiKey)
+            }
+            for (header, value) in provider.headers ?? [:] {
+                check("models.providers.\(providerID).headers.\(header)", value)
+            }
+            if let auth = provider.request?.dictionaryValue?["auth"]?.dictionaryValue {
+                for key in ["token", "value"] {
+                    if let raw = auth[key], let string = raw.stringValue {
+                        check("models.providers.\(providerID).request.auth.\(key)", ConfigSecretValue(string: string))
+                    }
+                }
+            }
+        }
+        for (skillID, entry) in document.skills?.entries ?? [:] {
+            check("skills.entries.\(skillID).apiKey", entry.apiKey)
+        }
+        for (providerID, entry) in document.talk?.providers ?? [:] {
+            check("talk.providers.\(providerID).apiKey", entry.apiKey)
+        }
+        for (providerID, entry) in document.tts?.providers ?? [:] {
+            check("tts.providers.\(providerID).apiKey", entry.apiKey)
+        }
+        check("memory.search.remote.apiKey", document.memory?.search?.remote?.apiKey)
+        check("cron.webhookToken", document.cron?.webhookToken)
+        if let token = document.hooks?.token {
+            check("hooks.token", ConfigSecretValue(string: token))
+        }
+        guard !exposed.isEmpty else {
+            return []
+        }
+        return [
+            SecurityAuditFinding(
+                id: "secrets.document.plaintext",
+                severity: .warning,
+                summary: "openclaw.json includes plaintext secrets",
+                detail: "Found non-empty plaintext secret values at: \(exposed.sorted().joined(separator: ", "))",
+                recommendation: "Replace plaintext values with SecretRefs ({source, provider, id}) or ${ENV_VAR} references."
+            ),
+        ]
+    }
+
+    /// Placeholder and weak-secret checks for the gateway shared secret.
+    private static func checkGatewaySharedSecret(_ auth: GatewayAuthConfig) -> [SecurityAuditFinding] {
+        guard auth.mode == .token || auth.mode == .password, let secret = auth.sharedSecret?.stringValue else {
+            return []
+        }
+        switch GatewaySharedSecretPolicy.evaluate(secret) {
+        case .placeholder:
+            return [
+                SecurityAuditFinding(
+                    id: "gateway.auth.secret-placeholder",
+                    severity: .error,
+                    summary: "Gateway shared secret is a placeholder",
+                    detail: "gateway.auth uses a blank or well-known placeholder secret.",
+                    recommendation: "Generate a random secret (for example `openssl rand -hex 32`) or use a SecretRef."
+                ),
+            ]
+        case .weak:
+            return [
+                SecurityAuditFinding(
+                    id: "gateway.auth.secret-weak",
+                    severity: .warning,
+                    summary: "Gateway shared secret is short",
+                    detail: "gateway.auth secret is shorter than \(GatewaySharedSecretPolicy.minimumRecommendedLength) characters.",
+                    recommendation: "Use a random secret of at least \(GatewaySharedSecretPolicy.minimumRecommendedLength) characters."
+                ),
+            ]
+        case .acceptable:
+            return []
+        }
+    }
+
+    /// Plaintext secrets in SDK-native config keys.
+    ///
+    /// Typed channel sections are reported by ``ChannelsConfig/securityAuditFindings()`` under
+    /// `channels.secrets.plaintext` (upstream path spelling), so only the SDK-only legacy
+    /// `channels.pluginChannels.*.secrets` wrapper is listed here. Non-secret provider markers
+    /// (``ModelAuthMarkers``, for example `apple-fm-local`) are never reported.
     private static func checkConfigSecrets(_ config: OpenClawConfig) -> [SecurityAuditFinding] {
         var exposedKeys: [String] = []
 
@@ -178,26 +385,15 @@ public enum SecurityAuditRunner {
             ("gateway.auth.password", config.gateway.auth.password?.stringValue),
             ("gateway.remote.token", config.gateway.remote?.token?.stringValue),
             ("gateway.remote.password", config.gateway.remote?.password?.stringValue),
-            ("channels.discord.botToken", config.channels.discord.botToken),
-            ("channels.telegram.botToken", config.channels.telegram.botToken),
-            ("channels.whatsappCloud.accessToken", config.channels.whatsappCloud.accessToken),
-            ("channels.whatsappCloud.webhookVerifyToken", config.channels.whatsappCloud.webhookVerifyToken),
-            ("channels.slack.botToken", config.channels.slack.botToken),
-            ("channels.slack.appToken", config.channels.slack.appToken),
-            ("channels.slack.signingSecret", config.channels.slack.signingSecret),
-            ("channels.googleChat.bearerToken", config.channels.googleChat.bearerToken),
-            ("channels.googleChat.verificationToken", config.channels.googleChat.verificationToken),
-            ("channels.signal.authToken", config.channels.signal.authToken),
-            ("channels.bluebubbles.password", config.channels.bluebubbles.password),
-            ("channels.msteams.botAppPassword", config.channels.msteams.botAppPassword),
-            ("channels.webchat.sharedSecret", config.channels.webchat.sharedSecret),
             ("models.openAI.apiKey", config.models.openAI.apiKey),
             ("models.openAICompatible.apiKey", config.models.openAICompatible.apiKey),
             ("models.anthropic.apiKey", config.models.anthropic.apiKey),
             ("models.gemini.apiKey", config.models.gemini.apiKey),
         ]
         for (key, value) in secrets {
-            if let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty {
+            if let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty,
+               !(key.hasPrefix("models.") && ModelAuthMarkers.isNonSecretMarker(trimmed))
+            {
                 exposedKeys.append(key)
             }
         }
@@ -206,15 +402,10 @@ public enum SecurityAuditRunner {
             guard !normalizedID.isEmpty else {
                 continue
             }
-            if let secret = provider.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines), !secret.isEmpty {
-                let secretField: String
-                switch provider.auth {
-                case .oauth, .token:
-                    secretField = "apiKey"
-                case .apiKey, .awsSDK, nil:
-                    secretField = "apiKey"
-                }
-                exposedKeys.append("models.providers.\(normalizedID).\(secretField)")
+            if let secret = provider.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines), !secret.isEmpty,
+               !ModelAuthMarkers.isNonSecretMarker(secret)
+            {
+                exposedKeys.append("models.providers.\(normalizedID).apiKey")
             }
         }
         for (channelID, channelConfig) in config.channels.pluginChannels {

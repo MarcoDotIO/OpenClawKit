@@ -538,6 +538,13 @@ public actor MediaPipeline {
             return "audio/wav"
         }
         if bytes.starts(with: [0x50, 0x4B, 0x03, 0x04]) { return "application/zip" }
+        if bytes.count >= 12, bytes.starts(with: Array("FORM".utf8)), Array(bytes[8...11]) == Array("AIFF".utf8) {
+            return "audio/aiff"
+        }
+        if bytes.count >= 12, Array(bytes[4...7]) == Array("ftyp".utf8) {
+            // ISO base media: MP4/QuickTime audio and video, but also HEIF/HEIC/AVIF still images.
+            return Self.isoBaseMediaMime(data)
+        }
         if let text = String(data: data.prefix(512), encoding: .utf8) {
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.hasPrefix("{") || trimmed.hasPrefix("[") {
@@ -547,6 +554,58 @@ public actor MediaPipeline {
                 return "text/plain"
             }
         }
+        return "application/octet-stream"
+    }
+
+    /// ISO base media (`ftyp`) brands that identify still images; HEIF sequences stay images too.
+    private static let heicBrands: Set<String> = ["heic", "heix", "heim", "heis", "hevc", "hevx", "hevm", "hevs"]
+    private static let avifBrands: Set<String> = ["avif", "avis"]
+    private static let heifBrands: Set<String> = ["mif1", "msf1", "mif2", "miaf"]
+    /// Brands of MP4/3GP video containers; any other unknown brand sniffs as octet-stream so the
+    /// declared MIME type or the file extension wins.
+    private static let mp4VideoBrands: Set<String> = [
+        "isom", "iso2", "iso3", "iso4", "iso5", "iso6", "iso7", "iso8", "iso9", "mp41", "mp42", "mp71",
+        "avc1", "dash", "3gp4", "3gp5", "3gp6", "3gp7", "3gp8", "3gp9", "3g2a", "3g2b", "3g2c", "MSNV",
+        "f4v ", "XAVC", "mmp4", "NDAS", "NDSC", "NDSH", "NDSM", "NDSP", "NDSS", "NDXC", "NDXH", "NDXM",
+        "NDXP", "NDXS",
+    ]
+
+    /// MIME type of an ISO base media file from its major brand and, for generic brands, its compatible
+    /// brands (`ftyp` box: size, `ftyp`, major brand, minor version, compatible brands...).
+    private static func isoBaseMediaMime(_ data: Data) -> String {
+        let bytes = [UInt8](data.prefix(64))
+        // UInt32 math: the box size is a 32-bit field and `Int` is 32 bits on watchOS arm64_32.
+        let declaredSize = bytes.prefix(4).reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+        let boxEnd = declaredSize >= 16 && declaredSize < UInt32(bytes.count) ? Int(declaredSize) : bytes.count
+        let major = String(decoding: bytes[8..<12], as: UTF8.self)
+        var compatible: [String] = []
+        var offset = 16
+        while offset + 4 <= boxEnd {
+            compatible.append(String(decoding: bytes[offset..<(offset + 4)], as: UTF8.self))
+            offset += 4
+        }
+        func imageMime(_ brands: [String]) -> String? {
+            if brands.contains(where: Self.avifBrands.contains) { return "image/avif" }
+            if brands.contains(where: Self.heicBrands.contains) { return "image/heic" }
+            if brands.contains(where: Self.heifBrands.contains) { return "image/heif" }
+            return nil
+        }
+        switch major {
+        case "M4A ", "M4B ", "M4P ": return "audio/mp4"
+        case "qt  ": return "video/quicktime"
+        case "M4V ", "M4VH", "M4VP": return "video/x-m4v"
+        default: break
+        }
+        if Self.avifBrands.contains(major) { return "image/avif" }
+        if Self.heicBrands.contains(major) { return "image/heic" }
+        if Self.heifBrands.contains(major) {
+            // Generic HEIF brands name the codec among the compatible brands (mif1 + heic/avif).
+            return imageMime(compatible) ?? "image/heif"
+        }
+        if Self.mp4VideoBrands.contains(major) { return "video/mp4" }
+        if let image = imageMime(compatible) { return image }
+        if compatible.contains(where: { ["M4A ", "M4B ", "M4P "].contains($0) }) { return "audio/mp4" }
+        if compatible.contains(where: Self.mp4VideoBrands.contains) { return "video/mp4" }
         return "application/octet-stream"
     }
 
@@ -562,6 +621,12 @@ public actor MediaPipeline {
             return "image/jpeg"
         case "gif":
             return "image/gif"
+        case "heic":
+            return "image/heic"
+        case "heif":
+            return "image/heif"
+        case "avif":
+            return "image/avif"
         case "pdf":
             return "application/pdf"
         case "json":
@@ -578,6 +643,16 @@ public actor MediaPipeline {
             return "video/mp4"
         case "mov":
             return "video/quicktime"
+        case "m4v":
+            return "video/x-m4v"
+        case "m4a":
+            return "audio/mp4"
+        case "aif", "aiff":
+            return "audio/aiff"
+        case "caf":
+            return "audio/x-caf"
+        case "flac":
+            return "audio/flac"
         default:
             return nil
         }
@@ -591,6 +666,12 @@ public actor MediaPipeline {
             return "jpg"
         case "image/gif":
             return "gif"
+        case "image/heic":
+            return "heic"
+        case "image/heif":
+            return "heif"
+        case "image/avif":
+            return "avif"
         case "application/pdf":
             return "pdf"
         case "application/json":
@@ -607,6 +688,16 @@ public actor MediaPipeline {
             return "mp4"
         case "video/quicktime":
             return "mov"
+        case "video/x-m4v":
+            return "m4v"
+        case "audio/mp4", "audio/x-m4a":
+            return "m4a"
+        case "audio/aiff", "audio/x-aiff":
+            return "aiff"
+        case "audio/x-caf":
+            return "caf"
+        case "audio/flac":
+            return "flac"
         default:
             return nil
         }

@@ -115,6 +115,16 @@ struct ChannelAdaptersE2ETests {
         #expect(sent.first?.text == "pong")
     }
 
+    /// Polls a condition instead of sleeping a fixed interval (fixed sleeps flaked under load).
+    static func waitFor(timeoutSeconds: Double = 15, _ condition: @escaping @Sendable () async -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while Date() < deadline {
+            if await condition() { return }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        #expect(await condition(), "timed out waiting for condition")
+    }
+
     @Test
     func telegramAdapterResumesFromPersistedOffsetAcrossRestart() async throws {
         let firstUpdates = Data("""
@@ -140,7 +150,7 @@ struct ChannelAdaptersE2ETests {
             await collector1.append(inbound)
         }
         try await adapter1.start()
-        try await Task.sleep(nanoseconds: 250_000_000)
+        try await Self.waitFor { await !collector1.snapshot().isEmpty }
         await adapter1.stop()
 
         let collector2 = TelegramInboundCollector()
@@ -154,7 +164,7 @@ struct ChannelAdaptersE2ETests {
             await collector2.append(inbound)
         }
         try await adapter2.start()
-        try await Task.sleep(nanoseconds: 250_000_000)
+        try await Self.waitFor { await !collector2.snapshot().isEmpty }
         await adapter2.stop()
 
         let firstRun = await collector1.snapshot()

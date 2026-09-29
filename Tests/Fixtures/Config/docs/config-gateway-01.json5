@@ -1,0 +1,107 @@
+{
+  gateway: {
+    mode: "local", // local | remote
+    port: 18789,
+    bind: "loopback",
+    publicOrigin: "https://gateway.example.com",
+    auth: {
+      mode: "token", // none | token | password | trusted-proxy
+      token: "your-token",
+      // password: "your-password", // or OPENCLAW_GATEWAY_PASSWORD
+      // trustedProxy: { userHeader: "x-forwarded-user" }, // for mode=trusted-proxy; see /gateway/trusted-proxy-auth
+      allowTailscale: true,
+      identityScopes: {
+        "admin@example.com": ["operator.admin"],
+      },
+      rateLimit: {
+        maxAttempts: 10,
+        windowMs: 60000,
+        lockoutMs: 300000,
+        exemptLoopback: true,
+      },
+    },
+    // Optional person-level access policy for team Gateway deployments.
+    roles: {
+      default: "guest",
+      definitions: {
+        maintainer: {
+          sessions: { others: "write" }, // none | view | suggest | write
+          agents: ["roboclaw"],
+          scopes: ["operator.read", "operator.write", "operator.approvals"],
+        },
+        guest: {
+          sessions: { others: "view" },
+          agents: ["roboclaw"],
+          scopes: ["operator.read", "operator.write"],
+          sandbox: "required", // inherit (default) | required
+        },
+      },
+    },
+    tailscale: {
+      mode: "off", // off | serve | funnel
+    },
+    controlUi: {
+      enabled: true,
+      basePath: "/openclaw",
+      // experimental: { customPlugins: false }, // Labs: native UI from user-installed plugins
+      // environment: { label: "edge", color: "amber" },
+      // communityInvite: true, // show the sidebar Discord invitation unless dismissed
+      // root: "dist/control-ui",
+      // github: { token: { source: "store", provider: "default", id: "CONTROL_UI_GITHUB" } },
+      // embedSandbox: "scripts", // strict | scripts | trusted
+      // allowExternalEmbedUrls: false, // dangerous: allow absolute external http(s) embed URLs
+      // automaticallyFetchFavicons: true, // SSRF-guarded link favicon fetches
+      // allowedOrigins: ["https://control.example.com"], // required for non-loopback Control UI
+      // dangerouslyAllowHostHeaderOriginFallback: false, // dangerous Host-header origin fallback mode
+    },
+    cliAgents: {
+      enabled: true, // show create-capable CLI session targets in the model picker
+    },
+    terminal: {
+      enabled: false,
+      // shell: "/bin/zsh",
+    },
+    remote: {
+      url: "ws://127.0.0.1:18789",
+      transport: "ssh", // ssh | direct
+      token: "your-token",
+      // password: "your-password",
+    },
+    trustedProxies: ["10.0.0.1"],
+    // Optional. Default false.
+    allowRealIpFallback: false,
+    nodes: {
+      pairing: {
+        // Silent same-host pairing and access upgrades. Default: enabled.
+        // Set false to require explicit approval for every device.
+        autoApproveLocal: true,
+        // Optional. Default unset/disabled.
+        autoApproveCidrs: ["192.168.1.0/24", "fd00:1234:5678::/64"],
+        // SSH-verified auto-approval. Default: enabled (true).
+        // Set false to disable SSH verification only; this does not affect
+        // autoApproveCidrs above. For manual-only node pairing, set false AND
+        // unset autoApproveCidrs. Pass an object to tune: { user, identity,
+        // timeoutMs, cidrs }.
+        sshVerify: true,
+      },
+      commands: {
+        allow: ["canvas.navigate"],
+        deny: ["system.run"],
+      },
+    },
+    tools: {
+      // Additional /tools/invoke HTTP denies
+      deny: ["browser"],
+      // Remove tools from the default HTTP deny list for owner/admin callers
+      allow: ["gateway"],
+    },
+    push: {
+      apns: {
+        relay: {
+          baseUrl: "https://relay.example.com",
+          timeoutMs: 10000,
+        },
+      },
+    },
+  },
+}

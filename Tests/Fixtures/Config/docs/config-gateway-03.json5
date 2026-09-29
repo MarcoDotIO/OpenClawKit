@@ -1,0 +1,7 @@
+{
+  gateway: {
+    reload: {
+      mode: "hybrid", // off | hybrid
+    },
+  },
+}

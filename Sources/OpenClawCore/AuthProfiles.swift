@@ -1,22 +1,100 @@
 import Foundation
 
 /// Credential mode declared by config for one auth profile.
+///
+/// - Note: 2026.3.0 added `aws-sdk` (AWS SDK default credential chain; no secret is stored in the
+///   auth profile store). Exhaustive `switch` statements over `AuthProfileMode` need the new case.
 public enum AuthProfileMode: String, Codable, Sendable, Equatable, CaseIterable {
     case apiKey = "api_key"
     case oauth
     case token
+    /// AWS SDK default credential chain; the profile carries no stored secret.
+    case awsSDK = "aws-sdk"
 }
 
-/// Config-declared auth profile metadata aligned with the TS SDK.
+/// Config-declared auth profile metadata aligned with the TS SDK (upstream `auth.profiles.<id>`).
+///
+/// Config holds metadata only; upstream keeps the credentials themselves in its auth stores.
+///
+/// Unknown `mode` strings (for example a mode added by a newer OpenClaw) never drop the profile:
+/// the authored value is kept in ``unrecognizedMode`` and written back unchanged, ``mode`` holds the
+/// ``AuthProfileMode/token`` placeholder, and ``AuthProfileResolver`` never selects the profile.
 public struct AuthProfileConfig: Codable, Sendable, Equatable {
     public var provider: String
     public var mode: AuthProfileMode
     public var email: String?
+    /// Human-readable profile label (2026.9.6).
+    public var displayName: String?
+    /// Authored mode this SDK does not recognize (round-tripped; `nil` for known modes).
+    public var unrecognizedMode: String?
 
-    public init(provider: String, mode: AuthProfileMode, email: String? = nil) {
+    public init(provider: String, mode: AuthProfileMode, email: String? = nil, displayName: String? = nil) {
         self.provider = provider
         self.mode = mode
         self.email = email
+        self.displayName = displayName
+        self.unrecognizedMode = nil
+    }
+
+    /// Creates a profile from an authored mode string, keeping unknown modes raw.
+    /// - Parameters:
+    ///   - provider: Provider id.
+    ///   - rawMode: Authored `mode` value.
+    ///   - email: Account email.
+    ///   - displayName: Profile label.
+    public init(provider: String, rawMode: String, email: String? = nil, displayName: String? = nil) {
+        let trimmed = rawMode.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.init(provider: provider, mode: AuthProfileMode(rawValue: trimmed) ?? .token, email: email, displayName: displayName)
+        self.unrecognizedMode = AuthProfileMode(rawValue: trimmed) == nil ? trimmed : nil
+    }
+
+    /// Whether ``mode`` reflects the authored mode (`false` for an ``unrecognizedMode``).
+    public var isModeRecognized: Bool {
+        self.unrecognizedMode == nil
+    }
+
+    /// The authored mode string (``unrecognizedMode`` or the ``mode`` raw value).
+    public var rawMode: String {
+        self.unrecognizedMode ?? self.mode.rawValue
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case provider
+        case mode
+        case email
+        case displayName
+    }
+
+    /// Decodes a profile; an unknown `mode` is kept in ``unrecognizedMode`` (and reported) instead
+    /// of failing the profile.
+    /// - Parameter decoder: Source decoder.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let provider = try container.decode(String.self, forKey: .provider)
+        let rawMode = try container.decode(String.self, forKey: .mode)
+        self.init(
+            provider: provider,
+            rawMode: rawMode,
+            email: try container.decodeIfPresent(String.self, forKey: .email),
+            displayName: try container.decodeIfPresent(String.self, forKey: .displayName)
+        )
+        if let unrecognizedMode {
+            container.recordConfigIssue(
+                "Unknown auth profile mode \"\(unrecognizedMode)\"; the profile is kept but never selected.",
+                kind: .unknownEnumValue,
+                forKey: .mode
+            )
+        }
+    }
+
+    /// Encodes the profile with its authored mode.
+    /// - Parameter encoder: Target encoder.
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(self.provider, forKey: .provider)
+        try container.encode(self.rawMode, forKey: .mode)
+        try container.encodeIfPresent(self.email, forKey: .email)
+        try container.encodeIfPresent(self.displayName, forKey: .displayName)
     }
 }
 
@@ -56,6 +134,9 @@ public struct AuthCooldownConfig: Codable, Sendable, Equatable {
 }
 
 /// Canonical auth config aligned with the TS SDK.
+///
+/// - Note: `cooldowns` is SDK-local: upstream retired `auth.cooldowns` (2026.9.6) and the upstream
+///   projection never writes it.
 public struct AuthConfig: Codable, Sendable, Equatable {
     public var profiles: [String: AuthProfileConfig]
     public var order: [String: [String]]
@@ -79,9 +160,21 @@ public struct AuthConfig: Codable, Sendable, Equatable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.profiles = try container.decodeIfPresent([String: AuthProfileConfig].self, forKey: .profiles) ?? [:]
+        // A profile with an unknown mode is kept raw (and recorded as an issue); malformed profiles are dropped.
+        self.profiles = container.decodeLossyDictionaryIfPresent(AuthProfileConfig.self, forKey: .profiles) ?? [:]
         self.order = try container.decodeIfPresent([String: [String]].self, forKey: .order) ?? [:]
         self.cooldowns = try container.decodeIfPresent(AuthCooldownConfig.self, forKey: .cooldowns) ?? AuthCooldownConfig()
+    }
+
+    /// Encodes the auth block; the upstream projection omits the retired `cooldowns`.
+    /// - Parameter encoder: Target encoder.
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(self.profiles, forKey: .profiles)
+        try container.encode(self.order, forKey: .order)
+        if encoder.userInfo[.openClawUpstreamProjection] as? Bool != true {
+            try container.encode(self.cooldowns, forKey: .cooldowns)
+        }
     }
 }
 
@@ -101,22 +194,22 @@ public enum AuthProfileFailureReason: String, Codable, Sendable, Equatable, Case
 
 /// Per-profile usage statistics used for rotation and cooldowns.
 public struct AuthProfileUsageStats: Codable, Sendable, Equatable {
-    public var lastUsed: Int?
-    public var cooldownUntil: Int?
-    public var disabledUntil: Int?
+    public var lastUsed: Int64?
+    public var cooldownUntil: Int64?
+    public var disabledUntil: Int64?
     public var disabledReason: AuthProfileFailureReason?
     public var errorCount: Int
     public var failureCounts: [AuthProfileFailureReason: Int]
-    public var lastFailureAt: Int?
+    public var lastFailureAt: Int64?
 
     public init(
-        lastUsed: Int? = nil,
-        cooldownUntil: Int? = nil,
-        disabledUntil: Int? = nil,
+        lastUsed: Int64? = nil,
+        cooldownUntil: Int64? = nil,
+        disabledUntil: Int64? = nil,
         disabledReason: AuthProfileFailureReason? = nil,
         errorCount: Int = 0,
         failureCounts: [AuthProfileFailureReason: Int] = [:],
-        lastFailureAt: Int? = nil
+        lastFailureAt: Int64? = nil
     ) {
         self.lastUsed = lastUsed
         self.cooldownUntil = cooldownUntil
@@ -139,13 +232,13 @@ public struct AuthProfileUsageStats: Codable, Sendable, Equatable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.lastUsed = try container.decodeIfPresent(Int.self, forKey: .lastUsed)
-        self.cooldownUntil = try container.decodeIfPresent(Int.self, forKey: .cooldownUntil)
-        self.disabledUntil = try container.decodeIfPresent(Int.self, forKey: .disabledUntil)
+        self.lastUsed = try container.decodeIfPresent(Int64.self, forKey: .lastUsed)
+        self.cooldownUntil = try container.decodeIfPresent(Int64.self, forKey: .cooldownUntil)
+        self.disabledUntil = try container.decodeIfPresent(Int64.self, forKey: .disabledUntil)
         self.disabledReason = try container.decodeIfPresent(AuthProfileFailureReason.self, forKey: .disabledReason)
         self.errorCount = max(0, try container.decodeIfPresent(Int.self, forKey: .errorCount) ?? 0)
         self.failureCounts = try container.decodeIfPresent([AuthProfileFailureReason: Int].self, forKey: .failureCounts) ?? [:]
-        self.lastFailureAt = try container.decodeIfPresent(Int.self, forKey: .lastFailureAt)
+        self.lastFailureAt = try container.decodeIfPresent(Int64.self, forKey: .lastFailureAt)
     }
 }
 
@@ -177,14 +270,14 @@ public struct TokenAuthProfileCredential: Sendable, Equatable {
     public var provider: String
     public var token: String?
     public var tokenRef: SecretRef?
-    public var expires: Int?
+    public var expires: Int64?
     public var email: String?
 
     public init(
         provider: String,
         token: String? = nil,
         tokenRef: SecretRef? = nil,
-        expires: Int? = nil,
+        expires: Int64? = nil,
         email: String? = nil
     ) {
         self.provider = provider
@@ -200,7 +293,7 @@ public struct OAuthAuthProfileCredential: Sendable, Equatable {
     public var provider: String
     public var accessToken: String?
     public var refreshToken: String?
-    public var expires: Int?
+    public var expires: Int64?
     public var clientID: String?
     public var email: String?
     public var metadata: [String: String]
@@ -209,7 +302,7 @@ public struct OAuthAuthProfileCredential: Sendable, Equatable {
         provider: String,
         accessToken: String? = nil,
         refreshToken: String? = nil,
-        expires: Int? = nil,
+        expires: Int64? = nil,
         clientID: String? = nil,
         email: String? = nil,
         metadata: [String: String] = [:]
@@ -252,7 +345,7 @@ public enum AuthProfileCredential: Sendable, Equatable {
         }
     }
 
-    public var expires: Int? {
+    public var expires: Int64? {
         switch self {
         case .apiKey:
             return nil
@@ -270,7 +363,7 @@ public struct AuthProfileStoreSnapshot: Sendable, Equatable {
         public var provider: String
         public var mode: AuthProfileMode
         public var email: String?
-        public var expires: Int?
+        public var expires: Int64?
         public var clientID: String?
         public var metadata: [String: String]
         public var keyRef: SecretRef?
@@ -280,7 +373,7 @@ public struct AuthProfileStoreSnapshot: Sendable, Equatable {
             provider: String,
             mode: AuthProfileMode,
             email: String? = nil,
-            expires: Int? = nil,
+            expires: Int64? = nil,
             clientID: String? = nil,
             metadata: [String: String] = [:],
             keyRef: SecretRef? = nil,
@@ -322,7 +415,7 @@ private struct PersistedAuthProfileRecord: Codable, Sendable {
     var provider: String
     var mode: AuthProfileMode
     var email: String?
-    var expires: Int?
+    var expires: Int64?
     var clientID: String?
     var metadata: [String: String]
     var keyRef: SecretRef?
@@ -336,7 +429,7 @@ private struct PersistedAuthProfileRecord: Codable, Sendable {
         provider: String,
         mode: AuthProfileMode,
         email: String? = nil,
-        expires: Int? = nil,
+        expires: Int64? = nil,
         clientID: String? = nil,
         metadata: [String: String] = [:],
         keyRef: SecretRef? = nil,
@@ -380,7 +473,7 @@ private struct PersistedAuthProfileRecord: Codable, Sendable {
         self.provider = try container.decode(String.self, forKey: .provider)
         self.mode = try container.decode(AuthProfileMode.self, forKey: .mode)
         self.email = try container.decodeIfPresent(String.self, forKey: .email)
-        self.expires = try container.decodeIfPresent(Int.self, forKey: .expires)
+        self.expires = try container.decodeIfPresent(Int64.self, forKey: .expires)
         self.clientID = try container.decodeIfPresent(String.self, forKey: .clientID)
         self.metadata = try container.decodeIfPresent([String: String].self, forKey: .metadata) ?? [:]
         self.keyRef = try container.decodeIfPresent(SecretRef.self, forKey: .keyRef)
@@ -562,6 +655,9 @@ public actor AuthProfileStore {
                     metadata: record.metadata
                 )
             )
+        case .awsSDK:
+            // AWS SDK profiles resolve credentials through the SDK default chain; nothing is stored.
+            return nil
         }
     }
 
@@ -600,7 +696,7 @@ public actor AuthProfileStore {
         let now = Self.currentTimestampMs()
         var stats = self.state.usageStats[normalizedProfileID] ?? AuthProfileUsageStats()
         if let lastFailureAt = stats.lastFailureAt,
-           now - lastFailureAt > cooldowns.failureWindowHours * 3_600_000
+           now - lastFailureAt > Int64(cooldowns.failureWindowHours) * 3_600_000
         {
             stats.errorCount = 0
             stats.failureCounts = [:]
@@ -610,11 +706,11 @@ public actor AuthProfileStore {
         stats.lastFailureAt = now
         if reason == .authPermanent {
             stats.disabledReason = reason
-            stats.disabledUntil = now + cooldowns.billingMaxHours * 3_600_000
+            stats.disabledUntil = now + Int64(cooldowns.billingMaxHours) * 3_600_000
         } else {
             let providerHours = cooldowns.billingBackoffHoursByProvider[normalizedProvider] ?? cooldowns.billingBackoffHours
             let cappedHours = min(cooldowns.billingMaxHours, max(1, providerHours) * max(1, stats.errorCount))
-            stats.cooldownUntil = now + cappedHours * 3_600_000
+            stats.cooldownUntil = now + Int64(cappedHours) * 3_600_000
         }
         self.state.usageStats[normalizedProfileID] = stats
         try self.save()
@@ -767,8 +863,9 @@ public actor AuthProfileStore {
         "auth.profiles.\(profileID).\(field)"
     }
 
-    private static func currentTimestampMs() -> Int {
-        Int(Date().timeIntervalSince1970 * 1000)
+    private static func currentTimestampMs() -> Int64 {
+        // Int64 keeps millisecond timestamps representable on 32-bit watchOS (arm64_32).
+        OpenClawClock.nowMs()
     }
 }
 
@@ -829,7 +926,7 @@ public enum AuthProfileResolver {
         provider: String,
         config: AuthConfig?,
         snapshot: AuthProfileStoreSnapshot,
-        now: Int
+        now: Int64
     ) -> Bool {
         guard let metadata = snapshot.profiles[profileID] else {
             return false
@@ -838,7 +935,7 @@ public enum AuthProfileResolver {
             return false
         }
         if let configured = config?.profiles[profileID] {
-            guard normalizeProviderID(configured.provider) == provider else {
+            guard normalizeProviderID(configured.provider) == provider, configured.isModeRecognized else {
                 return false
             }
             if configured.mode != metadata.mode && !(configured.mode == .oauth && metadata.mode == .token) {
@@ -861,10 +958,10 @@ public enum AuthProfileResolver {
     private static func moveCooldownEntriesToEnd(
         _ profileIDs: [String],
         snapshot: AuthProfileStoreSnapshot,
-        now: Int
+        now: Int64
     ) -> [String] {
         var available: [String] = []
-        var cooldown: [(profileID: String, until: Int)] = []
+        var cooldown: [(profileID: String, until: Int64)] = []
         for profileID in profileIDs {
             if let cooldownUntil = snapshot.usageStats[profileID]?.cooldownUntil, cooldownUntil > now {
                 cooldown.append((profileID, cooldownUntil))
@@ -884,8 +981,10 @@ public enum AuthProfileResolver {
             return 1
         case .apiKey:
             return 2
-        case nil:
+        case .awsSDK:
             return 3
+        case nil:
+            return 4
         }
     }
 
@@ -904,7 +1003,8 @@ public enum AuthProfileResolver {
         providerID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
-    private static func currentTimestampMs() -> Int {
-        Int(Date().timeIntervalSince1970 * 1000)
+    private static func currentTimestampMs() -> Int64 {
+        // Int64 keeps millisecond timestamps representable on 32-bit watchOS (arm64_32).
+        OpenClawClock.nowMs()
     }
 }

@@ -37,11 +37,13 @@ struct IMessageChannelAdapterTests {
 
     @Test
     func startFailsWhenSimulationFallbackDisabled() async throws {
+        // Without simulation, macOS/Linux spawn `imsg`; a missing binary must fail start with guidance.
         let adapter = IMessageChannelAdapter(
             config: IMessageChannelConfig(
                 enabled: true,
                 defaultHandle: "user@icloud.com",
-                allowUnsupportedPlatformSimulation: false
+                allowUnsupportedPlatformSimulation: false,
+                cliPath: "/nonexistent/openclaw-test/imsg"
             )
         )
 

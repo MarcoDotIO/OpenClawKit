@@ -1,0 +1,16 @@
+{
+  agents: { defaults: { workspace: "~/.openclaw/workspace" } },
+  channels: {
+    whatsapp: { allowFrom: ["+15555550123"], responsePrefix: "[openclaw]" },
+    telegram: {
+      enabled: true,
+      botToken: "YOUR_TOKEN",
+      allowFrom: ["123456789"],
+    },
+    discord: {
+      enabled: true,
+      token: "YOUR_TOKEN",
+      allowFrom: ["123456789012345678"],
+    },
+  },
+}

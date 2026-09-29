@@ -60,29 +60,47 @@ public actor RuntimeProviderAuthResolver: ProviderRuntimeAuthResolving {
     private static let qwenOAuthClientID = "f0304373b74a44d2b584a3fb70ca9e56"
     private static let githubCopilotTokenEndpoint = URL(string: "https://api.github.com/copilot_internal/v2/token")!
     private static let githubCopilotDefaultBaseURL = "https://api.individual.githubcopilot.com"
-    private static let preemptiveRefreshWindowMs = 60_000
-    private static let copilotCacheSafetyWindowMs = 5 * 60 * 1000
+    // Millisecond arithmetic runs in Int64 so it cannot overflow on 32-bit `Int` platforms (watchOS arm64_32).
+    private static let preemptiveRefreshWindowMs: Int64 = 60_000
+    private static let copilotCacheSafetyWindowMs: Int64 = 5 * 60 * 1000
+    /// Copilot `expires_at` values above this are already milliseconds; smaller values are seconds.
+    private static let copilotMillisecondsThreshold: Int64 = 10_000_000_000
 
     private struct CachedCopilotToken: Sendable {
         var token: String
-        var expiresAt: Int
+        var expiresAt: Int64
         var baseURL: String
     }
 
     private let transport: any RuntimeAuthHTTPTransport
-    private let now: @Sendable () -> Int
+    private let now: @Sendable () -> Int64
     private var copilotCacheByGitHubToken: [String: CachedCopilotToken] = [:]
 
     /// Creates a runtime auth resolver.
+    ///
+    /// The clock is `Int64` because epoch milliseconds exceed `Int32.max`: on 32-bit `Int`
+    /// platforms (watchOS arm64_32) an `Int` clock cannot represent the current time.
     /// - Parameters:
     ///   - transport: HTTP transport used for refresh and exchange requests.
     ///   - now: Clock returning milliseconds since epoch.
     public init(
         transport: any RuntimeAuthHTTPTransport = HTTPClient(),
-        now: @escaping @Sendable () -> Int = { Int(Date().timeIntervalSince1970 * 1000) }
+        now: @escaping @Sendable () -> Int64 = { OpenClawClock.nowMs() }
     ) {
         self.transport = transport
         self.now = now
+    }
+
+    /// Creates a runtime auth resolver with an `Int` millisecond clock.
+    /// - Parameters:
+    ///   - transport: HTTP transport used for refresh and exchange requests.
+    ///   - legacyNow: Clock returning milliseconds since epoch as `Int`.
+    @available(*, deprecated, message: "Use init(transport:now:) with an Int64 clock; Int overflows on watchOS arm64_32.")
+    public init(
+        transport: any RuntimeAuthHTTPTransport = HTTPClient(),
+        legacyNow: @escaping @Sendable () -> Int
+    ) {
+        self.init(transport: transport, now: { Int64(legacyNow()) })
     }
 
     public func resolve(
@@ -94,6 +112,8 @@ public actor RuntimeProviderAuthResolver: ProviderRuntimeAuthResolving {
             return try await self.resolveGitHubCopilot(credential)
         case QwenPortalModelProvider.providerID:
             return try await self.resolveQwenPortal(credential)
+        case OpenAIModelProvider.providerID, "openai-codex", "codex":
+            return try await self.resolveOpenAIChatGPT(credential)
         default:
             return ProviderRuntimeAuthResolution(credential: credential)
         }
@@ -210,7 +230,7 @@ public actor RuntimeProviderAuthResolver: ProviderRuntimeAuthResolving {
             provider: value.provider,
             accessToken: nextAccessToken,
             refreshToken: Self.normalized(payload.refreshToken) ?? refreshToken,
-            expires: now + expiresIn * 1000,
+            expires: now + Int64(expiresIn) * 1000,
             clientID: Self.normalized(value.clientID) ?? Self.qwenOAuthClientID,
             email: value.email,
             metadata: value.metadata
@@ -218,6 +238,71 @@ public actor RuntimeProviderAuthResolver: ProviderRuntimeAuthResolving {
         return ProviderRuntimeAuthResolution(
             credential: .oauth(updatedCredential),
             persistCredential: true
+        )
+    }
+
+    /// Refreshes ChatGPT/Codex OAuth tokens (upstream `openai-chatgpt-oauth-token.runtime.ts`) and
+    /// surfaces the ChatGPT account id for the `chatgpt-account-id` header.
+    private func resolveOpenAIChatGPT(
+        _ credential: AuthProfileCredential
+    ) async throws -> ProviderRuntimeAuthResolution {
+        guard case .oauth(let value) = credential else {
+            return ProviderRuntimeAuthResolution(credential: credential)
+        }
+        func accountMetadata(_ token: String?) -> [String: String] {
+            let accountID = token.flatMap(OpenAIRouteResolution.chatGPTAccountID(fromAccessToken:))
+                ?? Self.normalized(value.metadata["accountId"])
+                ?? Self.normalized(value.metadata["chatgptAccountId"])
+            return accountID.map { ["openai.chatgptAccountID": $0] } ?? [:]
+        }
+        let accessToken = Self.normalized(value.accessToken)
+        let refreshToken = Self.normalized(value.refreshToken)
+        let now = self.now()
+        let needsRefresh: Bool
+        if let expires = value.expires {
+            needsRefresh = expires <= now + Self.preemptiveRefreshWindowMs
+        } else {
+            needsRefresh = accessToken == nil
+        }
+        guard needsRefresh, let refreshToken else {
+            return ProviderRuntimeAuthResolution(credential: credential, metadata: accountMetadata(accessToken))
+        }
+
+        var request = URLRequest(url: OpenAIChatGPTOAuthConfiguration.tokenURL)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.timeoutInterval = 30
+        request.httpBody = Self.formEncodedBody([
+            "grant_type": "refresh_token",
+            "refresh_token": refreshToken,
+            "client_id": Self.normalized(value.clientID) ?? OpenAIChatGPTOAuthConfiguration.clientID,
+        ])
+        let response = try await self.transport.data(for: request)
+        if response.statusCode == 400 || response.statusCode == 401 {
+            throw OpenClawCoreError.unavailable("ChatGPT OAuth refresh token expired or invalid; sign in to OpenAI again.")
+        }
+        guard (200..<300).contains(response.statusCode) else {
+            throw OpenClawCoreError.unavailable("ChatGPT OAuth refresh failed with status \(response.statusCode)")
+        }
+        let payload = try JSONDecoder().decode(QwenRefreshTokenResponse.self, from: response.body)
+        guard let nextAccessToken = Self.normalized(payload.accessToken) else {
+            throw OpenClawCoreError.unavailable("ChatGPT OAuth refresh response missing access token")
+        }
+        let expires = payload.expiresIn.map { now + Int64(max(1, $0)) * 1000 }
+        let updated = OAuthAuthProfileCredential(
+            provider: value.provider,
+            accessToken: nextAccessToken,
+            refreshToken: Self.normalized(payload.refreshToken) ?? refreshToken,
+            expires: expires,
+            clientID: Self.normalized(value.clientID) ?? OpenAIChatGPTOAuthConfiguration.clientID,
+            email: value.email,
+            metadata: value.metadata
+        )
+        return ProviderRuntimeAuthResolution(
+            credential: .oauth(updated),
+            persistCredential: true,
+            metadata: accountMetadata(nextAccessToken)
         )
     }
 
@@ -243,25 +328,33 @@ public actor RuntimeProviderAuthResolver: ProviderRuntimeAuthResolving {
         return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
     }
 
-    private static func parseCopilotExpiry(_ raw: JSONScalar?) throws -> Int {
+    private static func parseCopilotExpiry(_ raw: JSONScalar?) throws -> Int64 {
         guard let raw else {
             throw OpenClawCoreError.unavailable("github-copilot token exchange response missing expires_at")
         }
+        let integer: Int64
         switch raw {
         case .int(let value):
-            return value > 10_000_000_000 ? value : value * 1000
+            integer = value
         case .double(let value):
-            guard value.isFinite else {
+            guard value.isFinite, let rounded = Int64(exactly: value.rounded()) else {
                 throw OpenClawCoreError.unavailable("github-copilot token exchange response has invalid expires_at")
             }
-            let integer = Int(value.rounded())
-            return integer > 10_000_000_000 ? integer : integer * 1000
+            integer = rounded
         case .string(let value):
-            guard let integer = Int(value.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            guard let parsed = Int64(value.trimmingCharacters(in: .whitespacesAndNewlines)) else {
                 throw OpenClawCoreError.unavailable("github-copilot token exchange response has invalid expires_at")
             }
-            return integer > 10_000_000_000 ? integer : integer * 1000
+            integer = parsed
         }
+        if integer > Self.copilotMillisecondsThreshold {
+            return integer
+        }
+        let (milliseconds, overflow) = integer.multipliedReportingOverflow(by: 1000)
+        guard !overflow else {
+            throw OpenClawCoreError.unavailable("github-copilot token exchange response has invalid expires_at")
+        }
+        return milliseconds
     }
 
     private static func deriveCopilotBaseURL(from token: String) -> String? {
@@ -310,13 +403,13 @@ private struct GitHubCopilotTokenResponse: Decodable {
 }
 
 private enum JSONScalar: Decodable {
-    case int(Int)
+    case int(Int64)
     case double(Double)
     case string(String)
 
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
-        if let value = try? container.decode(Int.self) {
+        if let value = try? container.decode(Int64.self) {
             self = .int(value)
         } else if let value = try? container.decode(Double.self) {
             self = .double(value)

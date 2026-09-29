@@ -106,10 +106,11 @@ public actor LocalModelProvider: ModelProvider {
     /// - Parameter request: Generation request payload.
     /// - Returns: Generation response payload.
     public func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
+        try request.validateToolSupport(supportsTools: false, providerID: self.id)
         let prepared = try await self.prepareGeneration(request)
         let output = try await self.engine.generate(
-            prompt: request.prompt,
-            systemPrompt: request.systemPrompt,
+            prompt: Self.prompt(for: request),
+            systemPrompt: ProviderContentText.systemPrompt(for: request),
             configuration: prepared.configuration,
             onToken: prepared.onToken
         )
@@ -131,10 +132,11 @@ public actor LocalModelProvider: ModelProvider {
         AsyncThrowingStream { continuation in
             Task {
                 do {
+                    try request.validateToolSupport(supportsTools: false, providerID: self.id)
                     let prepared = try await self.prepareGeneration(request, forceStreaming: true)
                     _ = try await self.engine.generate(
-                        prompt: request.prompt,
-                        systemPrompt: request.systemPrompt,
+                        prompt: Self.prompt(for: request),
+                        systemPrompt: ProviderContentText.systemPrompt(for: request),
                         configuration: prepared.configuration,
                         onToken: { token in
                             continuation.yield(ModelStreamChunk(text: token, isFinal: false))
@@ -149,6 +151,34 @@ public actor LocalModelProvider: ModelProvider {
                 }
             }
         }
+    }
+
+    /// Contract v2 features: streaming only; transcripts are flattened to a text prompt and tools
+    /// are rejected because local engines cannot call tools.
+    nonisolated public var capabilities: ModelProviderCapabilities {
+        ModelProviderCapabilities(supportsStreaming: true)
+    }
+
+    /// Text prompt for the local engine: the legacy prompt, or the transcript rendered as
+    /// `User:` / `Assistant:` / `Tool result:` turns.
+    static func prompt(for request: ModelGenerationRequest) -> String {
+        guard !request.messages.isEmpty else {
+            return request.prompt
+        }
+        var lines: [String] = []
+        for message in request.messages {
+            switch message {
+            case .system:
+                continue
+            case .user(let content):
+                lines.append("User:\n\(ProviderContentText.flatten(content))")
+            case .assistant:
+                lines.append("Assistant:\n\(message.text)")
+            case .toolResult(let result):
+                lines.append("Tool result (\(result.toolName)):\n\(ProviderContentText.toolResultText(result))")
+            }
+        }
+        return lines.joined(separator: "\n\n")
     }
 
     /// Unloads the underlying model engine.

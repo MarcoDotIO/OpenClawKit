@@ -54,7 +54,7 @@ struct SessionStoreParityTests {
     }
 
     @Test
-    func sessionStoreAppliesGatewayPatchForFastModeAndSpawnedWorkspaceDir() async throws {
+    func sessionStoreAppliesGatewayPatchForFastModeAndSendPolicy() async throws {
         let root = try makeSessionRoot()
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -64,6 +64,8 @@ struct SessionStoreParityTests {
             defaultAgentID: "support",
             route: SessionRoute(channel: "telegram", accountID: "default", peerID: "1234")
         )
+        // Spawn lineage is create-time only since OpenClaw 2026.9.6; patches must leave it untouched.
+        _ = await store.updateRuntimeState(sessionKey: "telegram:default:1234", spawnedWorkspaceDir: "/tmp/original-child")
 
         let patchJSON = #"""
         {
@@ -73,9 +75,6 @@ struct SessionStoreParityTests {
           "fastMode": true,
           "verboseLevel": "full",
           "responseUsage": "full",
-          "spawnedBy": "main",
-          "spawnedWorkspaceDir": "/tmp/runtime-child",
-          "spawnDepth": 2,
           "sendPolicy": "deny"
         }
         """#
@@ -87,9 +86,9 @@ struct SessionStoreParityTests {
         #expect(updated?.fastMode == true)
         #expect(updated?.verboseLevel == .full)
         #expect(updated?.responseUsage == .full)
-        #expect(updated?.spawnedBy == "main")
-        #expect(updated?.spawnedWorkspaceDir == "/tmp/runtime-child")
-        #expect(updated?.spawnDepth == 2)
+        #expect(updated?.spawnedBy == nil)
+        #expect(updated?.spawnedWorkspaceDir == "/tmp/original-child")
+        #expect(updated?.spawnDepth == nil)
         #expect(updated?.sendPolicy == .deny)
     }
 

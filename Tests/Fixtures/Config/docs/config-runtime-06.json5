@@ -1,0 +1,10 @@
+{
+  update: {
+    channel: "stable", // stable | extended-stable | beta | dev
+    checkOnStart: true,
+
+    auto: {
+      enabled: false,
+    },
+  },
+}

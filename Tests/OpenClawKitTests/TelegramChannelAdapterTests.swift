@@ -169,13 +169,13 @@ struct TelegramChannelAdapterTests {
         }
 
         try await adapter.start()
-        try await Task.sleep(nanoseconds: 350_000_000)
+        try await waitUntil("telegram inbound delivered") { await !collector.snapshot().isEmpty }
         await adapter.stop()
 
         let messages = await collector.snapshot()
         #expect(messages.count >= 1)
         #expect(messages.first?.channel == .telegram)
-        #expect(messages.first?.accountID == "42")
+        #expect(messages.first?.senderID == "42")
         #expect(messages.first?.peerID == "111")
         #expect(messages.first?.text == "hello from tg")
     }
@@ -206,12 +206,12 @@ struct TelegramChannelAdapterTests {
         }
 
         try await adapter.start()
-        try await Task.sleep(nanoseconds: 350_000_000)
+        try await waitUntil("second poll") { await transport.records().filter { $0.path.contains("/getUpdates") }.count >= 2 }
         await adapter.stop()
 
         let messages = await collector.snapshot()
         #expect(messages.count == 1)
-        #expect(messages.first?.accountID == "11")
+        #expect(messages.first?.senderID == "11")
         #expect(messages.first?.text.contains("status please") == true)
     }
 
@@ -287,7 +287,7 @@ struct TelegramChannelAdapterTests {
         }
 
         try await adapter.start()
-        try await Task.sleep(nanoseconds: 350_000_000)
+        try await waitUntil("second poll") { await transport.records().filter { $0.path.contains("/getUpdates") }.count >= 2 }
         await adapter.stop()
 
         let messages = await collector.snapshot()
@@ -326,7 +326,7 @@ struct TelegramChannelAdapterTests {
         }
 
         try await adapter.start()
-        try await Task.sleep(nanoseconds: 350_000_000)
+        try await waitUntil("second poll") { await transport.records().filter { $0.path.contains("/getUpdates") }.count >= 2 }
         await adapter.stop()
 
         let messages = await collector.snapshot()
@@ -368,7 +368,7 @@ struct TelegramChannelAdapterTests {
         }
 
         try await adapter.start()
-        try await Task.sleep(nanoseconds: 650_000_000)
+        try await waitUntil("message after retry") { await !collector.snapshot().isEmpty }
         await adapter.stop()
 
         let messages = await collector.snapshot()

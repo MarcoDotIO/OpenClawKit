@@ -315,7 +315,8 @@ struct AgentRuntimeTests {
         #expect(request.policy.verboseLevel == .full)
         #expect(request.policy.responseUsage == .full)
         #expect(request.policy.elevatedLevel == .ask)
-        #expect(request.policy.reasoningEffort == .high)
+        // Providers resolve native effort from `thinkingLevel`; the runtime no longer maps it lossily.
+        #expect(request.policy.reasoningEffort == nil)
         #expect(request.metadata["thinkingLevel"] == "xhigh")
         #expect(request.metadata["reasoningLevel"] == "stream")
         #expect(request.metadata["verboseLevel"] == "full")
@@ -404,7 +405,7 @@ struct AgentRuntimeTests {
     }
 
     @Test
-    func runMapsReasoningEffortAcrossThinkingLevels() async throws {
+    func runForwardsThinkingLevelsWithoutLossyEffortMapping() async throws {
         let router = ModelRouter()
         let provider = InspectingProvider()
         await router.register(provider)
@@ -429,10 +430,12 @@ struct AgentRuntimeTests {
         }
 
         let low = try await capturedRequest(thinkingLevel: .minimal, reasoningLevel: .stream)
-        #expect(low.policy.reasoningEffort == .low)
+        #expect(low.policy.thinkingLevel == .minimal)
+        #expect(low.policy.reasoningEffort == nil)
 
         let medium = try await capturedRequest(thinkingLevel: .medium, reasoningLevel: .on)
-        #expect(medium.policy.reasoningEffort == .medium)
+        #expect(medium.policy.thinkingLevel == .medium)
+        #expect(medium.policy.reasoningEffort == nil)
 
         let disabled = try await capturedRequest(thinkingLevel: .xhigh, reasoningLevel: .off)
         #expect(disabled.policy.reasoningEffort == nil)

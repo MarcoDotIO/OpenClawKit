@@ -5,12 +5,46 @@ public enum GatewayMode: String, Codable, Sendable, Equatable, CaseIterable {
     case remote
 }
 
+/// Gateway listener bind mode.
+///
+/// Decoding also accepts upstream host aliases: `0.0.0.0`, `::`, `[::]` and `*` mean ``lan``;
+/// `127.0.0.1`, `localhost`, `::1` and `[::1]` mean ``loopback``.
 public enum GatewayBindMode: String, Codable, Sendable, Equatable, CaseIterable {
     case auto
     case lan
     case loopback
     case custom
     case tailnet
+
+    /// Resolves a bind mode or host alias, accepting surrounding whitespace and any casing.
+    /// - Parameter raw: Raw bind value from config.
+    public init?(normalizing raw: String) {
+        let key = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch key {
+        case "0.0.0.0", "::", "[::]", "*":
+            self = .lan
+        case "127.0.0.1", "localhost", "::1", "[::1]":
+            self = .loopback
+        default:
+            guard let mode = GatewayBindMode(rawValue: key) else {
+                return nil
+            }
+            self = mode
+        }
+    }
+
+    /// Decodes a bind mode, accepting the host aliases handled by ``init(normalizing:)``.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let raw = try container.decode(String.self)
+        guard let mode = GatewayBindMode(normalizing: raw) else {
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Invalid gateway bind value: \(raw)"
+            )
+        }
+        self = mode
+    }
 }
 
 public struct GatewayControlUIConfig: Codable, Sendable, Equatable {
@@ -39,6 +73,33 @@ public struct GatewayControlUIConfig: Codable, Sendable, Equatable {
         self.allowInsecureAuth = allowInsecureAuth
         self.dangerouslyDisableDeviceAuth = dangerouslyDisableDeviceAuth
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled
+        case basePath
+        case root
+        case allowedOrigins
+        case dangerouslyAllowHostHeaderOriginFallback
+        case allowInsecureAuth
+        case dangerouslyDisableDeviceAuth
+    }
+
+    /// Encodes the Control UI settings; the upstream projection omits the SDK-only `allowInsecureAuth`
+    /// and the retired `dangerouslyDisableDeviceAuth` (decode-only upgrade input).
+    /// - Parameter encoder: Target encoder.
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        let projection = encoder.userInfo[.openClawUpstreamProjection] as? Bool == true
+        try container.encodeIfPresent(self.enabled, forKey: .enabled)
+        try container.encodeIfPresent(self.basePath, forKey: .basePath)
+        try container.encodeIfPresent(self.root, forKey: .root)
+        try container.encodeIfPresent(self.allowedOrigins, forKey: .allowedOrigins)
+        try container.encodeIfPresent(self.dangerouslyAllowHostHeaderOriginFallback, forKey: .dangerouslyAllowHostHeaderOriginFallback)
+        if !projection {
+            try container.encodeIfPresent(self.allowInsecureAuth, forKey: .allowInsecureAuth)
+            try container.encodeIfPresent(self.dangerouslyDisableDeviceAuth, forKey: .dangerouslyDisableDeviceAuth)
+        }
+    }
 }
 
 public enum GatewayAuthMode: String, Codable, Sendable, Equatable, CaseIterable {
@@ -52,15 +113,133 @@ public struct GatewayTrustedProxyConfig: Codable, Sendable, Equatable {
     public var userHeader: String
     public var requiredHeaders: [String]?
     public var allowUsers: [String]?
+    /// Accept proxied requests arriving from loopback (2026.9.6).
+    public var allowLoopback: Bool?
+    /// Cloudflare Access OIDC verification (`issuer`, `providerId`, `githubAccountIdClaim`; 2026.9.6).
+    public var cloudflareAccessOidc: [String: String]?
+    /// Automatic device approval for proxied identities (`enabled`, `scopes`; 2026.9.6).
+    public var deviceAutoApprove: GatewayDeviceAutoApproveConfig?
 
     public init(
         userHeader: String,
         requiredHeaders: [String]? = nil,
-        allowUsers: [String]? = nil
+        allowUsers: [String]? = nil,
+        allowLoopback: Bool? = nil,
+        cloudflareAccessOidc: [String: String]? = nil,
+        deviceAutoApprove: GatewayDeviceAutoApproveConfig? = nil
     ) {
         self.userHeader = userHeader
         self.requiredHeaders = requiredHeaders
         self.allowUsers = allowUsers
+        self.allowLoopback = allowLoopback
+        self.cloudflareAccessOidc = cloudflareAccessOidc
+        self.deviceAutoApprove = deviceAutoApprove
+    }
+}
+
+/// `gateway.auth.trustedProxy.deviceAutoApprove`.
+public struct GatewayDeviceAutoApproveConfig: Codable, Sendable, Equatable {
+    /// Enables auto-approval (default `false`).
+    public var enabled: Bool?
+    /// Scopes granted to auto-approved devices.
+    public var scopes: [String]?
+
+    /// Creates device auto-approval settings.
+    /// - Parameters:
+    ///   - enabled: Enables auto-approval.
+    ///   - scopes: Granted scopes.
+    public init(enabled: Bool? = nil, scopes: [String]? = nil) {
+        self.enabled = enabled
+        self.scopes = scopes
+    }
+}
+
+/// Shared-secret hygiene for gateway token/password auth (upstream 2026.9.3–9.4 "one Gateway secret").
+///
+/// Upstream accepts the shared secret in either the `token` or the `password` connect field and
+/// rejects blank and well-known placeholder values. Clients send the secret as `auth.token` by default
+/// (older password-mode gateways need `auth.password`); servers compare `token ?? password` in token
+/// mode and `password ?? token` in password mode, in constant time (``constantTimeEquals(_:_:)``).
+public enum GatewaySharedSecretPolicy {
+    /// Recommended minimum secret length; shorter secrets produce a warning.
+    public static let minimumRecommendedLength = 16
+
+    /// Known placeholder values (compared case-insensitively after trimming).
+    public static let placeholderValues: Set<String> = [
+        "changeme", "change-me", "change_me", "password", "passw0rd", "secret", "token", "your-token", "your_token",
+        "yourtoken", "your-password", "your_password", "your-secret", "your-gateway-token", "your-gateway-password",
+        "<token>", "<password>", "<secret>", "replace-me", "replaceme", "example", "example-token", "test", "admin",
+        "openclaw", "default", "xxx", "xxxx", "xxxxx", "12345", "123456", "12345678", "1234567890", "qwerty",
+        ConfigRedaction.sentinel.lowercased(),
+    ]
+
+    /// Result of evaluating a shared secret.
+    public enum Strength: String, Sendable, Equatable {
+        /// Blank or a known placeholder (rejected).
+        case placeholder
+        /// Shorter than ``minimumRecommendedLength`` (warned).
+        case weak
+        /// Acceptable.
+        case acceptable
+    }
+
+    /// Evaluates a plaintext shared secret.
+    /// - Parameter secret: Secret value.
+    /// - Returns: Placeholder, weak or acceptable.
+    public static func evaluate(_ secret: String) -> Strength {
+        let trimmed = secret.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || self.placeholderValues.contains(trimmed.lowercased()) || ConfigRedaction.isRedactedSecretValue(trimmed) {
+            return .placeholder
+        }
+        if trimmed.count < self.minimumRecommendedLength {
+            return .weak
+        }
+        return .acceptable
+    }
+
+    /// Whether the secret is blank or a known placeholder.
+    /// - Parameter secret: Secret value.
+    /// - Returns: `true` when the secret must be rejected.
+    public static func isPlaceholder(_ secret: String) -> Bool {
+        self.evaluate(secret) == .placeholder
+    }
+
+    /// Compares two secrets without early exit on the first mismatching byte.
+    /// - Parameters:
+    ///   - lhs: First secret.
+    ///   - rhs: Second secret.
+    /// - Returns: `true` when both are byte-for-byte equal.
+    public static func constantTimeEquals(_ lhs: String, _ rhs: String) -> Bool {
+        let left = Array(lhs.utf8)
+        let right = Array(rhs.utf8)
+        var difference = UInt8(truncatingIfNeeded: left.count ^ right.count)
+        let length = max(left.count, right.count)
+        for index in 0..<length {
+            let a = index < left.count ? left[index] : 0
+            let b = index < right.count ? right[index] : 0
+            difference |= a ^ b
+        }
+        return difference == 0 && left.count == right.count
+    }
+
+    /// The connect secret a server should compare: in token mode `token ?? password`, in password mode
+    /// `password ?? token` (either client field may carry the single shared secret).
+    /// - Parameters:
+    ///   - mode: Configured auth mode.
+    ///   - token: Client `auth.token`.
+    ///   - password: Client `auth.password`.
+    /// - Returns: The presented secret, if any.
+    public static func presentedSecret(mode: GatewayAuthMode, token: String?, password: String?) -> String? {
+        func nonEmpty(_ value: String?) -> String? {
+            guard let value, !value.isEmpty else { return nil }
+            return value
+        }
+        switch mode {
+        case .password:
+            return nonEmpty(password) ?? nonEmpty(token)
+        default:
+            return nonEmpty(token) ?? nonEmpty(password)
+        }
     }
 }
 
@@ -81,6 +260,25 @@ public struct GatewayAuthRateLimitConfig: Codable, Sendable, Equatable {
         self.lockoutMs = lockoutMs
         self.exemptLoopback = exemptLoopback
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case maxAttempts
+        case windowMs
+        case lockoutMs
+        case exemptLoopback
+    }
+
+    /// Decodes each field leniently (a malformed value is recorded as an issue and dropped alone).
+    /// - Parameter decoder: Source decoder.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            maxAttempts: container.decodeLenient(Int.self, forKey: .maxAttempts),
+            windowMs: container.decodeLenient(Int.self, forKey: .windowMs),
+            lockoutMs: container.decodeLenient(Int.self, forKey: .lockoutMs),
+            exemptLoopback: container.decodeLenient(Bool.self, forKey: .exemptLoopback)
+        )
+    }
 }
 
 public struct GatewayAuthConfig: Codable, Sendable, Equatable {
@@ -90,6 +288,8 @@ public struct GatewayAuthConfig: Codable, Sendable, Equatable {
     public var allowTailscale: Bool?
     public var rateLimit: GatewayAuthRateLimitConfig?
     public var trustedProxy: GatewayTrustedProxyConfig?
+    /// Operator scopes granted per trusted identity (`gateway.auth.identityScopes`, 2026.9.6).
+    public var identityScopes: [String: [String]]?
 
     public init(
         mode: GatewayAuthMode = .token,
@@ -97,7 +297,8 @@ public struct GatewayAuthConfig: Codable, Sendable, Equatable {
         password: SecretInput? = nil,
         allowTailscale: Bool? = nil,
         rateLimit: GatewayAuthRateLimitConfig? = nil,
-        trustedProxy: GatewayTrustedProxyConfig? = nil
+        trustedProxy: GatewayTrustedProxyConfig? = nil,
+        identityScopes: [String: [String]]? = nil
     ) {
         self.mode = mode
         self.token = token
@@ -105,6 +306,7 @@ public struct GatewayAuthConfig: Codable, Sendable, Equatable {
         self.allowTailscale = allowTailscale
         self.rateLimit = rateLimit
         self.trustedProxy = trustedProxy
+        self.identityScopes = identityScopes
     }
 
     public static func plaintext(
@@ -130,18 +332,44 @@ public struct GatewayAuthConfig: Codable, Sendable, Equatable {
         case token
         case password
         case allowTailscale
+        case identityScopes
         case rateLimit
         case trustedProxy
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.mode = try container.decodeIfPresent(GatewayAuthMode.self, forKey: .mode) ?? .token
-        self.token = try container.decodeIfPresent(SecretInput.self, forKey: .token)
-        self.password = try container.decodeIfPresent(SecretInput.self, forKey: .password)
-        self.allowTailscale = try container.decodeIfPresent(Bool.self, forKey: .allowTailscale)
-        self.rateLimit = try container.decodeIfPresent(GatewayAuthRateLimitConfig.self, forKey: .rateLimit)
-        self.trustedProxy = try container.decodeIfPresent(GatewayTrustedProxyConfig.self, forKey: .trustedProxy)
+        self.mode = container.decodeLenient(GatewayAuthMode.self, forKey: .mode) ?? .token
+        self.token = container.decodeLenient(SecretInput.self, forKey: .token)
+        self.password = container.decodeLenient(SecretInput.self, forKey: .password)
+        self.allowTailscale = container.decodeLenient(Bool.self, forKey: .allowTailscale)
+        self.rateLimit = container.decodeLenient(GatewayAuthRateLimitConfig.self, forKey: .rateLimit)
+        self.trustedProxy = container.decodeLenient(GatewayTrustedProxyConfig.self, forKey: .trustedProxy)
+        self.identityScopes = container.decodeLenient([String: [String]].self, forKey: .identityScopes)
+    }
+
+    /// Encodes the auth block (`mode` is always written).
+    /// - Parameter encoder: Target encoder.
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(self.mode, forKey: .mode)
+        try container.encodeIfPresent(self.token, forKey: .token)
+        try container.encodeIfPresent(self.password, forKey: .password)
+        try container.encodeIfPresent(self.allowTailscale, forKey: .allowTailscale)
+        try container.encodeIfPresent(self.identityScopes, forKey: .identityScopes)
+        try container.encodeIfPresent(self.rateLimit, forKey: .rateLimit)
+        try container.encodeIfPresent(self.trustedProxy, forKey: .trustedProxy)
+    }
+
+    /// The single shared secret: `token` in token mode, `password` in password mode, falling back to the
+    /// other field (upstream accepts the secret in either field since 2026.9.3).
+    public var sharedSecret: SecretInput? {
+        switch self.mode {
+        case .password:
+            return self.password ?? self.token
+        default:
+            return self.token ?? self.password
+        }
     }
 
     public func validationErrors() -> [String] {
@@ -151,6 +379,12 @@ public struct GatewayAuthConfig: Codable, Sendable, Equatable {
             if userHeader.isEmpty {
                 errors.append("gateway.auth.trustedProxy.userHeader is required when auth.mode is trusted-proxy.")
             }
+        }
+        if self.mode == .token || self.mode == .password,
+           let secret = self.sharedSecret?.stringValue,
+           GatewaySharedSecretPolicy.isPlaceholder(secret)
+        {
+            errors.append("gateway.auth \(self.mode.rawValue) must not be blank or a placeholder value.")
         }
         return errors
     }
@@ -165,13 +399,34 @@ public enum GatewayTailscaleMode: String, Codable, Sendable, Equatable, CaseIter
 public struct GatewayTailscaleConfig: Codable, Sendable, Equatable {
     public var mode: GatewayTailscaleMode?
     public var resetOnExit: Bool?
+    /// Keep Funnel routes across restarts (deprecated upstream).
+    public var preserveFunnel: Bool?
 
     public init(
         mode: GatewayTailscaleMode? = nil,
-        resetOnExit: Bool? = nil
+        resetOnExit: Bool? = nil,
+        preserveFunnel: Bool? = nil
     ) {
         self.mode = mode
         self.resetOnExit = resetOnExit
+        self.preserveFunnel = preserveFunnel
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case mode
+        case resetOnExit
+        case preserveFunnel
+    }
+
+    /// Encodes the block; the upstream projection drops the retired `resetOnExit`.
+    /// - Parameter encoder: Target encoder.
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(self.mode, forKey: .mode)
+        if encoder.userInfo[.openClawUpstreamProjection] as? Bool != true {
+            try container.encodeIfPresent(self.resetOnExit, forKey: .resetOnExit)
+        }
+        try container.encodeIfPresent(self.preserveFunnel, forKey: .preserveFunnel)
     }
 }
 
@@ -180,15 +435,30 @@ public enum GatewayRemoteTransport: String, Codable, Sendable, Equatable, CaseIt
     case direct
 }
 
+/// SSH host-key policy for SSH-tunnelled remote gateways.
+public enum GatewaySSHHostKeyPolicy: String, Codable, Sendable, Equatable, CaseIterable {
+    /// Require a known host key.
+    case strict
+    /// Defer to OpenSSH's own host-key handling.
+    case openssh
+}
+
 public struct GatewayRemoteConfig: Codable, Sendable, Equatable {
+    /// SDK-only toggle (never written into an upstream projection).
     public var enabled: Bool?
     public var url: String?
     public var transport: GatewayRemoteTransport?
+    /// Remote gateway port reached through an SSH tunnel.
+    public var remotePort: Int?
     public var token: SecretInput?
     public var password: SecretInput?
+    /// Extra headers presented to edge proxies in front of the gateway (values are secrets).
+    public var edgeAuth: [String: SecretInput]?
     public var tlsFingerprint: String?
     public var sshTarget: String?
     public var sshIdentity: String?
+    /// SSH host-key policy.
+    public var sshHostKeyPolicy: GatewaySSHHostKeyPolicy?
 
     public init(
         enabled: Bool? = nil,
@@ -198,16 +468,22 @@ public struct GatewayRemoteConfig: Codable, Sendable, Equatable {
         password: SecretInput? = nil,
         tlsFingerprint: String? = nil,
         sshTarget: String? = nil,
-        sshIdentity: String? = nil
+        sshIdentity: String? = nil,
+        remotePort: Int? = nil,
+        edgeAuth: [String: SecretInput]? = nil,
+        sshHostKeyPolicy: GatewaySSHHostKeyPolicy? = nil
     ) {
         self.enabled = enabled
         self.url = url
         self.transport = transport
+        self.remotePort = remotePort
         self.token = token
         self.password = password
+        self.edgeAuth = edgeAuth
         self.tlsFingerprint = tlsFingerprint
         self.sshTarget = sshTarget
         self.sshIdentity = sshIdentity
+        self.sshHostKeyPolicy = sshHostKeyPolicy
     }
 
     public static func plaintext(
@@ -230,6 +506,99 @@ public struct GatewayRemoteConfig: Codable, Sendable, Equatable {
             sshTarget: sshTarget,
             sshIdentity: sshIdentity
         )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled
+        case url
+        case transport
+        case remotePort
+        case token
+        case password
+        case edgeAuth
+        case tlsFingerprint
+        case sshTarget
+        case sshIdentity
+        case sshHostKeyPolicy
+    }
+
+    /// Decodes the remote block leniently (unknown transports and policies become `nil` plus an issue).
+    /// - Parameter decoder: Source decoder.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.enabled = container.decodeLenient(Bool.self, forKey: .enabled)
+        self.url = try container.decodeIfPresent(String.self, forKey: .url)
+        self.transport = container.decodeLenient(GatewayRemoteTransport.self, forKey: .transport)
+        self.remotePort = container.decodeLenient(Int.self, forKey: .remotePort)
+        self.token = try container.decodeIfPresent(SecretInput.self, forKey: .token)
+        self.password = try container.decodeIfPresent(SecretInput.self, forKey: .password)
+        self.edgeAuth = container.decodeLossyDictionaryIfPresent(SecretInput.self, forKey: .edgeAuth)
+        self.tlsFingerprint = try container.decodeIfPresent(String.self, forKey: .tlsFingerprint)
+        self.sshTarget = try container.decodeIfPresent(String.self, forKey: .sshTarget)
+        self.sshIdentity = try container.decodeIfPresent(String.self, forKey: .sshIdentity)
+        self.sshHostKeyPolicy = container.decodeLenient(GatewaySSHHostKeyPolicy.self, forKey: .sshHostKeyPolicy)
+    }
+
+    /// Encodes the remote block; the upstream projection omits the SDK-only `enabled`.
+    /// - Parameter encoder: Target encoder.
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        if encoder.userInfo[.openClawUpstreamProjection] as? Bool != true {
+            try container.encodeIfPresent(self.enabled, forKey: .enabled)
+        }
+        try container.encodeIfPresent(self.url, forKey: .url)
+        try container.encodeIfPresent(self.transport, forKey: .transport)
+        try container.encodeIfPresent(self.remotePort, forKey: .remotePort)
+        try container.encodeIfPresent(self.token, forKey: .token)
+        try container.encodeIfPresent(self.password, forKey: .password)
+        try container.encodeIfPresent(self.edgeAuth, forKey: .edgeAuth)
+        try container.encodeIfPresent(self.tlsFingerprint, forKey: .tlsFingerprint)
+        try container.encodeIfPresent(self.sshTarget, forKey: .sshTarget)
+        try container.encodeIfPresent(self.sshIdentity, forKey: .sshIdentity)
+        try container.encodeIfPresent(self.sshHostKeyPolicy, forKey: .sshHostKeyPolicy)
+    }
+
+    /// Upstream `findEdgeAuthIssue`: non-empty map, RFC 7230 token header names, no transport-owned
+    /// headers, and no names that differ only by case.
+    /// - Returns: The first problem, or `nil` when `edgeAuth` is absent or valid.
+    public func edgeAuthValidationError() -> String? {
+        guard let edgeAuth else { return nil }
+        return GatewayEdgeAuthHeaders.validationError(edgeAuth.keys.sorted())
+    }
+}
+
+/// Header-name rules for `gateway.remote.edgeAuth` (port of `src/shared/gateway-edge-auth-headers.ts`).
+public enum GatewayEdgeAuthHeaders {
+    /// Headers the WebSocket transport owns and edge auth must not set.
+    public static let transportOwnedHeaders: Set<String> = [
+        "host", "connection", "upgrade", "content-length",
+        "sec-websocket-key", "sec-websocket-version", "sec-websocket-protocol", "sec-websocket-extensions",
+    ]
+
+    private static let tokenCharacters = Set("!#$%&'*+-.^_`|~0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
+    /// Validates edge-auth header names.
+    /// - Parameter names: Header names in authored order.
+    /// - Returns: The first problem, or `nil` when valid.
+    public static func validationError(_ names: [String]) -> String? {
+        guard !names.isEmpty else {
+            return "invalid gateway.remote.edgeAuth: header map must not be empty"
+        }
+        var seen: [String: String] = [:]
+        for name in names {
+            guard !name.isEmpty, name.allSatisfy({ self.tokenCharacters.contains($0) }) else {
+                return "invalid gateway.remote.edgeAuth header name: \"\(name)\""
+            }
+            let normalized = name.lowercased()
+            if self.transportOwnedHeaders.contains(normalized) {
+                return "gateway.remote.edgeAuth cannot set transport-owned header \"\(name)\""
+            }
+            if let original = seen[normalized] {
+                return "gateway.remote.edgeAuth header names \"\(original)\" and \"\(name)\" differ only by case"
+            }
+            seen[normalized] = name
+        }
+        return nil
     }
 }
 
@@ -286,6 +655,27 @@ public struct GatewayHTTPChatCompletionsConfig: Codable, Sendable, Equatable {
         self.maxImageParts = maxImageParts
         self.maxTotalImageBytes = maxTotalImageBytes
         self.images = images
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled
+        case maxBodyBytes
+        case maxImageParts
+        case maxTotalImageBytes
+        case images
+    }
+
+    /// Encodes the endpoint; the upstream projection drops the retired body/image size limits.
+    /// - Parameter encoder: Target encoder.
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(self.enabled, forKey: .enabled)
+        if encoder.userInfo[.openClawUpstreamProjection] as? Bool != true {
+            try container.encodeIfPresent(self.maxBodyBytes, forKey: .maxBodyBytes)
+            try container.encodeIfPresent(self.maxImageParts, forKey: .maxImageParts)
+            try container.encodeIfPresent(self.maxTotalImageBytes, forKey: .maxTotalImageBytes)
+        }
+        try container.encodeIfPresent(self.images, forKey: .images)
     }
 }
 
@@ -409,6 +799,19 @@ public struct GatewayHTTPResponsesConfig: Codable, Sendable, Equatable {
         case files
         case images
     }
+
+    /// Encodes the endpoint; the upstream projection drops the retired `maxBodyBytes`.
+    /// - Parameter encoder: Target encoder.
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(self.enabled, forKey: .enabled)
+        if encoder.userInfo[.openClawUpstreamProjection] as? Bool != true {
+            try container.encodeIfPresent(self.maxBodyBytes, forKey: .maxBodyBytes)
+        }
+        try container.encodeIfPresent(self.maxURLParts, forKey: .maxURLParts)
+        try container.encodeIfPresent(self.files, forKey: .files)
+        try container.encodeIfPresent(self.images, forKey: .images)
+    }
 }
 
 public struct GatewayHTTPEndpointsConfig: Codable, Sendable, Equatable {
@@ -424,24 +827,79 @@ public struct GatewayHTTPEndpointsConfig: Codable, Sendable, Equatable {
     }
 }
 
+/// `gateway.http.securityHeaders` (upstream `strictTransportSecurity: string | false`).
 public struct GatewayHTTPSecurityHeadersConfig: Codable, Sendable, Equatable {
+    /// `Strict-Transport-Security` header value.
     public var strictTransportSecurity: String?
+    /// Whether HSTS is explicitly disabled (upstream `strictTransportSecurity: false`); encoded as
+    /// `false` when ``strictTransportSecurity`` is `nil`.
+    public var strictTransportSecurityDisabled: Bool
 
-    public init(strictTransportSecurity: String? = nil) {
+    /// Creates the security headers block.
+    /// - Parameters:
+    ///   - strictTransportSecurity: `Strict-Transport-Security` header value.
+    ///   - strictTransportSecurityDisabled: Whether HSTS is explicitly disabled.
+    public init(strictTransportSecurity: String? = nil, strictTransportSecurityDisabled: Bool = false) {
         self.strictTransportSecurity = strictTransportSecurity
+        self.strictTransportSecurityDisabled = strictTransportSecurityDisabled
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case strictTransportSecurity
+    }
+
+    /// Decodes a header string or `false` (other values are recorded as issues and dropped).
+    /// - Parameter decoder: Source decoder.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let value = container.decodeLenient(ConfigStringOrFalse.self, forKey: .strictTransportSecurity)
+        self.init(strictTransportSecurity: value?.stringValue, strictTransportSecurityDisabled: value == .disabled)
+    }
+
+    /// Encodes the header string, or `false` when disabled.
+    /// - Parameter encoder: Target encoder.
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        if let strictTransportSecurity {
+            try container.encode(strictTransportSecurity, forKey: .strictTransportSecurity)
+        } else if self.strictTransportSecurityDisabled {
+            try container.encode(false, forKey: .strictTransportSecurity)
+        }
     }
 }
 
+/// `gateway.http`.
 public struct GatewayHTTPConfig: Codable, Sendable, Equatable {
+    /// HTTP endpoint toggles.
     public var endpoints: GatewayHTTPEndpointsConfig?
+    /// Security headers.
     public var securityHeaders: GatewayHTTPSecurityHeadersConfig?
 
+    /// Creates the HTTP block.
+    /// - Parameters:
+    ///   - endpoints: HTTP endpoint toggles.
+    ///   - securityHeaders: Security headers.
     public init(
         endpoints: GatewayHTTPEndpointsConfig? = nil,
         securityHeaders: GatewayHTTPSecurityHeadersConfig? = nil
     ) {
         self.endpoints = endpoints
         self.securityHeaders = securityHeaders
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case endpoints
+        case securityHeaders
+    }
+
+    /// Decodes each block leniently: a malformed block is recorded as an issue and dropped alone.
+    /// - Parameter decoder: Source decoder.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            endpoints: container.decodeLenient(GatewayHTTPEndpointsConfig.self, forKey: .endpoints),
+            securityHeaders: container.decodeLenient(GatewayHTTPSecurityHeadersConfig.self, forKey: .securityHeaders)
+        )
     }
 }
 
@@ -479,22 +937,135 @@ public struct GatewayPushConfig: Codable, Sendable, Equatable {
     }
 }
 
+/// `gateway.nodes.commands` allow/deny lists (node command ids).
+public struct GatewayNodeCommandsConfig: Codable, Sendable, Equatable {
+    /// Allowed node commands.
+    public var allow: [String]?
+    /// Denied node commands (deny wins).
+    public var deny: [String]?
+
+    /// Creates node command policy.
+    /// - Parameters:
+    ///   - allow: Allowed commands.
+    ///   - deny: Denied commands.
+    public init(allow: [String]? = nil, deny: [String]? = nil) {
+        self.allow = allow
+        self.deny = deny
+    }
+}
+
+/// `gateway.nodes` subset the SDK uses (pairing and browser settings pass through the document model).
+public struct GatewayNodesConfig: Codable, Sendable, Equatable {
+    /// Allow skills on nodes (default `true`).
+    public var allowSkills: Bool?
+    /// Node command allow/deny lists.
+    public var commands: GatewayNodeCommandsConfig?
+
+    /// Creates node settings.
+    /// - Parameters:
+    ///   - allowSkills: Allow skills on nodes.
+    ///   - commands: Node command policy.
+    public init(allowSkills: Bool? = nil, commands: GatewayNodeCommandsConfig? = nil) {
+        self.allowSkills = allowSkills
+        self.commands = commands
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case allowSkills
+        case commands
+        case allowCommands
+        case denyCommands
+        case skills
+    }
+
+    /// Decodes node settings, accepting the retired `allowCommands`/`denyCommands` and
+    /// `skills.enabled` spellings (canonical keys win).
+    /// - Parameter decoder: Source decoder.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        var commands = container.decodeLenient(GatewayNodeCommandsConfig.self, forKey: .commands)
+        let legacyAllow = container.decodeLenient([String].self, forKey: .allowCommands)
+        let legacyDeny = container.decodeLenient([String].self, forKey: .denyCommands)
+        if legacyAllow != nil || legacyDeny != nil {
+            var merged = commands ?? GatewayNodeCommandsConfig()
+            merged.allow = merged.allow ?? legacyAllow
+            merged.deny = merged.deny ?? legacyDeny
+            commands = merged
+            container.recordConfigIssue(
+                "gateway.nodes.allowCommands/denyCommands moved to gateway.nodes.commands.allow/deny.",
+                kind: .legacyKey,
+                forKey: legacyDeny != nil ? .denyCommands : .allowCommands
+            )
+        }
+        self.commands = commands
+        let legacySkills = container.decodeLenient([String: Bool].self, forKey: .skills)?["enabled"]
+        self.allowSkills = container.decodeLenient(Bool.self, forKey: .allowSkills) ?? legacySkills
+    }
+
+    /// Encodes the canonical keys only.
+    /// - Parameter encoder: Target encoder.
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(self.allowSkills, forKey: .allowSkills)
+        try container.encodeIfPresent(self.commands, forKey: .commands)
+    }
+}
+
+/// Gateway config reload mode (`off` | `hybrid`; retired `restart`/`hot` decode as `hybrid`).
+public enum GatewayReloadMode: String, Codable, Sendable, Equatable, CaseIterable {
+    /// No automatic reload.
+    case off
+    /// Hot-apply where possible, restart otherwise.
+    case hybrid
+
+    /// Decodes a reload mode, mapping the retired `restart` and `hot` values to ``hybrid``.
+    /// - Parameter decoder: Source decoder.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let raw = try container.decode(String.self).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch raw {
+        case "off":
+            self = .off
+        case "hybrid", "restart", "hot":
+            self = .hybrid
+        default:
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid gateway reload mode: \(raw)")
+        }
+    }
+}
+
 public struct GatewayConfig: Codable, Sendable, Equatable {
+    /// Default gateway listener port.
+    public static let defaultPort = 18_789
+    /// Environment variable that overrides ``handshakeTimeoutMs``.
+    public static let handshakeTimeoutEnvironmentKey = "OPENCLAW_HANDSHAKE_TIMEOUT_MS"
+
+    /// SDK-only listener host (never written into an upstream projection; upstream uses `bind`).
     public var host: String
     public var port: Int
+    /// SDK-only legacy auth mode mirror (upstream uses `auth.mode`).
     public var authMode: String
     public var mode: GatewayMode
     public var bind: GatewayBindMode
     public var customBindHost: String?
+    /// Bare HTTPS origin the gateway is reachable at (HTTP only for loopback hosts; 2026.9.6).
+    public var publicOrigin: String?
     public var controlUi: GatewayControlUIConfig?
     public var auth: GatewayAuthConfig
     public var tailscale: GatewayTailscaleConfig?
     public var remote: GatewayRemoteConfig?
+    /// Config reload mode.
+    public var reload: GatewayReloadMode?
     public var http: GatewayHTTPConfig?
     public var push: GatewayPushConfig?
+    /// Node commands and skills.
+    public var nodes: GatewayNodesConfig?
     public var trustedProxies: [String]
     public var allowRealIpFallback: Bool
+    /// SDK-only channel health interval (retired upstream; never written into an upstream projection).
     public var channelHealthCheckMinutes: Int
+    /// SDK-local connect handshake timeout; `OPENCLAW_HANDSHAKE_TIMEOUT_MS` wins (retired upstream key).
+    public var handshakeTimeoutMs: Int?
 
     public init(
         host: String = "127.0.0.1",
@@ -511,8 +1082,16 @@ public struct GatewayConfig: Codable, Sendable, Equatable {
         push: GatewayPushConfig? = nil,
         trustedProxies: [String] = [],
         allowRealIpFallback: Bool = false,
-        channelHealthCheckMinutes: Int = 5
+        channelHealthCheckMinutes: Int = 5,
+        publicOrigin: String? = nil,
+        reload: GatewayReloadMode? = nil,
+        nodes: GatewayNodesConfig? = nil,
+        handshakeTimeoutMs: Int? = nil
     ) {
+        self.publicOrigin = publicOrigin?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.reload = reload
+        self.nodes = nodes
+        self.handshakeTimeoutMs = handshakeTimeoutMs.map { max(1, $0) }
         let normalizedHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
         let derivedBind = bind ?? Self.deriveBind(from: normalizedHost)
         let normalizedAuth = auth ?? GatewayAuthConfig(
@@ -545,24 +1124,31 @@ public struct GatewayConfig: Codable, Sendable, Equatable {
         case mode
         case bind
         case customBindHost
+        case publicOrigin
         case controlUi
         case auth
-        case tailscale
-        case remote
-        case http
-        case push
         case trustedProxies
         case allowRealIpFallback
+        case tailscale
+        case remote
+        case reload
+        case http
+        case push
+        case nodes
         case channelHealthCheckMinutes
+        case handshakeTimeoutMs
     }
 
+    /// Decodes the gateway block leniently: a malformed key (including a nested block) is recorded as
+    /// an issue and dropped alone instead of failing the whole section.
+    /// - Parameter decoder: Source decoder.
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        let host = try container.decodeIfPresent(String.self, forKey: .host) ?? "127.0.0.1"
-        let port = try container.decodeIfPresent(Int.self, forKey: .port) ?? 18_789
-        let mode = try container.decodeIfPresent(GatewayMode.self, forKey: .mode) ?? .local
-        let decodedAuth = try container.decodeIfPresent(GatewayAuthConfig.self, forKey: .auth)
-        let legacyAuthMode = try container.decodeIfPresent(String.self, forKey: .authMode)
+        let host = container.decodeLenient(String.self, forKey: .host) ?? "127.0.0.1"
+        let port = container.decodeLenient(Int.self, forKey: .port) ?? 18_789
+        let mode = container.decodeLenient(GatewayMode.self, forKey: .mode) ?? .local
+        let decodedAuth = container.decodeLenient(GatewayAuthConfig.self, forKey: .auth)
+        let legacyAuthMode = container.decodeLenient(String.self, forKey: .authMode)
         let normalizedAuth = decodedAuth
             ?? GatewayAuthConfig(
                 mode: GatewayAuthMode(rawValue: legacyAuthMode?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "") ?? .token,
@@ -575,22 +1161,89 @@ public struct GatewayConfig: Codable, Sendable, Equatable {
             port: port,
             authMode: decodedAuth?.mode.rawValue ?? legacyAuthMode ?? GatewayAuthMode.token.rawValue,
             mode: mode,
-            bind: try container.decodeIfPresent(GatewayBindMode.self, forKey: .bind),
-            customBindHost: try container.decodeIfPresent(String.self, forKey: .customBindHost),
-            controlUi: try container.decodeIfPresent(GatewayControlUIConfig.self, forKey: .controlUi),
+            bind: container.decodeLenient(GatewayBindMode.self, forKey: .bind),
+            customBindHost: container.decodeLenient(String.self, forKey: .customBindHost),
+            controlUi: container.decodeLenient(GatewayControlUIConfig.self, forKey: .controlUi),
             auth: normalizedAuth,
-            tailscale: try container.decodeIfPresent(GatewayTailscaleConfig.self, forKey: .tailscale),
-            remote: try container.decodeIfPresent(GatewayRemoteConfig.self, forKey: .remote),
-            http: try container.decodeIfPresent(GatewayHTTPConfig.self, forKey: .http),
-            push: try container.decodeIfPresent(GatewayPushConfig.self, forKey: .push),
-            trustedProxies: try container.decodeIfPresent([String].self, forKey: .trustedProxies) ?? [],
-            allowRealIpFallback: try container.decodeIfPresent(Bool.self, forKey: .allowRealIpFallback) ?? false,
-            channelHealthCheckMinutes: try container.decodeIfPresent(Int.self, forKey: .channelHealthCheckMinutes) ?? 5
+            tailscale: container.decodeLenient(GatewayTailscaleConfig.self, forKey: .tailscale),
+            remote: container.decodeLenient(GatewayRemoteConfig.self, forKey: .remote),
+            http: container.decodeLenient(GatewayHTTPConfig.self, forKey: .http),
+            push: container.decodeLenient(GatewayPushConfig.self, forKey: .push),
+            trustedProxies: container.decodeLenient([String].self, forKey: .trustedProxies) ?? [],
+            allowRealIpFallback: container.decodeLenient(Bool.self, forKey: .allowRealIpFallback) ?? false,
+            channelHealthCheckMinutes: container.decodeLenient(Int.self, forKey: .channelHealthCheckMinutes) ?? 5,
+            publicOrigin: container.decodeLenient(String.self, forKey: .publicOrigin),
+            reload: Self.decodeReloadMode(container),
+            nodes: container.decodeLenient(GatewayNodesConfig.self, forKey: .nodes),
+            handshakeTimeoutMs: container.decodeLenient(Int.self, forKey: .handshakeTimeoutMs)
         )
+    }
+
+    private static func decodeReloadMode(_ container: KeyedDecodingContainer<CodingKeys>) -> GatewayReloadMode? {
+        struct ReloadBlock: Decodable {
+            var mode: GatewayReloadMode?
+        }
+        return container.decodeLenient(ReloadBlock.self, forKey: .reload)?.mode
+    }
+
+    /// Encodes the gateway block.
+    ///
+    /// SDK-native files keep every key. With ``Swift/CodingUserInfoKey/openClawUpstreamProjection`` the
+    /// SDK-only keys (`host`, `authMode`), the retired `channelHealthCheckMinutes`/`handshakeTimeoutMs`,
+    /// and default-valued `trustedProxies`/`allowRealIpFallback` are omitted so the output validates
+    /// against the strict upstream `gateway` schema.
+    /// - Parameter encoder: Target encoder.
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        let projection = encoder.userInfo[.openClawUpstreamProjection] as? Bool == true
+        if !projection {
+            try container.encode(self.host, forKey: .host)
+        }
+        try container.encode(self.port, forKey: .port)
+        if !projection {
+            try container.encode(self.authMode, forKey: .authMode)
+        }
+        try container.encode(self.mode, forKey: .mode)
+        try container.encode(self.bind, forKey: .bind)
+        try container.encodeIfPresent(self.customBindHost, forKey: .customBindHost)
+        try container.encodeIfPresent(self.publicOrigin, forKey: .publicOrigin)
+        try container.encodeIfPresent(self.controlUi, forKey: .controlUi)
+        try container.encode(self.auth, forKey: .auth)
+        if !projection || !self.trustedProxies.isEmpty {
+            try container.encode(self.trustedProxies, forKey: .trustedProxies)
+        }
+        if !projection || self.allowRealIpFallback {
+            try container.encode(self.allowRealIpFallback, forKey: .allowRealIpFallback)
+        }
+        try container.encodeIfPresent(self.tailscale, forKey: .tailscale)
+        try container.encodeIfPresent(self.remote, forKey: .remote)
+        if let reload = self.reload {
+            var reloadContainer = container.nestedContainer(keyedBy: ConfigCodingKey.self, forKey: .reload)
+            try reloadContainer.encode(reload, forKey: ConfigCodingKey("mode"))
+        }
+        try container.encodeIfPresent(self.http, forKey: .http)
+        try container.encodeIfPresent(self.push, forKey: .push)
+        try container.encodeIfPresent(self.nodes, forKey: .nodes)
+        if !projection {
+            try container.encode(self.channelHealthCheckMinutes, forKey: .channelHealthCheckMinutes)
+            try container.encodeIfPresent(self.handshakeTimeoutMs, forKey: .handshakeTimeoutMs)
+        }
     }
 
     public var effectiveAuthMode: GatewayAuthMode {
         self.auth.mode
+    }
+
+    /// Connect handshake timeout: `OPENCLAW_HANDSHAKE_TIMEOUT_MS` wins over ``handshakeTimeoutMs``.
+    /// - Parameter environment: Process environment.
+    /// - Returns: Timeout in milliseconds, or `nil` for the transport default.
+    public func effectiveHandshakeTimeoutMs(environment: [String: String] = ProcessInfo.processInfo.environment) -> Int? {
+        if let raw = environment[Self.handshakeTimeoutEnvironmentKey]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           let value = Int(raw), value > 0
+        {
+            return value
+        }
+        return self.handshakeTimeoutMs
     }
 
     public func validationErrors() -> [String] {
@@ -604,7 +1257,35 @@ public struct GatewayConfig: Codable, Sendable, Equatable {
                 errors.append("gateway.customBindHost is required when gateway.bind is custom.")
             }
         }
+        if let publicOrigin, !Self.isValidPublicOrigin(publicOrigin) {
+            errors.append(
+                "gateway.publicOrigin must be a bare HTTPS origin; HTTP is allowed only for localhost, 127.0.0.1, or [::1]."
+            )
+        }
+        if let edgeAuthError = self.remote?.edgeAuthValidationError() {
+            errors.append(edgeAuthError)
+        }
         return errors
+    }
+
+    /// Upstream `validateGatewayPublicOrigin`: an `http(s)` origin without path, query, fragment or
+    /// credentials; plain HTTP only for loopback hosts.
+    /// - Parameter value: Candidate origin.
+    /// - Returns: `true` when valid.
+    public static func isValidPublicOrigin(_ value: String) -> Bool {
+        guard let components = URLComponents(string: value.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let scheme = components.scheme?.lowercased(),
+              let host = components.host?.lowercased(), !host.isEmpty,
+              components.user == nil, components.password == nil,
+              components.query == nil, components.fragment == nil,
+              components.path.isEmpty || components.path == "/"
+        else {
+            return false
+        }
+        if scheme == "https" {
+            return true
+        }
+        return scheme == "http" && ["localhost", "127.0.0.1", "[::1]", "::1"].contains(host)
     }
 
     private static func deriveBind(from host: String) -> GatewayBindMode {

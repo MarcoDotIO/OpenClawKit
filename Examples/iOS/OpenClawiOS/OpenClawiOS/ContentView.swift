@@ -39,6 +39,12 @@ struct ContentView: View {
                     Label("Channels", systemImage: "bolt.horizontal.circle")
                 }
 
+            // Remote gateway chat over OpenClawGatewaySessionChatTransport (listed under More on iPhone).
+            GatewayChatView()
+                .tabItem {
+                    Label("Gateway", systemImage: "network")
+                }
+
             DiagnosticsView()
                 .tabItem {
                     Label("Diagnostics", systemImage: "waveform.path.ecg")

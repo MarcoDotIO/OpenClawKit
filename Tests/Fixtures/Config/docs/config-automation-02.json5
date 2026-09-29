@@ -1,0 +1,14 @@
+{
+  cron: {
+    failureAlert: {
+      enabled: false,
+      after: 2,
+      cooldownMs: 3600000,
+      includeSkipped: false,
+      mode: "announce",
+      channel: "last",
+      to: "channel:C1234567890",
+      accountId: "main",
+    },
+  },
+}

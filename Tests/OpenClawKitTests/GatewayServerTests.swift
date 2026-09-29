@@ -134,11 +134,11 @@ struct GatewayServerTests {
             params: GatewayBrowserRequestParams(method: "POST", path: "/profiles")
         )
         #expect(blocked.ok == false)
-        #expect(blocked.error?.code == .invalidRequest)
+        #expect(blocked.error?.errorCode == .invalidRequest)
 
         let unsupported = await self.rawRequest(server, method: "unsupported.method", params: EmptyPayload())
         #expect(unsupported.ok == false)
-        #expect(unsupported.error?.code == .invalidRequest)
+        #expect(unsupported.error?.errorCode == .invalidRequest)
 
         let deletedSession = try await self.request(
             server,
@@ -200,13 +200,17 @@ struct GatewayServerTests {
         #expect(waited.status == "ok")
         #expect(waited.output == "first")
 
-        let missingAfterCleanup = await self.rawRequest(
+        // Finished runs leave the active tables but stay answerable for late waits.
+        let lateWait = try await self.request(
             server,
             method: "agent.wait",
-            params: GatewayAgentWaitParams(runID: accepted.runID, timeoutMs: 10)
+            params: GatewayAgentWaitParams(runID: accepted.runID, timeoutMs: 10),
+            as: GatewayAgentWaitResult.self
         )
-        #expect(missingAfterCleanup.ok == false)
-        #expect(missingAfterCleanup.error?.code == .unavailable)
+        #expect(lateWait.status == "ok")
+        #expect(lateWait.output == "first")
+        let abortFinished = await self.rawRequest(server, method: "sessions.abort", params: ["runId": AnyCodable(accepted.runID)])
+        #expect(abortFinished.payload?.dictionaryValue?["status"] == AnyCodable("no-active-run"))
 
         let slow = try await self.request(
             server,
@@ -261,7 +265,7 @@ struct GatewayServerTests {
             params: GatewaySessionPatchParams(key: "   ")
         )
         #expect(invalidSessionKey.ok == false)
-        #expect(invalidSessionKey.error?.code == .invalidRequest)
+        #expect(invalidSessionKey.error?.errorCode == .invalidRequest)
 
         let invalidPayload = await defaultServer.handle(
             RequestFrame(
@@ -272,7 +276,7 @@ struct GatewayServerTests {
             )
         )
         #expect(invalidPayload.ok == false)
-        #expect(invalidPayload.error?.code == .invalidRequest)
+        #expect(invalidPayload.error?.errorCode == .invalidRequest)
 
         let missingReset = try await self.request(
             defaultServer,
@@ -292,11 +296,11 @@ struct GatewayServerTests {
 
         let unavailableModels = await self.rawRequest(defaultServer, method: "models.list", params: EmptyPayload())
         #expect(unavailableModels.ok == false)
-        #expect(unavailableModels.error?.code == .unavailable)
+        #expect(unavailableModels.error?.errorCode == .unavailable)
 
         let unavailableSkills = await self.rawRequest(defaultServer, method: "skills.list", params: EmptyPayload())
         #expect(unavailableSkills.ok == false)
-        #expect(unavailableSkills.error?.code == .unavailable)
+        #expect(unavailableSkills.error?.errorCode == .unavailable)
 
         let unavailableInvoke = await self.rawRequest(
             defaultServer,
@@ -304,7 +308,7 @@ struct GatewayServerTests {
             params: GatewaySkillInvokeParams(name: "hello", input: "world")
         )
         #expect(unavailableInvoke.ok == false)
-        #expect(unavailableInvoke.error?.code == .unavailable)
+        #expect(unavailableInvoke.error?.errorCode == .unavailable)
 
         let unavailableAgent = await self.rawRequest(
             defaultServer,
@@ -312,7 +316,7 @@ struct GatewayServerTests {
             params: GatewayAgentRequest(sessionKey: "fallback", prompt: "hello")
         )
         #expect(unavailableAgent.ok == false)
-        #expect(unavailableAgent.error?.code == .unavailable)
+        #expect(unavailableAgent.error?.errorCode == .unavailable)
 
         let unavailableBrowser = await self.rawRequest(
             defaultServer,
@@ -320,7 +324,7 @@ struct GatewayServerTests {
             params: GatewayBrowserRequestParams(method: "GET", path: "/ok")
         )
         #expect(unavailableBrowser.ok == false)
-        #expect(unavailableBrowser.error?.code == .unavailable)
+        #expect(unavailableBrowser.error?.errorCode == .unavailable)
 
         let invalidBrowserMethod = await self.rawRequest(
             GatewayServer(
@@ -334,7 +338,7 @@ struct GatewayServerTests {
             params: GatewayBrowserRequestParams(method: "PUT", path: "/ok")
         )
         #expect(invalidBrowserMethod.ok == false)
-        #expect(invalidBrowserMethod.error?.code == .invalidRequest)
+        #expect(invalidBrowserMethod.error?.errorCode == .invalidRequest)
 
         let invalidBrowserPath = await self.rawRequest(
             GatewayServer(
@@ -348,7 +352,7 @@ struct GatewayServerTests {
             params: GatewayBrowserRequestParams(method: "GET", path: "missing-slash")
         )
         #expect(invalidBrowserPath.ok == false)
-        #expect(invalidBrowserPath.error?.code == .invalidRequest)
+        #expect(invalidBrowserPath.error?.errorCode == .invalidRequest)
 
         let permissiveProfileRead = try await self.request(
             GatewayServer(
@@ -380,12 +384,12 @@ struct GatewayServerTests {
         )
         let unknownErrorResponse = await self.rawRequest(unknownErrorServer, method: "models.list", params: EmptyPayload())
         #expect(unknownErrorResponse.ok == false)
-        #expect(unknownErrorResponse.error?.code == .unavailable)
+        #expect(unknownErrorResponse.error?.errorCode == .unavailable)
     }
 
     @Test
-    func gatewayServerDecodesKnown20260425MethodsAsUnavailable() async throws {
-        let root = try self.makeTempDirectory(named: "gateway-server-20260425")
+    func gatewayServerDecodesKnown20260906MethodsAsUnavailable() async throws {
+        let root = try self.makeTempDirectory(named: "gateway-server-20260906")
         defer { try? FileManager.default.removeItem(at: root) }
 
         let server = GatewayServer(
@@ -418,21 +422,6 @@ struct GatewayServerTests {
             {
                 await self.rawRequest(
                     server,
-                    method: "sessions.create",
-                    params: SessionsCreateParams(
-                        key: "main",
-                        agentid: nil,
-                        label: nil,
-                        model: nil,
-                        parentsessionkey: nil,
-                        task: nil,
-                        message: nil
-                    )
-                )
-            },
-            {
-                await self.rawRequest(
-                    server,
                     method: "sessions.send",
                     params: SessionsSendParams(
                         key: "main",
@@ -444,20 +433,7 @@ struct GatewayServerTests {
                     )
                 )
             },
-            { await self.rawRequest(server, method: "sessions.abort", params: SessionsAbortParams(key: "main", runid: nil)) },
-            { await self.rawRequest(server, method: "sessions.compaction.list", params: SessionsCompactionListParams(key: "main")) },
-            {
-                await self.rawRequest(
-                    server,
-                    method: "talk.realtime.session",
-                    params: TalkRealtimeSessionParams(
-                        sessionkey: "main",
-                        provider: "openai",
-                        model: "gpt-realtime",
-                        voice: "alloy"
-                    )
-                )
-            },
+            { await self.rawRequest(server, method: "talk.client.create", params: TalkClientCreateParams(sessionkey: "main")) },
             {
                 await self.rawRequest(
                     server,
@@ -516,8 +492,29 @@ struct GatewayServerTests {
         for request in knownRequests {
             let response = await request()
             #expect(response.ok == false)
-            #expect(response.error?.code == .unavailable)
+            #expect(response.error?.errorCode == .unavailable)
         }
+
+        // 2026.3.0: sessions.create and sessions.abort have built-in handlers (upstream shapes).
+        let created = await self.rawRequest(
+            server,
+            method: "sessions.create",
+            params: SessionsCreateParams(
+                key: "main",
+                agentid: nil,
+                label: nil,
+                model: nil,
+                parentsessionkey: nil,
+                task: nil,
+                message: nil
+            )
+        )
+        #expect(created.ok == true)
+        #expect(created.payload?.dictionaryValue?["key"] == AnyCodable("main"))
+        let aborted = await self.rawRequest(server, method: "sessions.abort", params: SessionsAbortParams(key: "main", runid: nil))
+        #expect(aborted.ok == true)
+        #expect(aborted.payload?.dictionaryValue?["status"] == AnyCodable("no-active-run"))
+        #expect(aborted.payload?.dictionaryValue?["abortedRunId"] == AnyCodable.nullValue)
 
         let invalidKnown = await server.handle(
             RequestFrame(
@@ -528,11 +525,11 @@ struct GatewayServerTests {
             )
         )
         #expect(invalidKnown.ok == false)
-        #expect(invalidKnown.error?.code == .invalidRequest)
+        #expect(invalidKnown.error?.errorCode == .invalidRequest)
 
         let unknown = await self.rawRequest(server, method: "newer.unknown.method", params: EmptyPayload())
         #expect(unknown.ok == false)
-        #expect(unknown.error?.code == .invalidRequest)
+        #expect(unknown.error?.errorCode == .invalidRequest)
     }
 
     @Test
@@ -583,8 +580,6 @@ struct GatewayServerTests {
                 groupActivation: "mentions",
                 sendPolicy: "deny",
                 execHost: "gateway",
-                execSecurity: "allow-list",
-                execAsk: "on_miss",
                 execNode: "  node-20  "
             ),
             as: GatewaySessionMutationResult.self
@@ -600,8 +595,8 @@ struct GatewayServerTests {
         #expect(patched.session?.groupActivation == "mention")
         #expect(patched.session?.sendPolicy == "deny")
         #expect(patched.session?.execHost == "gateway")
-        #expect(patched.session?.execSecurity == "allowlist")
-        #expect(patched.session?.execAsk == "on-miss")
+        #expect(patched.session?.execSecurity == nil)
+        #expect(patched.session?.execAsk == nil)
         #expect(patched.session?.execNode == "node-20")
 
         let sandboxPatch = try await self.request(
@@ -610,31 +605,38 @@ struct GatewayServerTests {
             params: GatewaySessionPatchParams(
                 key: "controls",
                 groupActivation: "always",
-                execHost: "sandbox",
-                execSecurity: "deny",
-                execAsk: "off"
+                execHost: "sandbox"
             ),
             as: GatewaySessionMutationResult.self
         )
         #expect(sandboxPatch.session?.groupActivation == "always")
         #expect(sandboxPatch.session?.execHost == "sandbox")
-        #expect(sandboxPatch.session?.execSecurity == "deny")
-        #expect(sandboxPatch.session?.execAsk == "off")
+
+        let autoPatch = try await self.request(
+            server,
+            method: "sessions.patch",
+            params: GatewaySessionPatchParams(key: "controls", execHost: "auto"),
+            as: GatewaySessionMutationResult.self
+        )
+        #expect(autoPatch.session?.execHost == "auto")
 
         let nodePatch = try await self.request(
             server,
             method: "sessions.patch",
-            params: GatewaySessionPatchParams(
-                key: "controls",
-                execHost: "node",
-                execSecurity: "full",
-                execAsk: "always"
-            ),
+            params: GatewaySessionPatchParams(key: "controls", execHost: "node"),
             as: GatewaySessionMutationResult.self
         )
         #expect(nodePatch.session?.execHost == "node")
-        #expect(nodePatch.session?.execSecurity == "full")
-        #expect(nodePatch.session?.execAsk == "always")
+
+        // 2026.3.0: the retired exec policy fields are rejected (upstream permission-modes.md).
+        let retired = await self.rawRequest(
+            server,
+            method: "sessions.patch",
+            params: GatewaySessionPatchParams(key: "controls", execSecurity: "full", execAsk: "always")
+        )
+        #expect(retired.ok == false)
+        #expect(retired.error?.errorCode == .invalidRequest)
+        #expect(retired.error?.message.contains("permissionMode") == true)
 
         let invalidPatch = try await self.request(
             server,
@@ -645,8 +647,6 @@ struct GatewayServerTests {
                 groupActivation: "sometimes",
                 sendPolicy: "maybe",
                 execHost: "remote",
-                execSecurity: "strict",
-                execAsk: "later",
                 execNode: "   "
             ),
             as: GatewaySessionMutationResult.self
@@ -655,8 +655,6 @@ struct GatewayServerTests {
         #expect(invalidPatch.session?.groupActivation == nil)
         #expect(invalidPatch.session?.sendPolicy == nil)
         #expect(invalidPatch.session?.execHost == nil)
-        #expect(invalidPatch.session?.execSecurity == nil)
-        #expect(invalidPatch.session?.execAsk == nil)
         #expect(invalidPatch.session?.execNode == nil)
 
         let completedRun = try await self.request(
@@ -695,13 +693,16 @@ struct GatewayServerTests {
             params: GatewayAgentRequest(sessionKey: "controls", prompt: "explode"),
             as: GatewayAgentAccepted.self
         )
-        let explodedWait = await self.rawRequest(
+        // A run whose task throws answers a terminal `error` status (upstream), not an RPC error.
+        let explodedWait = try await self.request(
             server,
             method: "agent.wait",
-            params: GatewayAgentWaitParams(runID: explodedRun.runID)
+            params: GatewayAgentWaitParams(runID: explodedRun.runID),
+            as: GatewayAgentWaitResult.self
         )
-        #expect(explodedWait.ok == false)
-        #expect(explodedWait.error?.code == .unavailable)
+        #expect(explodedWait.status == "error")
+        #expect(explodedWait.error?.contains("boom") == true)
+        #expect(explodedWait.endedAt != nil)
     }
 
     @Test
@@ -857,8 +858,7 @@ struct GatewayServerTests {
     }
 
     private static func errorShape(from response: ResponseFrame) throws -> ErrorShape {
-        let payload = try #require(response.error)
-        return try GatewayPayloadCodec.decode(ErrorShape.self, from: AnyCodable(payload))
+        try #require(response.error)
     }
 
     private func makeTempDirectory(named name: String) throws -> URL {
@@ -867,14 +867,5 @@ struct GatewayServerTests {
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root
-    }
-}
-
-private extension Dictionary where Key == String, Value == AnyCodable {
-    var code: ErrorCode? {
-        guard case .string(let rawValue) = self["code"]?.value else {
-            return nil
-        }
-        return ErrorCode(rawValue: rawValue)
     }
 }

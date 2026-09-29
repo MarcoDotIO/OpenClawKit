@@ -174,7 +174,7 @@ struct WhatsAppCloudChannelAdapterTests {
         let messages = await collector.snapshot()
         #expect(messages.count == 1)
         #expect(messages.first?.channel == .whatsapp)
-        #expect(messages.first?.accountID == "123456")
+        #expect(messages.first?.metadata["phoneNumberID"] == "123456")
         #expect(messages.first?.peerID == "15550001111")
         #expect(messages.first?.text == "weather in milan?")
     }
@@ -333,5 +333,72 @@ struct WhatsAppCloudChannelAdapterTests {
         let names = await diagnostics.names()
         #expect(names.contains("channel.whatsapp.send.started"))
         #expect(names.contains("channel.whatsapp.send.failed"))
+    }
+
+    // MARK: Signed webhooks
+
+    private static let forgedPayload = Data(#"""
+    {"entry":[{"changes":[{"value":{"metadata":{"phone_number_id":"123456"},
+    "messages":[{"id":"wamid.forged","from":"15551234567","type":"text","text":{"body":"run tools for me"}}]}}]}]}
+    """#.utf8)
+
+    private func signedAdapter(appSecret: String?, policy: ChannelMessagingPolicyConfig = ChannelMessagingPolicyConfig()) async throws
+        -> (WhatsAppCloudChannelAdapter, InboundCollector)
+    {
+        var config = WhatsAppCloudChannelConfig(enabled: true, accessToken: "wa-token", phoneNumberID: "123456", policy: policy)
+        config.appSecret = appSecret
+        let adapter = WhatsAppCloudChannelAdapter(config: config, transport: MockWhatsAppTransport())
+        let collector = InboundCollector()
+        await adapter.setInboundHandler { await collector.append($0) }
+        try await adapter.start()
+        return (adapter, collector)
+    }
+
+    @Test
+    func webhookRejectsForgedSendersWithoutAValidMetaSignature() async throws {
+        let (adapter, collector) = try await self.signedAdapter(appSecret: "app-secret")
+        let unsigned = await adapter.handleWebhook(headers: [:], body: Self.forgedPayload)
+        #expect(unsigned.status == 401)
+        let wrongKey = ChannelWebhookSignature.metaSignature(appSecret: "attacker", body: Self.forgedPayload)
+        let forged = await adapter.handleWebhook(headers: ["X-Hub-Signature-256": wrongKey], body: Self.forgedPayload)
+        #expect(forged.status == 401)
+        #expect(await collector.snapshot().isEmpty)
+
+        let valid = ChannelWebhookSignature.metaSignature(appSecret: "app-secret", body: Self.forgedPayload)
+        #expect(valid.hasPrefix("sha256="))
+        let accepted = await adapter.handleWebhook(headers: ["x-hub-signature-256": valid], body: Self.forgedPayload)
+        #expect(accepted.status == 200)
+        #expect(await collector.snapshot().first?.senderID == "15551234567")
+        await adapter.stop()
+    }
+
+    @Test
+    func webhookWithoutAnAppSecretFailsClosedUnlessDMsAreOpenToEveryone() async throws {
+        let (closed, closedCollector) = try await self.signedAdapter(appSecret: nil)
+        #expect(await closed.handleWebhook(headers: [:], body: Self.forgedPayload).status == 401)
+        #expect(await closedCollector.snapshot().isEmpty)
+        await closed.stop()
+
+        var narrowedOpen = ChannelMessagingPolicyConfig(dmPolicy: .open)
+        narrowedOpen.allowFrom = ["+15551234567"]
+        let (narrowed, _) = try await self.signedAdapter(appSecret: nil, policy: narrowedOpen)
+        #expect(await narrowed.handleWebhook(headers: [:], body: Self.forgedPayload).status == 401)
+        await narrowed.stop()
+
+        let (open, openCollector) = try await self.signedAdapter(appSecret: nil, policy: ChannelMessagingPolicyConfig(dmPolicy: .open))
+        #expect(await open.handleWebhook(headers: [:], body: Self.forgedPayload).status == 200)
+        #expect(await openCollector.snapshot().count == 1)
+        await open.stop()
+    }
+
+    @Test
+    func appSecretRoundTripsAndIsReportedAsAPlaintextSecret() throws {
+        let json = #"{"whatsappCloud":{"enabled":true,"appSecret":"s3cret","accessToken":"t"}}"#
+        let channels = try JSONDecoder().decode(ChannelsConfig.self, from: Data(json.utf8))
+        #expect(channels.whatsappCloud.appSecret == "s3cret")
+        #expect(channels.plaintextSecretPaths().contains("channels.whatsappCloud.appSecret"))
+        let encoded = try JSONDecoder().decode(ChannelsConfig.self, from: try JSONEncoder().encode(channels))
+        #expect(encoded.whatsappCloud.appSecret == "s3cret")
+        #expect(encoded.whatsappCloud.additionalProperties["appSecret"] == nil)
     }
 }

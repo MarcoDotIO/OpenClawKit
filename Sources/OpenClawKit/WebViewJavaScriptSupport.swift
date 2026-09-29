@@ -1,7 +1,11 @@
+import CoreFoundation
 import Foundation
+#if canImport(WebKit)
 import WebKit
 
 /// Shared WKWebView JavaScript helpers used by browser and canvas integrations.
+///
+/// Available only where WebKit exists (not on tvOS or watchOS).
 public enum WebViewJavaScriptSupport {
     /// Applies the shared debug-status banner state to a web view.
     @MainActor
@@ -38,13 +42,23 @@ public enum WebViewJavaScriptSupport {
                     cont.resume(throwing: error)
                     return
                 }
-                if let result {
-                    cont.resume(returning: String(describing: result))
-                } else {
-                    cont.resume(returning: "")
-                }
+                cont.resume(returning: self.evaluationResultString(result))
             }
         }
+    }
+
+    /// Coerces a JavaScript evaluation result to a string; JavaScript booleans become `true`/`false`
+    /// instead of NSNumber's `1`/`0`.
+    static func evaluationResultString(_ result: Any?) -> String {
+        guard let result else { return "" }
+        // WebKit bridges JavaScript booleans and numbers through NSNumber.
+        // Preserve the Boolean contract before generic numeric description.
+        if let number = result as? NSNumber,
+           CFGetTypeID(number) == CFBooleanGetTypeID()
+        {
+            return number.boolValue ? "true" : "false"
+        }
+        return String(describing: result)
     }
 
     /// Encodes an optional string as a JavaScript literal or `null`.
@@ -59,3 +73,4 @@ public enum WebViewJavaScriptSupport {
         return "null"
     }
 }
+#endif

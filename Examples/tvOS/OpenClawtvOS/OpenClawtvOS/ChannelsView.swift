@@ -28,6 +28,28 @@ struct ChannelsView: View {
                     }
                 }
 
+                Section("Pairing Requests") {
+                    if appState.pendingPairingRequests.isEmpty {
+                        Text("No pending requests. Unknown DM senders receive a pairing code first.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(appState.pendingPairingRequests) { item in
+                            Button {
+                                Task { await appState.approvePairing(item) }
+                            } label: {
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text("Approve \(item.channel.rawValue) · \(item.senderID)")
+                                        .font(.headline)
+                                    Text("code \(item.code) · account \(item.accountID)")
+                                        .font(.footnote.monospaced())
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                }
+
                 Section("Channel Health") {
                     if appState.channelHealthItems.isEmpty {
                         ContentUnavailableView(

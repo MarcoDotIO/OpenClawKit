@@ -1,0 +1,7 @@
+{
+  discovery: {
+    mdns: {
+      mode: "minimal", // minimal | full | off
+    },
+  },
+}

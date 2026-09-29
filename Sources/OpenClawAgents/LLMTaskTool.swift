@@ -77,6 +77,53 @@ public enum LLMTaskToolError: Error, LocalizedError, Sendable, Equatable {
 public struct LLMTaskTool: AgentTool {
     public let name: String
 
+    /// JSON Schema of the `llm-task` arguments (upstream `llmTaskToolDefinition.parameters`).
+    public static let parametersSchema: [String: AnyCodable] = [
+        "type": AnyCodable("object"),
+        "properties": AnyCodable([
+            "prompt": Self.property(type: "string", description: "Task instruction for the LLM."),
+            "input": Self.property(type: nil, description: "Optional input payload for the task."),
+            "schema": Self.property(type: nil, description: "Optional JSON Schema to validate the returned JSON."),
+            "provider": Self.property(type: "string", description: "Provider override (e.g. openai, anthropic)."),
+            "model": Self.property(type: "string", description: "Model id override."),
+            "thinking": Self.property(type: "string", description: "Thinking level override."),
+            "authProfileId": Self.property(type: "string", description: "Auth profile override."),
+            "temperature": Self.property(type: "number", description: "Best-effort temperature override."),
+            "maxTokens": Self.property(type: "integer", description: "Best-effort maxTokens override.", minimum: 1),
+            "timeoutMs": Self.property(type: "integer", description: "Timeout for the LLM run.", minimum: 1, maximum: Self.maxTimeoutMs),
+        ] as [String: AnyCodable]),
+        "required": AnyCodable(["prompt"]),
+    ]
+
+    /// Model-facing description of the tool (upstream `llmTaskToolDefinition`).
+    public var descriptor: AgentToolDescriptor {
+        AgentToolDescriptor(
+            name: self.name,
+            label: "LLM Task",
+            description: "Run a generic JSON-only LLM task and return schema-validated JSON. "
+                + "Designed for orchestration from Lobster workflows via openclaw.invoke.",
+            parameters: Self.parametersSchema,
+            source: .core
+        )
+    }
+
+    /// Longest `timeoutMs` a call may request (24 hours); larger values are clamped.
+    public static let maxTimeoutMs = 86_400_000
+
+    private static func property(type: String?, description: String, minimum: Int? = nil, maximum: Int? = nil) -> AnyCodable {
+        var schema: [String: AnyCodable] = ["description": AnyCodable(description)]
+        if let type {
+            schema["type"] = AnyCodable(type)
+        }
+        if let minimum {
+            schema["minimum"] = AnyCodable(minimum)
+        }
+        if let maximum {
+            schema["maximum"] = AnyCodable(maximum)
+        }
+        return AnyCodable(schema)
+    }
+
     private let modelRouter: ModelRouter
     private let configuration: LLMTaskToolConfiguration
 
@@ -103,7 +150,11 @@ public struct LLMTaskTool: AgentTool {
             throw LLMTaskToolError.invalidJSONOutput
         }
         if let schema = invocation.schema {
-            try JSONSchemaValidator.validate(instance: decoded, against: schema)
+            do {
+                try JSONSchemaValidator.validate(instance: decoded, against: schema)
+            } catch let error as JSONSchemaValidationError {
+                throw LLMTaskToolError.schemaValidationFailed(error.message)
+            }
         }
         return decoded
     }
@@ -112,7 +163,7 @@ public struct LLMTaskTool: AgentTool {
         _ request: ModelGenerationRequest,
         timeoutMs: Int
     ) async throws -> ModelGenerationResponse {
-        let timeoutNs = UInt64(timeoutMs) * 1_000_000
+        let timeoutNs = RuntimeTime.sleepNanoseconds(milliseconds: timeoutMs)
         return try await withThrowingTaskGroup(of: ModelGenerationResponse.self) { group in
             group.addTask {
                 try await self.modelRouter.generate(request)
@@ -189,7 +240,7 @@ private extension LLMTaskTool {
             self.temperature = try Self.double(arguments["temperature"], name: "temperature")
             self.maxTokens = try Self.int(arguments["maxTokens"], name: "maxTokens")
             let requestedTimeout = try Self.int(arguments["timeoutMs"], name: "timeoutMs")
-            self.timeoutMs = max(1, requestedTimeout ?? configuration.defaultTimeoutMs)
+            self.timeoutMs = min(LLMTaskTool.maxTimeoutMs, max(1, requestedTimeout ?? configuration.defaultTimeoutMs))
         }
 
         func makeRequest() -> ModelGenerationRequest {
@@ -207,14 +258,12 @@ private extension LLMTaskTool {
                 modelID: self.modelID,
                 preferredAuthProfileID: self.authProfileID,
                 metadata: Self.metadata(for: self.thinkingLevel),
+                // Providers resolve the native reasoning effort from `thinkingLevel`
+                // (ReasoningEffortResolver); no lossy effort mapping happens here.
                 policy: ModelGenerationPolicy(
                     maxTokens: self.maxTokens,
                     temperature: self.temperature,
                     requestTimeoutMs: self.timeoutMs,
-                    reasoningEffort: Self.reasoningEffort(
-                        from: self.thinkingLevel,
-                        reasoningLevel: reasoningLevel
-                    ),
                     thinkingLevel: self.thinkingLevel,
                     reasoningLevel: reasoningLevel
                 )
@@ -262,31 +311,13 @@ private extension LLMTaskTool {
             modelID: String?
         ) -> ThinkLevel {
             guard thinkingLevel == .adaptive else {
-                return thinkingLevel
+                // A single llm-task call has no runtime orchestration, so `ultra` becomes `max`.
+                return thinkingLevel.providerTransportLevel
             }
             if ThinkLevel.supportsXHighThinking(providerID: providerID, modelID: modelID) {
                 return .xhigh
             }
             return .high
-        }
-
-        private static func reasoningEffort(
-            from thinkingLevel: ThinkLevel?,
-            reasoningLevel: ReasoningLevel?
-        ) -> ModelReasoningEffort? {
-            if reasoningLevel == .off {
-                return nil
-            }
-            switch thinkingLevel {
-            case .minimal, .low:
-                return .low
-            case .medium:
-                return .medium
-            case .high, .xhigh:
-                return .high
-            case .off, .adaptive, nil:
-                return nil
-            }
         }
 
         private static func schema(_ value: AnyCodable?) throws -> [String: AnyCodable]? {
@@ -330,7 +361,12 @@ private extension LLMTaskTool {
             case .int(let number):
                 return number
             case .double(let number):
-                return Int(number)
+                // Out-of-range or non-finite numbers (and anything above Int32.max on watchOS) are
+                // invalid instead of trapping in `Int(_:)`.
+                guard number.isFinite, let value = Int(exactly: number.rounded(.towardZero)) else {
+                    throw LLMTaskToolError.invalidArgument(name)
+                }
+                return value
             default:
                 throw LLMTaskToolError.invalidArgument(name)
             }
@@ -359,196 +395,6 @@ private extension LLMTaskTool {
                 return "{}"
             }
             return string
-        }
-    }
-
-    enum JSONSchemaValidator {
-        static func validate(instance: AnyCodable, against schema: [String: AnyCodable]) throws {
-            try self.validate(instance: instance, against: schema, path: "$")
-        }
-
-        private static func validate(
-            instance: AnyCodable,
-            against schema: [String: AnyCodable],
-            path: String
-        ) throws {
-            if let allowedTypes = self.stringArray(schema["type"]) {
-                let actualType = self.typeName(for: instance)
-                let acceptsActualType = allowedTypes.contains(actualType)
-                    || (actualType == "integer" && allowedTypes.contains("number"))
-                if acceptsActualType == false {
-                    throw LLMTaskToolError.schemaValidationFailed("\(path) expected \(allowedTypes.joined(separator: "|")) but received \(actualType)")
-                }
-            }
-
-            if let enumValues = self.anyArray(schema["enum"]),
-               enumValues.contains(instance) == false
-            {
-                throw LLMTaskToolError.schemaValidationFailed("\(path) value is not in enum set")
-            }
-
-            switch instance.value {
-            case .object(let object):
-                try self.validateObject(object, schema: schema, path: path)
-            case .array(let array):
-                try self.validateArray(array, schema: schema, path: path)
-            case .int(let number):
-                try self.validateNumber(Double(number), schema: schema, path: path)
-            case .double(let number):
-                try self.validateNumber(number, schema: schema, path: path)
-            case .null, .bool, .string:
-                break
-            }
-        }
-
-        private static func validateObject(
-            _ object: [String: AnyCodable],
-            schema: [String: AnyCodable],
-            path: String
-        ) throws {
-            let required = Set(self.stringArray(schema["required"]) ?? [])
-            for key in required where object[key] == nil {
-                throw LLMTaskToolError.schemaValidationFailed("\(path).\(key) is required")
-            }
-            let propertySchemas = self.object(schema["properties"]) ?? [:]
-            for (key, value) in object {
-                if let propertySchema = self.object(propertySchemas[key]) {
-                    try self.validate(instance: value, against: propertySchema, path: "\(path).\(key)")
-                    continue
-                }
-
-                if let additionalSchema = self.object(schema["additionalProperties"]) {
-                    try self.validate(instance: value, against: additionalSchema, path: "\(path).\(key)")
-                    continue
-                }
-
-                if self.bool(schema["additionalProperties"]) == false, propertySchemas[key] == nil {
-                    throw LLMTaskToolError.schemaValidationFailed("\(path).\(key) is not allowed")
-                }
-            }
-        }
-
-        private static func validateArray(
-            _ array: [AnyCodable],
-            schema: [String: AnyCodable],
-            path: String
-        ) throws {
-            if let minItems = self.int(schema["minItems"]), array.count < minItems {
-                throw LLMTaskToolError.schemaValidationFailed("\(path) requires at least \(minItems) items")
-            }
-            if let maxItems = self.int(schema["maxItems"]), array.count > maxItems {
-                throw LLMTaskToolError.schemaValidationFailed("\(path) allows at most \(maxItems) items")
-            }
-            if let itemSchema = self.object(schema["items"]) {
-                for (index, item) in array.enumerated() {
-                    try self.validate(instance: item, against: itemSchema, path: "\(path)[\(index)]")
-                }
-            }
-        }
-
-        private static func validateNumber(
-            _ number: Double,
-            schema: [String: AnyCodable],
-            path: String
-        ) throws {
-            if let minimum = self.double(schema["minimum"]), number < minimum {
-                throw LLMTaskToolError.schemaValidationFailed("\(path) must be >= \(minimum)")
-            }
-            if let maximum = self.double(schema["maximum"]), number > maximum {
-                throw LLMTaskToolError.schemaValidationFailed("\(path) must be <= \(maximum)")
-            }
-        }
-
-        private static func typeName(for value: AnyCodable) -> String {
-            switch value.value {
-            case .null:
-                return "null"
-            case .bool:
-                return "boolean"
-            case .int:
-                return "integer"
-            case .double:
-                return "number"
-            case .string:
-                return "string"
-            case .object:
-                return "object"
-            case .array:
-                return "array"
-            }
-        }
-
-        private static func object(_ value: AnyCodable?) -> [String: AnyCodable]? {
-            guard let value else {
-                return nil
-            }
-            if case .object(let object) = value.value {
-                return object
-            }
-            return nil
-        }
-
-        private static func anyArray(_ value: AnyCodable?) -> [AnyCodable]? {
-            guard let value else {
-                return nil
-            }
-            if case .array(let array) = value.value {
-                return array
-            }
-            return nil
-        }
-
-        private static func stringArray(_ value: AnyCodable?) -> [String]? {
-            guard let value else {
-                return nil
-            }
-            switch value.value {
-            case .string(let string):
-                return [string]
-            case .array(let array):
-                return array.compactMap { item in
-                    if case .string(let string) = item.value {
-                        return string
-                    }
-                    return nil
-                }
-            default:
-                return nil
-            }
-        }
-
-        private static func bool(_ value: AnyCodable?) -> Bool? {
-            guard let value else {
-                return nil
-            }
-            if case .bool(let bool) = value.value {
-                return bool
-            }
-            return nil
-        }
-
-        private static func int(_ value: AnyCodable?) -> Int? {
-            guard let value else {
-                return nil
-            }
-            if case .int(let int) = value.value {
-                return int
-            }
-            return nil
-        }
-
-        private static func double(_ value: AnyCodable?) -> Double? {
-            guard let value else {
-                return nil
-            }
-            switch value.value {
-            case .int(let int):
-                return Double(int)
-            case .double(let double):
-                return double
-            default:
-                return nil
-            }
         }
     }
 }

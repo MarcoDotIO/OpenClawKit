@@ -14,6 +14,20 @@ extension ModelGenerationRequest {
         Self.normalized(self.modelID) ?? Self.normalized(self.metadata["model"])
     }
 
+    /// Opaque per-session identifier for `prompt_cache_key` and the session-affinity headers
+    /// (`session_id`, `x-client-request-id`, `x-session-affinity`).
+    ///
+    /// Routing session keys embed channel peer ids (`agent:main:whatsapp:direct:+15551234567`), so
+    /// they never go on the wire: an explicit `metadata["promptCacheKey"]` (clamped to 64 characters,
+    /// upstream `clampOpenAIPromptCacheKey`) wins, otherwise the SHA-256 hex digest of the session key
+    /// (64 characters) keeps the key stable per session without revealing it.
+    var promptCacheKey: String {
+        if let explicit = Self.normalized(self.metadata["promptCacheKey"]) {
+            return String(explicit.prefix(64))
+        }
+        return OpenClawCrypto.sha256Hex(Data(self.sessionKey.utf8))
+    }
+
     var resolvedAPIKey: String? {
         Self.normalized(self.metadata["auth.apiKey"]) ?? Self.normalized(self.metadata["apiKey"])
     }
@@ -94,6 +108,25 @@ enum ProviderRequestResolution {
             guard !normalizedKey.isEmpty, !normalizedValue.isEmpty else { continue }
             request.setValue(normalizedValue, forHTTPHeaderField: normalizedKey)
         }
+    }
+
+    /// First non-empty metadata value for `keys`, request metadata before configured metadata.
+    static func metadataValue(
+        _ requestMetadata: [String: String],
+        _ configuredMetadata: [String: String],
+        keys: [String]
+    ) -> String? {
+        for key in keys {
+            if let value = ModelGenerationRequest.normalized(requestMetadata[key]) {
+                return value
+            }
+        }
+        for key in keys {
+            if let value = ModelGenerationRequest.normalized(configuredMetadata[key]) {
+                return value
+            }
+        }
+        return nil
     }
 
     static func mergedHeaders(

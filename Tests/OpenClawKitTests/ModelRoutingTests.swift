@@ -138,6 +138,7 @@ struct ModelRoutingTests {
         let body: Data
         private(set) var lastQuery: String?
         private(set) var lastRequestBody: Data?
+        private(set) var lastAPIKeyHeader: String?
 
         init(statusCode: Int = 200, body: Data) {
             self.statusCode = statusCode
@@ -147,6 +148,7 @@ struct ModelRoutingTests {
         func data(for request: URLRequest) async throws -> HTTPResponseData {
             self.lastQuery = request.url?.query
             self.lastRequestBody = request.httpBody
+            self.lastAPIKeyHeader = request.value(forHTTPHeaderField: "x-goog-api-key")
             return HTTPResponseData(statusCode: self.statusCode, headers: [:], body: self.body)
         }
 
@@ -672,7 +674,8 @@ struct ModelRoutingTests {
 
         #expect(response.providerID == GeminiModelProvider.providerID)
         #expect(response.text == "gemini-output")
-        #expect(await transport.query()?.contains("key=gem-key") == true)
+        #expect(await transport.query()?.contains("key=") != true)
+        #expect(await transport.lastAPIKeyHeader == "gem-key")
     }
 
     @Test
@@ -1080,7 +1083,8 @@ struct ModelRoutingTests {
 
         #expect(response.providerID == MinimaxModelProvider.providerID)
         #expect(response.text == "minimax-output")
-        #expect(await transport.path()?.contains("/anthropic/messages") == true)
+        // Upstream Messages URL rule: `<base>/v1/messages` unless the base already ends in `/v1`.
+        #expect(await transport.path()?.contains("/anthropic/v1/messages") == true)
         #expect(await transport.apiKey() == "minimax-key")
     }
 
@@ -1305,9 +1309,10 @@ struct ModelRoutingTests {
 
     @Test
     func ollamaProviderAllowsNoAuthorizationHeader() async throws {
+        // Native `/api/chat` response shape (the provider strips the configured `/v1`).
         let transport = MockOpenAICompatibleTransport(
             body: Data("""
-            {"model":"llama3.3","choices":[{"index":0,"message":{"role":"assistant","content":"ollama-output"}}]}
+            {"model":"llama3.3","message":{"role":"assistant","content":"ollama-output"},"done":true,"done_reason":"stop"}
             """.utf8)
         )
         let provider = OllamaModelProvider(

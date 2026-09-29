@@ -211,7 +211,7 @@ public actor DiscordGatewayPresenceClient: DiscordPresenceClient {
                 guard let self else { return }
                 await self.sendHeartbeat()
                 let interval = await self.currentHeartbeatIntervalMs()
-                let delayNs = UInt64(interval) * 1_000_000
+                let delayNs = ChannelAsync.nanoseconds(milliseconds: max(1_000, interval))
                 try? await Task.sleep(nanoseconds: delayNs)
             }
         }
@@ -225,7 +225,7 @@ public actor DiscordGatewayPresenceClient: DiscordPresenceClient {
         guard let socket = self.socket else { return }
         let payload: [String: Any] = [
             "op": 1,
-            "d": self.sequence as Any,
+            "d": self.sequence.map { $0 as Any } ?? NSNull(),
         ]
         guard
             let data = try? JSONSerialization.data(withJSONObject: payload),

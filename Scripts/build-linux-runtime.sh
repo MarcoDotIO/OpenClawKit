@@ -12,4 +12,5 @@ swift build \
   --target OpenClawAgents \
   --target OpenClawPlugins \
   --target OpenClawChannels \
+  --target OpenClawMCP \
   -Xswiftc -warnings-as-errors

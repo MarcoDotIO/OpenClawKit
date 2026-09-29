@@ -1,0 +1,1216 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "Additional approval required": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Additional approval required"
+          }
+        }
+      }
+    },
+    "Additional permissions required": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Additional permissions required"
+          }
+        }
+      }
+    },
+    "App update required": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App update required"
+          }
+        }
+      }
+    },
+    "Approve on gateway": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Approve on gateway"
+          }
+        }
+      }
+    },
+    "Check certificate": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check certificate"
+          }
+        }
+      }
+    },
+    "Check device time": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check device time"
+          }
+        }
+      }
+    },
+    "Check network": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check network"
+          }
+        }
+      }
+    },
+    "Connection interrupted": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connection interrupted"
+          }
+        }
+      }
+    },
+    "Connection timed out": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connection timed out"
+          }
+        }
+      }
+    },
+    "Copy update command": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy update command"
+          }
+        }
+      }
+    },
+    "Device approval needs refresh": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Device approval needs refresh"
+          }
+        }
+      }
+    },
+    "Device permissions need approval": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Device permissions need approval"
+          }
+        }
+      }
+    },
+    "Failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Failed"
+          }
+        }
+      }
+    },
+    "Fix on gateway": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fix on gateway"
+          }
+        }
+      }
+    },
+    "Gateway certificate changed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gateway certificate changed"
+          }
+        }
+      }
+    },
+    "Gateway certificate is not trusted": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gateway certificate is not trusted"
+          }
+        }
+      }
+    },
+    "Gateway certificate unavailable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gateway certificate unavailable"
+          }
+        }
+      }
+    },
+    "Gateway connection was replaced before realtime startup finished": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gateway connection was replaced before realtime startup finished"
+          }
+        }
+      }
+    },
+    "Gateway did not return a realtime relay session": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gateway did not return a realtime relay session"
+          }
+        }
+      }
+    },
+    "Gateway is not reachable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gateway is not reachable"
+          }
+        }
+      }
+    },
+    "Gateway password is not configured": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gateway password is not configured"
+          }
+        }
+      }
+    },
+    "Gateway password is out of date": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gateway password is out of date"
+          }
+        }
+      }
+    },
+    "Gateway password required": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gateway password required"
+          }
+        }
+      }
+    },
+    "Gateway refused the connection": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gateway refused the connection"
+          }
+        }
+      }
+    },
+    "Gateway rejected the connection": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gateway rejected the connection"
+          }
+        }
+      }
+    },
+    "Gateway token is not configured": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gateway token is not configured"
+          }
+        }
+      }
+    },
+    "Gateway token is out of date": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gateway token is out of date"
+          }
+        }
+      }
+    },
+    "Gateway token required": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gateway token required"
+          }
+        }
+      }
+    },
+    "Gateway update required": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gateway update required"
+          }
+        }
+      }
+    },
+    "Idle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Idle"
+          }
+        }
+      }
+    },
+    "No gateways found. Linux and container gateways do not advertise on the local network by default (run `openclaw plugins enable bonjour` on the gateway host). You can also scan a setup code or enter the host manually.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No gateways found. Linux and container gateways do not advertise on the local network by default (run `openclaw plugins enable bonjour` on the gateway host). You can also scan a setup code or enter the host manually."
+          }
+        }
+      }
+    },
+    "Open Settings": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Settings"
+          }
+        }
+      }
+    },
+    "OpenClaw could not reach the gateway over the current network.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OpenClaw could not reach the gateway over the current network."
+          }
+        }
+      }
+    },
+    "OpenClaw could not read the gateway certificate for %@.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OpenClaw could not read the gateway certificate for %@."
+          }
+        }
+      }
+    },
+    "OpenClaw could not securely save the TLS certificate pin for %@.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OpenClaw could not securely save the TLS certificate pin for %@."
+          }
+        }
+      }
+    },
+    "OpenClaw update required": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OpenClaw update required"
+          }
+        }
+      }
+    },
+    "Re-pair this device": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Re-pair this device"
+          }
+        }
+      }
+    },
+    "Realtime audio failed: %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Realtime audio failed: %@"
+          }
+        }
+      }
+    },
+    "Realtime audio input fell behind. Reconnecting…": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Realtime audio input fell behind. Reconnecting…"
+          }
+        }
+      }
+    },
+    "Realtime audio playback failed. Reconnecting…": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Realtime audio playback failed. Reconnecting…"
+          }
+        }
+      }
+    },
+    "Realtime audio playback fell behind. Reconnecting…": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Realtime audio playback fell behind. Reconnecting…"
+          }
+        }
+      }
+    },
+    "Realtime closed before it became ready.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Realtime closed before it became ready."
+          }
+        }
+      }
+    },
+    "Realtime connection ended before it became ready.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Realtime connection ended before it became ready."
+          }
+        }
+      }
+    },
+    "Realtime did not become ready in time.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Realtime did not become ready in time."
+          }
+        }
+      }
+    },
+    "Realtime failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Realtime failed"
+          }
+        }
+      }
+    },
+    "Realtime output cancellation failed: %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Realtime output cancellation failed: %@"
+          }
+        }
+      }
+    },
+    "Realtime tool call did not return a run id": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Realtime tool call did not return a run id"
+          }
+        }
+      }
+    },
+    "Repair pairing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Repair pairing"
+          }
+        }
+      }
+    },
+    "Retry": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retry"
+          }
+        }
+      }
+    },
+    "Retry from the app": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retry from the app"
+          }
+        }
+      }
+    },
+    "Retry once": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retry once"
+          }
+        }
+      }
+    },
+    "Review Tailscale setup": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Review Tailscale setup"
+          }
+        }
+      }
+    },
+    "Review certificate": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Review certificate"
+          }
+        }
+      }
+    },
+    "Review pairing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Review pairing"
+          }
+        }
+      }
+    },
+    "Scan QR again": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scan QR again"
+          }
+        }
+      }
+    },
+    "Searching…": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Searching…"
+          }
+        }
+      }
+    },
+    "Secure device identity is required": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Secure device identity is required"
+          }
+        }
+      }
+    },
+    "Secure handshake did not match": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Secure handshake did not match"
+          }
+        }
+      }
+    },
+    "Secure handshake expired": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Secure handshake expired"
+          }
+        }
+      }
+    },
+    "Secure handshake is incomplete": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Secure handshake is incomplete"
+          }
+        }
+      }
+    },
+    "Setup": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Setup"
+          }
+        }
+      }
+    },
+    "Setup code expired": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Setup code expired"
+          }
+        }
+      }
+    },
+    "Stopped": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stopped"
+          }
+        }
+      }
+    },
+    "Tailscale identity check failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tailscale identity check failed"
+          }
+        }
+      }
+    },
+    "The TLS challenge came from a different host or port than the requested Gateway.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The TLS challenge came from a different host or port than the requested Gateway."
+          }
+        }
+      }
+    },
+    "The app and gateway use incompatible protocol versions. Update OpenClaw on both, then retry.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The app and gateway use incompatible protocol versions. Update OpenClaw on both, then retry."
+          }
+        }
+      }
+    },
+    "The challenge response was stale or mismatched.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The challenge response was stale or mismatched."
+          }
+        }
+      }
+    },
+    "The connection to the gateway was interrupted before setup completed.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The connection to the gateway was interrupted before setup completed."
+          }
+        }
+      }
+    },
+    "The device signature is too old to use.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The device signature is too old to use."
+          }
+        }
+      }
+    },
+    "The forwarded Tailscale identity did not match the verified identity.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The forwarded Tailscale identity did not match the verified identity."
+          }
+        }
+      }
+    },
+    "The gateway accepted this device token but rejected the requested operator scopes.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The gateway accepted this device token but rejected the requested operator scopes."
+          }
+        }
+      }
+    },
+    "The gateway could not verify the identity this device presented.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The gateway could not verify the identity this device presented."
+          }
+        }
+      }
+    },
+    "The gateway could not verify the public key this device presented.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The gateway could not verify the public key this device presented."
+          }
+        }
+      }
+    },
+    "The gateway could not verify this Tailscale client identity.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The gateway could not verify this Tailscale client identity."
+          }
+        }
+      }
+    },
+    "The gateway detected a change in this device's approved identity metadata and requires re-approval.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The gateway detected a change in this device's approved identity metadata and requires re-approval."
+          }
+        }
+      }
+    },
+    "The gateway did not respond before the connection timed out.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The gateway did not respond before the connection timed out."
+          }
+        }
+      }
+    },
+    "The gateway expected a Tailscale auth proxy, but it was not configured.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The gateway expected a Tailscale auth proxy, but it was not configured."
+          }
+        }
+      }
+    },
+    "The gateway expected a one-time challenge response, but the nonce was missing.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The gateway expected a one-time challenge response, but the nonce was missing."
+          }
+        }
+      }
+    },
+    "The gateway host was reachable, but it refused the connection.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The gateway host was reachable, but it refused the connection."
+          }
+        }
+      }
+    },
+    "The gateway is older than this app. Update OpenClaw on the gateway host, then retry.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The gateway is older than this app. Update OpenClaw on the gateway host, then retry."
+          }
+        }
+      }
+    },
+    "The gateway is temporarily refusing new auth attempts after repeated failures.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The gateway is temporarily refusing new auth attempts after repeated failures."
+          }
+        }
+      }
+    },
+    "The gateway received the connection request, but this device must be approved first.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The gateway received the connection request, but this device must be approved first."
+          }
+        }
+      }
+    },
+    "The gateway rejected the device identity because the device ID did not match.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The gateway rejected the device identity because the device ID did not match."
+          }
+        }
+      }
+    },
+    "The gateway rejected the stored device token for this role.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The gateway rejected the stored device token for this role."
+          }
+        }
+      }
+    },
+    "The saved TLS certificate pin for %@ no longer matches the gateway certificate. The new certificate is trusted by this device; this is commonly caused by certificate rotation.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The saved TLS certificate pin for %@ no longer matches the gateway certificate. The new certificate is trusted by this device; this is commonly caused by certificate rotation."
+          }
+        }
+      }
+    },
+    "The saved TLS certificate pin for %@ no longer matches the gateway certificate. This device could not verify the new certificate.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The saved TLS certificate pin for %@ no longer matches the gateway certificate. This device could not verify the new certificate."
+          }
+        }
+      }
+    },
+    "The saved password on this device does not match the gateway password.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The saved password on this device does not match the gateway password."
+          }
+        }
+      }
+    },
+    "The setup QR or bootstrap token is no longer valid.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The setup QR or bootstrap token is no longer valid."
+          }
+        }
+      }
+    },
+    "The token on this device does not match the gateway token.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The token on this device does not match the gateway token."
+          }
+        }
+      }
+    },
+    "This app is older than the gateway. Update OpenClaw on this device, then retry.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This app is older than the gateway. Update OpenClaw on this device, then retry."
+          }
+        }
+      }
+    },
+    "This connection expected Tailscale identity headers, but they were not available.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This connection expected Tailscale identity headers, but they were not available."
+          }
+        }
+      }
+    },
+    "This connection must include a signed device identity before the gateway can bind permissions to this device.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This connection must include a signed device identity before the gateway can bind permissions to this device."
+          }
+        }
+      }
+    },
+    "This device does not trust the TLS certificate presented by %@.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This device does not trust the TLS certificate presented by %@."
+          }
+        }
+      }
+    },
+    "This device identity could not be verified": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This device identity could not be verified"
+          }
+        }
+      }
+    },
+    "This device is already paired, but it is requesting a new role that was not previously approved.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This device is already paired, but it is requesting a new role that was not previously approved."
+          }
+        }
+      }
+    },
+    "This device is already paired, but it is requesting new permissions that require approval.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This device is already paired, but it is requesting new permissions that require approval."
+          }
+        }
+      }
+    },
+    "This device is not approved yet": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This device is not approved yet"
+          }
+        }
+      }
+    },
+    "This device's saved device token is no longer valid": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This device's saved device token is no longer valid"
+          }
+        }
+      }
+    },
+    "This gateway is set to password auth, but no gateway password is configured on the gateway.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This gateway is set to password auth, but no gateway password is configured on the gateway."
+          }
+        }
+      }
+    },
+    "This gateway is set to token auth, but no gateway token is configured on the gateway.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This gateway is set to token auth, but no gateway token is configured on the gateway."
+          }
+        }
+      }
+    },
+    "This gateway requires a password, but this device did not send one.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This gateway requires a password, but this device did not send one."
+          }
+        }
+      }
+    },
+    "This gateway requires an auth token, but this device did not send one.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This gateway requires an auth token, but this device did not send one."
+          }
+        }
+      }
+    },
+    "Too many failed attempts": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Too many failed attempts"
+          }
+        }
+      }
+    },
+    "Turn on Tailscale": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Turn on Tailscale"
+          }
+        }
+      }
+    },
+    "Update OpenClaw": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Update OpenClaw"
+          }
+        }
+      }
+    },
+    "Update app": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Update app"
+          }
+        }
+      }
+    },
+    "Update gateway token": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Update gateway token"
+          }
+        }
+      }
+    },
+    "Update password": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Update password"
+          }
+        }
+      }
+    },
+    "Wait and retry": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wait and retry"
+          }
+        }
+      }
+    },
+    "Waiting": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Waiting"
+          }
+        }
+      }
+    }
+  },
+  "version": "1.0"
+}

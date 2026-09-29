@@ -1,4 +1,5 @@
 import Foundation
+import OpenClawAppIntents
 import OpenClawKit
 import SwiftUI
 import Combine
@@ -209,7 +210,9 @@ final class OpenClawAppState: ObservableObject {
             case .gemini:
                 return "gemini-2.0-flash"
             case .foundation:
-                return "apple-foundation-default"
+                // Canonical apple-fm model id since 2026.3.0. FoundationModels is unavailable on tvOS,
+                // so the provider reports `frameworkUnavailable` there and the app falls back to OpenAI.
+                return FoundationModelsProvider.systemModelID
             case .local:
                 return "local-default"
             case .xai:
@@ -348,6 +351,15 @@ final class OpenClawAppState: ObservableObject {
         let lastError: String?
     }
 
+    /// Render model for a pending DM pairing request (channels default to `dmPolicy: pairing`).
+    struct PairingRequestItem: Identifiable, Sendable, Equatable {
+        let id: String
+        let channel: ChannelID
+        let accountID: String
+        let senderID: String
+        let code: String
+    }
+
     /// Render model for route mapping previews.
     struct RouteMappingItem: Identifiable, Sendable, Equatable {
         let id: String
@@ -466,6 +478,7 @@ final class OpenClawAppState: ObservableObject {
     @Published private(set) var latestSummary: String = ""
     @Published private(set) var skillItems: [SkillItem] = []
     @Published private(set) var channelHealthItems: [ChannelHealthItem] = []
+    @Published private(set) var pendingPairingRequests: [PairingRequestItem] = []
     @Published private(set) var diagnosticEvents: [RuntimeDiagnosticEvent] = []
     @Published private(set) var usageSnapshot: RuntimeUsageSnapshot?
     @Published private(set) var activeRetryPolicy: ChannelSendRetryPolicy = ChannelSendRetryPolicy()
@@ -546,6 +559,7 @@ final class OpenClawAppState: ObservableObject {
     private var channelRegistry: ChannelRegistry?
     private var runtime: EmbeddedAgentRuntime?
     private var replyEngine: AutoReplyEngine?
+    private var pairingStore: ChannelPairingStore?
     private var conversationMemoryStore: ConversationMemoryStore?
     private var automationRuleStore: AutomationRuleStore?
     private var automationRunner: AutomationRunner?
@@ -669,22 +683,37 @@ final class OpenClawAppState: ObservableObject {
             try await webchat.start()
 
             let diagnosticsPipeline = self.sdk.makeDiagnosticsPipeline(eventLimit: 600)
-            let diagnosticsSink = await diagnosticsPipeline.sink()
+            // Agent-run diagnostics also feed Apple StateReporting on tvOS 27 when the app opted in
+            // with `OpenClawSystemState.isEnabled` (see OpenClawtvOSApp); otherwise this is a no-op.
+            let diagnosticsSink = OpenClawSystemState.diagnosticSink(
+                forwardingTo: await diagnosticsPipeline.sink()
+            )
             let runtime = EmbeddedAgentRuntime(diagnosticsSink: diagnosticsSink)
             try await self.registerSelectedModelProvider(on: runtime, using: config.models)
+            // Channels default to upstream `dmPolicy: pairing`: unknown DM senders receive a code that
+            // must be approved (Channels tab) before the agent answers them.
+            let pairingStore = ChannelPairingStore(stateDirectory: self.stateRoot)
             let replyEngine = AutoReplyEngine(
                 config: config,
                 sessionStore: sessionStore,
                 channelRegistry: channelRegistry,
                 runtime: runtime,
                 conversationMemoryStore: conversationMemoryStore,
-                diagnosticsSink: diagnosticsSink
+                diagnosticsSink: diagnosticsSink,
+                pairingStore: pairingStore
+            )
+            await ExampleIntentHost.shared.attach(
+                EmbeddedOpenClawIntentHost(
+                    runtime: runtime,
+                    sessionStore: sessionStore,
+                    defaultSessionKey: self.sharedConversationSessionKey
+                )
             )
 
             if discordConfig.enabled {
                 let discord = DiscordChannelAdapter(config: discordConfig)
                 await discord.setInboundHandler { [replyEngine] inbound in
-                    _ = try? await replyEngine.process(inbound)
+                    _ = try? await replyEngine.handle(inbound)
                 }
                 await channelRegistry.register(discord)
                 try await discord.start()
@@ -696,7 +725,7 @@ final class OpenClawAppState: ObservableObject {
             if telegramConfig.enabled {
                 let telegram = TelegramChannelAdapter(config: telegramConfig)
                 await telegram.setInboundHandler { [replyEngine] inbound in
-                    _ = try? await replyEngine.process(inbound)
+                    _ = try? await replyEngine.handle(inbound)
                 }
                 await channelRegistry.register(telegram)
                 try await telegram.start()
@@ -709,6 +738,7 @@ final class OpenClawAppState: ObservableObject {
             self.channelRegistry = channelRegistry
             self.runtime = runtime
             self.replyEngine = replyEngine
+            self.pairingStore = pairingStore
             self.conversationMemoryStore = conversationMemoryStore
             self.diagnosticsPipeline = diagnosticsPipeline
             try await self.configureAutomationLayer(
@@ -770,6 +800,9 @@ final class OpenClawAppState: ObservableObject {
         self.channelRegistry = nil
         self.runtime = nil
         self.replyEngine = nil
+        self.pairingStore = nil
+        self.pendingPairingRequests = []
+        await ExampleIntentHost.shared.attach(nil)
         self.conversationMemoryStore = nil
         self.automationRuleStore = nil
         self.automationRunner = nil
@@ -826,6 +859,18 @@ final class OpenClawAppState: ObservableObject {
     }
 
     func refreshObservabilityNow() async {
+        await self.refreshObservabilityState()
+    }
+
+    /// Approves a pending DM pairing request so the sender can talk to the agent.
+    func approvePairing(_ item: PairingRequestItem) async {
+        guard let pairingStore else { return }
+        do {
+            _ = try await pairingStore.approve(channel: item.channel, accountID: item.accountID, requestID: item.id)
+            self.statusText = "Approved \(item.channel.rawValue) sender \(item.senderID)."
+        } catch {
+            self.statusText = "Pairing approval failed: \(error.localizedDescription)"
+        }
         await self.refreshObservabilityState()
     }
 
@@ -1126,6 +1171,20 @@ final class OpenClawAppState: ObservableObject {
                     status: snapshot.status,
                     consecutiveFailures: snapshot.consecutiveFailures,
                     lastError: snapshot.lastError
+                )
+            }
+        }
+
+        if let pairingStore = self.pairingStore,
+           let listings = try? await pairingStore.list()
+        {
+            self.pendingPairingRequests = listings.map { listing in
+                PairingRequestItem(
+                    id: listing.requestID,
+                    channel: listing.channel,
+                    accountID: listing.request.accountID,
+                    senderID: listing.request.id,
+                    code: listing.request.code
                 )
             }
         }

@@ -14,6 +14,15 @@ public enum OpenClawKitResources {
     /// SwiftPM's expectations.
     public static let bundle: Bundle = locateBundle()
 
+    /// URL of the bundled legacy canvas scaffold page (`CanvasScaffold/scaffold.html`).
+    ///
+    /// Deprecated with the A2UI canvas host; hosts should render inline widgets instead.
+    @available(*, deprecated, message: "Retired upstream in OpenClaw 2026.8.1 (#126030); canvas is a widget presenter")
+    public static var canvasScaffoldURL: URL? {
+        self.bundle.url(forResource: "scaffold", withExtension: "html", subdirectory: "CanvasScaffold")
+            ?? self.bundle.url(forResource: "scaffold", withExtension: "html")
+    }
+
     private static let bundleName = "OpenClawKit_OpenClawKit"
 
     private static func locateBundle() -> Bundle {

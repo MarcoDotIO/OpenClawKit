@@ -117,6 +117,6 @@ enum ControlPlaneParityFixtures {
         ("x-high", .xhigh),
         ("think-hard", .low),
         ("harder", .medium),
-        ("ultra", .high),
+        ("ultra", .ultra),
     ]
 }

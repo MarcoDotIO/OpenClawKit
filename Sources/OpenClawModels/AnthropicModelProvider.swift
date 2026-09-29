@@ -14,39 +14,17 @@ public protocol AnthropicHTTPTransport: Sendable {
 
 extension HTTPClient: AnthropicHTTPTransport {}
 
-private struct AnthropicMessagesRequest: Encodable, Sendable {
-    struct Message: Encodable, Sendable {
-        let role: String
-        let content: AnthropicMessageContent
-    }
-
-    let model: String
-    let maxTokens: Int
-    let system: String?
-    let messages: [Message]
-    let serviceTier: String?
-
-    private enum CodingKeys: String, CodingKey {
-        case model
-        case maxTokens = "max_tokens"
-        case system
-        case messages
-        case serviceTier = "service_tier"
-    }
-}
-
-private struct AnthropicMessagesResponse: Codable, Sendable {
-    struct ContentBlock: Codable, Sendable {
-        let type: String
-        let text: String?
-    }
-
-    let id: String?
-    let model: String?
-    let content: [ContentBlock]
-}
-
-/// Anthropic provider using the v1 messages API.
+/// Anthropic provider using the Messages API.
+///
+/// Implements model contract v2 (see ``ProviderServiceAnthropicModelProvider``) for the direct
+/// Anthropic API: default betas (`fine-grained-tool-streaming-2025-05-14`,
+/// `interleaved-thinking-2025-05-14`), adaptive thinking for Claude 5-family and 4.6+ models,
+/// native fast mode for Opus 5 / Opus 4.8, and the legacy service tier for older models.
+///
+/// Headers come from the runtime context's canonical config (`headers`),
+/// ``AnthropicModelConfig/headers`` and ``AnthropicModelConfig/workspaceID``, model headers and
+/// ``ModelGenerationRequest/headers``. API keys that are not scoped to a workspace need an
+/// `anthropic-workspace-id` header (set ``AnthropicModelConfig/workspaceID``).
 public struct AnthropicModelProvider: ModelProvider {
     /// Canonical provider identifier.
     public static let providerID = "anthropic"
@@ -55,97 +33,81 @@ public struct AnthropicModelProvider: ModelProvider {
     public let id: String
 
     private let configuration: AnthropicModelConfig
-    private let transport: any AnthropicHTTPTransport
+    private let engine: AnthropicMessagesEngine
 
     /// Creates an Anthropic provider.
     /// - Parameters:
     ///   - id: Provider identifier.
     ///   - configuration: Provider configuration.
     ///   - transport: HTTP transport implementation.
+    ///   - runtime: Canonical provider config for per-model compat, params and limits.
     public init(
         id: String = AnthropicModelProvider.providerID,
         configuration: AnthropicModelConfig,
-        transport: any AnthropicHTTPTransport = HTTPClient()
+        transport: any AnthropicHTTPTransport = ModelStreamingHTTPClient(),
+        runtime: ModelProviderRuntimeContext = .empty
     ) {
         self.id = id
         self.configuration = configuration
-        self.transport = transport
+        // Canonical config headers (factory-built providers), then the direct config's headers and
+        // workspace id (`anthropic-workspace-id` for keys that are not scoped to a workspace).
+        var headers = runtime.providerConfig?.headers ?? [:]
+        headers.merge(configuration.resolvedHeaders) { _, direct in direct }
+        let service = ProviderServiceConfig(
+            enabled: configuration.enabled,
+            apiStyle: .anthropicMessages,
+            authMode: .apiKey,
+            modelID: configuration.modelID,
+            fastMode: configuration.fastMode,
+            apiKey: configuration.apiKey,
+            baseURL: configuration.baseURL,
+            messagesPath: "messages",
+            apiVersion: configuration.apiVersion,
+            headers: headers
+        )
+        self.engine = AnthropicMessagesEngine(
+            settings: ProviderEndpointSettings(providerID: id, service: service, api: .anthropicMessages, runtime: runtime),
+            exchange: ProviderHTTPExchange(
+                providerID: id,
+                send: { try await transport.data(for: $0) },
+                streamingTransport: transport as? any ModelHTTPStreamingTransport
+            ),
+            defaultMaxTokens: configuration.maxTokens
+        )
     }
 
-    /// Generates text using Anthropic messages endpoint.
+    /// Contract v2 features of the Anthropic Messages engine.
+    public var capabilities: ModelProviderCapabilities {
+        AnthropicMessagesEngine.capabilities
+    }
+
+    /// Generates a response using the Anthropic Messages endpoint.
     /// - Parameter request: Generation request.
     /// - Returns: Generation response payload.
     public func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
+        try self.validate(request)
+        return try await self.engine.generate(request)
+    }
+
+    /// Streams chunks from the Anthropic Messages endpoint.
+    /// - Parameter request: Generation request.
+    /// - Returns: Chunk stream ending with a `.final` chunk.
+    public func generateStream(_ request: ModelGenerationRequest) async -> AsyncThrowingStream<ModelStreamChunk, Error> {
+        do {
+            try self.validate(request)
+        } catch {
+            return AsyncThrowingStream { $0.finish(throwing: error) }
+        }
+        return self.engine.stream(request)
+    }
+
+    private func validate(_ request: ModelGenerationRequest) throws {
         guard self.configuration.enabled else {
             throw OpenClawCoreError.unavailable("Anthropic model provider is disabled")
         }
-        let apiKey = self.configuration.apiKey?.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines) ?? ""
-        guard !apiKey.isEmpty else {
+        let apiKey = self.configuration.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !apiKey.isEmpty || request.resolvedAPIKey != nil else {
             throw OpenClawCoreError.invalidConfiguration("Anthropic API key is required")
         }
-        let endpoint = try self.resolveEndpoint()
-        let requestedModel = request.metadata["model"]?.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-        let selectedModel = (requestedModel?.isEmpty == false) ? requestedModel! : self.configuration.modelID
-        let normalizedSystemPrompt: String?
-        if let systemPrompt = request.systemPrompt?.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines), !systemPrompt.isEmpty {
-            normalizedSystemPrompt = systemPrompt
-        } else {
-            normalizedSystemPrompt = nil
-        }
-        let payload = AnthropicMessagesRequest(
-            model: selectedModel,
-            maxTokens: self.configuration.maxTokens,
-            system: normalizedSystemPrompt,
-            messages: [
-                .init(
-                    role: "user",
-                    content: AnthropicStyleMultimodalSupport.userContent(
-                        prompt: request.prompt,
-                        attachments: request.attachments
-                    )
-                ),
-            ],
-            serviceTier: AnthropicFastModeResolution.serviceTier(
-                providerID: self.id,
-                baseURL: endpoint.deletingLastPathComponent(),
-                request: request,
-                configuredFastMode: self.configuration.fastMode,
-                allowsFastModeDefaults: true
-            )
-        )
-
-        var urlRequest = URLRequest(url: endpoint)
-        urlRequest.httpMethod = "POST"
-        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        urlRequest.setValue(apiKey, forHTTPHeaderField: "x-api-key")
-        urlRequest.setValue(self.configuration.apiVersion, forHTTPHeaderField: "anthropic-version")
-        urlRequest.timeoutInterval = 30
-        urlRequest.httpBody = try JSONEncoder().encode(payload)
-
-        let response = try await self.transport.data(for: urlRequest)
-        guard (200..<300).contains(response.statusCode) else {
-            throw OpenClawCoreError.unavailable("Anthropic request failed with status \(response.statusCode)")
-        }
-
-        let decoded = try JSONDecoder().decode(AnthropicMessagesResponse.self, from: response.body)
-        guard let text = decoded.content.first(where: { $0.type == "text" })?.text?.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines),
-              !text.isEmpty
-        else {
-            throw OpenClawCoreError.unavailable("Anthropic response did not include text content")
-        }
-
-        return ModelGenerationResponse(
-            text: text,
-            providerID: self.id,
-            modelID: decoded.model ?? payload.model
-        )
-    }
-
-    private func resolveEndpoint() throws -> URL {
-        let baseRaw = self.configuration.baseURL.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-        guard !baseRaw.isEmpty, let baseURL = URL(string: baseRaw) else {
-            throw OpenClawCoreError.invalidConfiguration("Anthropic base URL is invalid")
-        }
-        return baseURL.appendingPathComponent("messages")
     }
 }

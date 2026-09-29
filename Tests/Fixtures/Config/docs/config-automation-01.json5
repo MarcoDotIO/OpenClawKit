@@ -1,0 +1,13 @@
+{
+  cron: {
+    enabled: true,
+    triggers: {
+      enabled: true,
+    },
+    webhookToken: "replace-with-dedicated-token", // optional bearer token for outbound webhook auth
+    webhookSsrfPolicy: {
+      allowedHostnames: ["127.0.0.1"], // optional exact exception for a trusted receiver
+    },
+    sessionRetention: "24h", // duration string ("0h" disables) or false
+  },
+}

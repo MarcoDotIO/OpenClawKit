@@ -1,0 +1,26 @@
+{
+  agents: {
+    defaults: {
+      workspace: "~/work-openclaw",
+      elevatedDefault: "off",
+    },
+    entries: {
+      main: {
+        identity: {
+          name: "WorkBot",
+          theme: "professional assistant",
+        },
+      },
+    },
+  },
+  channels: {
+    slack: {
+      enabled: true,
+      botToken: "xoxb-...",
+      channels: {
+        "#engineering": { enabled: true, requireMention: true },
+        "#general": { enabled: true, requireMention: true },
+      },
+    },
+  },
+}

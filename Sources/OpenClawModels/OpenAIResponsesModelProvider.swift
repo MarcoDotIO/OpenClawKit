@@ -8,97 +8,50 @@ import OpenAIKit
 import OpenClawCore
 import OpenClawProtocol
 
-private struct OpenAIResponsesRequest: Encodable, Sendable {
-    struct InputItem: Encodable, Sendable {
-        let role: String
-        let content: [InputContent]
-    }
-
-    struct InputContent: Encodable, Sendable {
-        let type: String
-        let text: String?
-        let imageURL: String?
-
-        private enum CodingKeys: String, CodingKey {
-            case type
-            case text
-            case imageURL = "image_url"
-        }
-
-        init(type: String, text: String? = nil, imageURL: String? = nil) {
-            self.type = type
-            self.text = text
-            self.imageURL = imageURL
-        }
-    }
-
-    struct Reasoning: Encodable, Sendable {
-        let effort: String
-    }
-
-    struct Text: Encodable, Sendable {
-        let verbosity: String
-    }
-
-    let model: String
-    let input: [InputItem]
-    let instructions: String?
-    let stream: Bool
-    let store: Bool?
-    let serviceTier: String?
-    let reasoning: Reasoning?
-    let text: Text?
-
-    private enum CodingKeys: String, CodingKey {
-        case model
-        case input
-        case instructions
-        case stream
-        case store
-        case serviceTier = "service_tier"
-        case reasoning
-        case text
-    }
-}
-
-private struct OpenAIResponsesResponse: Decodable, Sendable {
-    struct OutputItem: Decodable, Sendable {
-        struct ContentItem: Decodable, Sendable {
-            let type: String?
-            let text: String?
-        }
-
-        let content: [ContentItem]?
-    }
-
-    let model: String?
-    let outputText: String?
-    let output: [OutputItem]?
-
-    private enum CodingKeys: String, CodingKey {
-        case model
-        case outputText = "output_text"
-        case output
-    }
-}
-
-/// Generic OpenAI Responses API provider used for OpenAI and Codex-style response surfaces.
+/// OpenAI Responses API provider for the OpenAI Platform, the ChatGPT/Codex OAuth route, Azure OpenAI
+/// and Responses-compatible third parties.
+///
+/// Implements model contract v2 (input items for transcripts, function tools and tool choice,
+/// `text.format` JSON schema, function calls, usage, stop reasons, reasoning summaries and SSE
+/// streaming). Payloads follow ``OpenAIResponsesPayloadPolicy``: `instructions` only on verified
+/// routes, `store` only on native OpenAI/Azure routes, prompt-cache fields stripped on proxies.
+///
+/// - The ChatGPT route (API `openai-chatgpt-responses`, base `https://chatgpt.com/backend-api/codex`)
+///   always streams, sends `store: false`, `instructions`, `include: ["reasoning.encrypted_content"]`
+///   and the `chatgpt-account-id` / `originator` headers.
+/// - Azure (`azure-openai-responses`) adds `api-version` and authenticates API keys with `api-key`.
+/// - Every request goes through `transport`. OpenAIKit 3.0.0 is not used: it resolves endpoint
+///   paths against the host root (`https://api.openai.com/responses`, a 404), and its response
+///   model has no `output` items, so it cannot read Responses text.
 public struct OpenAIResponsesModelProvider: ModelProvider {
+    /// Provider identifier.
     public let id: String
 
     private let configuration: ProviderServiceConfig
-    private let transport: any OpenAICompatibleHTTPTransport
+    private let engine: OpenAIResponsesEngine
     private let responsesClientFactory: OpenAIKitResponsesClientFactory
+    /// Whether simple text requests may use the injected OpenAIKit client (internal test hook).
+    private let usesOpenAIKit: Bool
 
+    /// Creates a Responses provider.
+    /// - Parameters:
+    ///   - id: Provider identifier.
+    ///   - configuration: Provider service configuration.
+    ///   - transport: HTTP transport implementation.
+    ///   - runtime: Canonical provider config and effective API (`openai-responses`,
+    ///     `openai-chatgpt-responses` or `azure-openai-responses`).
     public init(
         id: String,
         configuration: ProviderServiceConfig,
-        transport: any OpenAICompatibleHTTPTransport = HTTPClient()
+        transport: any OpenAICompatibleHTTPTransport = ModelStreamingHTTPClient(),
+        runtime: ModelProviderRuntimeContext = .empty
     ) {
         self.init(
             id: id,
             configuration: configuration,
             transport: transport,
+            runtime: runtime,
+            usesOpenAIKit: false,
             responsesClientFactory: { providerID, resolved in
                 try OpenAIKitClientFactory.makeResponsesClient(providerID: providerID, resolved: resolved)
             }
@@ -109,200 +62,122 @@ public struct OpenAIResponsesModelProvider: ModelProvider {
         id: String,
         configuration: ProviderServiceConfig,
         transport: any OpenAICompatibleHTTPTransport,
+        runtime: ModelProviderRuntimeContext = .empty,
+        usesOpenAIKit: Bool = true,
         responsesClientFactory: @escaping OpenAIKitResponsesClientFactory
     ) {
         self.id = id
         self.configuration = configuration
-        self.transport = transport
+        self.usesOpenAIKit = usesOpenAIKit
+        let api = runtime.api ?? .openAIResponses
+        self.engine = OpenAIResponsesEngine(
+            settings: ProviderEndpointSettings(providerID: id, service: configuration, api: api, runtime: runtime),
+            exchange: ProviderHTTPExchange(
+                providerID: id,
+                send: { try await transport.data(for: $0) },
+                streamingTransport: transport as? any ModelHTTPStreamingTransport
+            )
+        )
         self.responsesClientFactory = responsesClientFactory
     }
 
+    /// Contract v2 features of the Responses engine.
+    public var capabilities: ModelProviderCapabilities {
+        OpenAIResponsesEngine.capabilities
+    }
+
+    /// Generates a response from the Responses API.
+    /// - Parameter request: Generation request payload.
+    /// - Returns: Generated response payload.
     public func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
         guard self.configuration.enabled else {
             throw OpenClawCoreError.unavailable("\(self.id) model provider is disabled")
         }
 
-        let resolved = try OpenAIKitClientFactory.resolve(
-            providerID: self.id,
-            configuration: self.configuration,
-            request: request
-        )
-
         #if canImport(OpenAIKit)
-        if self.canUseOpenAIKitResponses(request: request, resolved: resolved) {
-            do {
-                let client = try self.responsesClientFactory(self.id, resolved)
-                let response = try await client.createResponse(
-                    parameters: ResponseCreateParameters(
-                        model: resolved.modelID,
-                        input: request.prompt,
-                        instructions: ModelGenerationRequest.normalized(request.systemPrompt)
-                    )
-                )
-                let text = Self.resolveText(from: response)
-                guard !text.isEmpty else {
-                    throw OpenClawCoreError.unavailable("\(self.id) response did not include text output")
-                }
-                return ModelGenerationResponse(
-                    text: text,
-                    providerID: self.id,
-                    modelID: response.model ?? resolved.modelID
-                )
-            } catch {
-                throw OpenAIKitErrorNormalizer.normalize(error, providerID: self.id)
+        if self.usesOpenAIKit {
+            let resolved = try OpenAIKitClientFactory.resolve(providerID: self.id, configuration: self.configuration, request: request)
+            if self.canUseOpenAIKitResponses(request: request, resolved: resolved) {
+                return try await self.generateViaOpenAIKit(request: request, resolved: resolved)
             }
         }
         #endif
 
-        return try await self.generateAdvanced(request: request, resolved: resolved)
+        return try await self.engine.generate(request)
     }
 
-    private func generateAdvanced(
-        request: ModelGenerationRequest,
-        resolved: OpenAIKitResolvedRequest
-    ) async throws -> ModelGenerationResponse {
-        let configuredFastMode = self.configuration.fastMode
-        let reasoningEffort = OpenAIFastModeResolution.reasoningEffort(
-            request: request,
-            configuredFastMode: configuredFastMode
-        )
-        let serviceTier = OpenAIFastModeResolution.serviceTier(
-            providerID: self.id,
-            baseURL: resolved.baseURL,
-            request: request,
-            configuredFastMode: configuredFastMode
-        )
-        let textVerbosity = OpenAIFastModeResolution.textVerbosity(
-            request: request,
-            configuredFastMode: configuredFastMode
-        )
-        let endpoint = self.resolveEndpoint(baseURL: resolved.baseURL)
-        let payload = OpenAIResponsesRequest(
-            model: resolved.modelID,
-            input: self.buildInput(from: request),
-            instructions: ModelGenerationRequest.normalized(request.systemPrompt),
-            stream: request.policy.streamTokens || request.policy.codexTransport != .auto,
-            store: request.policy.storeResponse,
-            serviceTier: serviceTier,
-            reasoning: reasoningEffort.map { .init(effort: $0.rawValue) },
-            text: textVerbosity.map { .init(verbosity: $0) }
-        )
-
-        var urlRequest = URLRequest(url: endpoint)
-        urlRequest.httpMethod = "POST"
-        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        if case .bearerToken(let token) = resolved.authorization {
-            urlRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
-        if let organizationID = resolved.organizationID {
-            urlRequest.setValue(organizationID, forHTTPHeaderField: "OpenAI-Organization")
-        }
-        if let projectID = resolved.projectID {
-            urlRequest.setValue(projectID, forHTTPHeaderField: "OpenAI-Project")
-        }
-        ProviderRequestResolution.applyHeaders(resolved.requestOptions.additionalHeaders, request: &urlRequest)
-        urlRequest.timeoutInterval = resolved.requestOptions.timeoutInterval
-        urlRequest.httpBody = try JSONEncoder().encode(payload)
-
-        let response = try await self.transport.data(for: urlRequest)
-        guard (200..<300).contains(response.statusCode) else {
-            throw OpenClawCoreError.unavailable("\(self.id) request failed with status \(response.statusCode)")
-        }
-        let decoded = try JSONDecoder().decode(OpenAIResponsesResponse.self, from: response.body)
-        let text = Self.resolveText(from: decoded)
-        guard !text.isEmpty else {
-            throw OpenClawCoreError.unavailable("\(self.id) response did not include text output")
-        }
-        return ModelGenerationResponse(text: text, providerID: self.id, modelID: decoded.model ?? payload.model)
+    /// Streams chunks from the Responses API (SSE).
+    /// - Parameter request: Generation request payload.
+    /// - Returns: Chunk stream ending with a `.final` chunk.
+    public func generateStream(_ request: ModelGenerationRequest) async -> AsyncThrowingStream<ModelStreamChunk, Error> {
+        self.engine.stream(request)
     }
 
     #if canImport(OpenAIKit)
+    private func generateViaOpenAIKit(
+        request: ModelGenerationRequest,
+        resolved: OpenAIKitResolvedRequest
+    ) async throws -> ModelGenerationResponse {
+        do {
+            let client = try self.responsesClientFactory(self.id, resolved)
+            let response = try await client.createResponse(
+                parameters: ResponseCreateParameters(
+                    model: resolved.modelID,
+                    input: request.prompt,
+                    instructions: ModelGenerationRequest.normalized(request.systemPrompt)
+                )
+            )
+            let text = response.outputText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !text.isEmpty else {
+                throw OpenClawCoreError.unavailable("\(self.id) response did not include text output")
+            }
+            return ModelGenerationResponse(
+                text: text,
+                providerID: self.id,
+                modelID: response.model ?? resolved.modelID,
+                stopReason: response.status == "incomplete" ? .length : .stop
+            )
+        } catch {
+            throw OpenAIKitErrorNormalizer.normalize(error, providerID: self.id)
+        }
+    }
+
     private func canUseOpenAIKitResponses(
         request: ModelGenerationRequest,
         resolved: OpenAIKitResolvedRequest
     ) -> Bool {
-        let configuredFastMode = self.configuration.fastMode
-        let requiresAdvancedPayload =
-            OpenAIFastModeResolution.reasoningEffort(
-                request: request,
-                configuredFastMode: configuredFastMode
-            ) != nil ||
-            OpenAIFastModeResolution.serviceTier(
-                providerID: self.id,
-                baseURL: resolved.baseURL,
-                request: request,
-                configuredFastMode: configuredFastMode
-            ) != nil ||
-            OpenAIFastModeResolution.textVerbosity(
-                request: request,
-                configuredFastMode: configuredFastMode
-            ) != nil
-
         guard resolved.clientConfiguration != nil else {
             return false
         }
-        return request.attachments.isEmpty &&
-            request.policy.streamTokens == false &&
-            request.policy.storeResponse == nil &&
-            requiresAdvancedPayload == false &&
-            request.policy.codexTransport == .auto
-    }
-    #endif
-
-    private func resolveEndpoint(baseURL: URL) -> URL {
-        let path = self.configuration.chatCompletionsPath
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let resolvedPath = path.isEmpty || path == "chat/completions" ? "responses" : path
-        var endpoint = baseURL
-        for segment in resolvedPath.split(separator: "/") {
-            endpoint = endpoint.appendingPathComponent(String(segment))
+        let settings = self.engine.settings
+        let baseURL = settings.resolvedBaseURLString(for: request, defaultBaseURL: OpenAIRouteResolution.platformBaseURL)
+        guard settings.api == .openAIResponses, !self.engine.isChatGPTRoute(baseURL: baseURL) else {
+            return false
         }
-        return endpoint
-    }
-
-    private func buildInput(from request: ModelGenerationRequest) -> [OpenAIResponsesRequest.InputItem] {
-        let content = OpenAIStyleMultimodalSupport.userContent(prompt: request.prompt, attachments: request.attachments)
-        return [
-            .init(
-                role: "user",
-                content: Self.inputContent(from: content)
-            ),
-        ]
-    }
-
-    private static func inputContent(from content: OpenAIStyleMessageContent) -> [OpenAIResponsesRequest.InputContent] {
-        switch content {
-        case .text(let text):
-            return [.init(type: "input_text", text: text)]
-        case .parts(let parts):
-            return parts.map { part in
-                switch part {
-                case .text(let text):
-                    return .init(type: "input_text", text: text)
-                case .imageDataURL(let dataURL):
-                    return .init(type: "input_image", imageURL: dataURL)
-                }
-            }
-        }
-    }
-
-    private static func resolveText(from response: OpenAIResponsesResponse) -> String {
-        if let outputText = response.outputText?.trimmingCharacters(in: .whitespacesAndNewlines), !outputText.isEmpty {
-            return outputText
-        }
-        let blocks = response.output?.flatMap { $0.content ?? [] } ?? []
-        return blocks.compactMap { item in
-            guard item.type == nil || item.type == "output_text" || item.type == "text" else {
-                return nil
-            }
-            return item.text?.trimmingCharacters(in: .whitespacesAndNewlines)
-        }.filter { !$0.isEmpty }.joined(separator: "\n")
-    }
-
-    #if canImport(OpenAIKit)
-    private static func resolveText(from response: ResponseObject) -> String {
-        response.outputText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let policy = OpenAIResponsesPayloadPolicy.resolve(
+            providerID: self.id,
+            api: settings.api,
+            baseURL: baseURL,
+            compat: settings.modelDefinition(for: resolved.modelID)?.compat
+        )
+        let fastMode = FastModeResolution.resolve(
+            request: request,
+            configured: settings.configuredFastMode,
+            model: settings.modelDefinition(for: resolved.modelID)
+        )
+        let requiresServiceTier = policy.allowsServiceTier && (request.policy.serviceTier != nil || fastMode == true)
+        return request.attachments.isEmpty
+            && !ProviderRequestValidation.usesContractV2(request)
+            && request.policy.streamTokens == false
+            && request.policy.storeResponse == nil
+            && request.policy.reasoningEffort == nil
+            && request.policy.thinkingLevel == nil
+            && request.policy.maxTokens == nil
+            && request.policy.temperature == nil
+            && request.policy.promptCache == nil
+            && !requiresServiceTier
+            && policy.usesInstructionsField
+            && request.policy.codexTransport == .auto
     }
     #endif
 }

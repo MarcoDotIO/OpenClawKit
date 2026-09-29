@@ -3,6 +3,7 @@
 @_exported import OpenClawCore
 @_exported import OpenClawGateway
 @_exported import OpenClawMedia
+@_exported import OpenClawMCP
 @_exported import OpenClawMemory
 @_exported import OpenClawModels
 @_exported import OpenClawPlugins

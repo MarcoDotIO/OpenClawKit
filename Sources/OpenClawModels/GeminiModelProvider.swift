@@ -14,32 +14,12 @@ public protocol GeminiHTTPTransport: Sendable {
 
 extension HTTPClient: GeminiHTTPTransport {}
 
-private struct GeminiGenerateContentRequest: Encodable, Sendable {
-    struct Content: Encodable, Sendable {
-        let role: String
-        let parts: [GeminiInputPart]
-    }
-
-    let contents: [Content]
-}
-
-private struct GeminiGenerateContentResponse: Codable, Sendable {
-    struct Candidate: Codable, Sendable {
-        struct CandidateContent: Codable, Sendable {
-            struct Part: Codable, Sendable {
-                let text: String?
-            }
-
-            let parts: [Part]
-        }
-
-        let content: CandidateContent?
-    }
-
-    let candidates: [Candidate]?
-}
-
-/// Gemini provider using the generateContent endpoint.
+/// Gemini provider using the `generateContent` endpoint with an API key.
+///
+/// Implements model contract v2 (`contents` transcripts with `functionCall`/`functionResponse`
+/// parts, function declarations and `toolConfig`, JSON-schema responses via
+/// `responseMimeType`/`responseJsonSchema`, thinking config, usage and SSE streaming). Legacy
+/// prompt-only requests keep inlining the system prompt into the user turn.
 public struct GeminiModelProvider: ModelProvider {
     /// Canonical provider identifier.
     public static let providerID = "gemini"
@@ -47,92 +27,63 @@ public struct GeminiModelProvider: ModelProvider {
     /// Provider identifier.
     public let id: String
 
-    private let configuration: GeminiModelConfig
-    private let transport: any GeminiHTTPTransport
+    private let engine: GoogleGenerativeAIEngine
 
     /// Creates a Gemini provider.
     /// - Parameters:
     ///   - id: Provider identifier.
     ///   - configuration: Provider configuration.
     ///   - transport: HTTP transport implementation.
+    ///   - runtime: Canonical provider config for per-model compat, params and limits.
     public init(
         id: String = GeminiModelProvider.providerID,
         configuration: GeminiModelConfig,
-        transport: any GeminiHTTPTransport = HTTPClient()
+        transport: any GeminiHTTPTransport = ModelStreamingHTTPClient(),
+        runtime: ModelProviderRuntimeContext = .empty
     ) {
         self.id = id
-        self.configuration = configuration
-        self.transport = transport
+        let service = ProviderServiceConfig(
+            enabled: configuration.enabled,
+            apiStyle: .custom,
+            authMode: .apiKey,
+            modelID: configuration.modelID,
+            apiKey: configuration.apiKey,
+            baseURL: configuration.baseURL
+        )
+        self.engine = GoogleGenerativeAIEngine(
+            settings: ProviderEndpointSettings(providerID: id, service: service, api: .googleGenerativeAI, runtime: runtime),
+            exchange: ProviderHTTPExchange(
+                providerID: id,
+                send: { try await transport.data(for: $0) },
+                streamingTransport: transport as? any ModelHTTPStreamingTransport
+            ),
+            inlineSystemPrompt: true,
+            fallbackModelID: configuration.modelID
+        )
     }
 
-    /// Generates text via Gemini generateContent API.
+    /// Contract v2 features of the Google Generative AI engine.
+    public var capabilities: ModelProviderCapabilities {
+        GoogleGenerativeAIEngine.capabilities
+    }
+
+    /// Generates a response via the Gemini `generateContent` API.
     /// - Parameter request: Generation request.
     /// - Returns: Generation response payload.
     public func generate(_ request: ModelGenerationRequest) async throws -> ModelGenerationResponse {
-        guard self.configuration.enabled else {
+        guard self.engine.settings.enabled else {
             throw OpenClawCoreError.unavailable("Gemini model provider is disabled")
         }
-        let apiKey = try ProviderRequestResolution.resolveAPIKey(
-            configured: self.configuration.apiKey,
-            request: request,
-            providerID: self.id
-        )
-        let modelID = request.resolvedModelID ?? self.configuration.modelID
-        let endpoint = try self.resolveEndpoint(modelID: modelID, apiKey: apiKey)
-        let payload = GeminiGenerateContentRequest(contents: [self.buildContent(from: request)])
-
-        var urlRequest = URLRequest(url: endpoint)
-        urlRequest.httpMethod = "POST"
-        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        ProviderRequestResolution.applyHeaders(request.resolvedRequestHeaders, request: &urlRequest)
-        urlRequest.timeoutInterval = 30
-        urlRequest.httpBody = try JSONEncoder().encode(payload)
-
-        let response = try await self.transport.data(for: urlRequest)
-        guard (200..<300).contains(response.statusCode) else {
-            throw OpenClawCoreError.unavailable("Gemini request failed with status \(response.statusCode)")
-        }
-
-        let decoded = try JSONDecoder().decode(GeminiGenerateContentResponse.self, from: response.body)
-        guard let rawText = decoded.candidates?.first?.content?.parts.first?.text else {
-            throw OpenClawCoreError.unavailable("Gemini response did not include generated text")
-        }
-        let text = rawText.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-        guard !text.isEmpty
-        else {
-            throw OpenClawCoreError.unavailable("Gemini response did not include generated text")
-        }
-
-        return ModelGenerationResponse(text: text, providerID: self.id, modelID: modelID)
+        return try await self.engine.generate(request)
     }
 
-    private func buildContent(from request: ModelGenerationRequest) -> GeminiGenerateContentRequest.Content {
-        let systemPrompt = request.systemPrompt?.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines) ?? ""
-        let prompt: String
-        if systemPrompt.isEmpty {
-            prompt = request.prompt
-        } else {
-            prompt = "\(systemPrompt)\n\nUser:\n\(request.prompt)"
+    /// Streams chunks via `streamGenerateContent?alt=sse`.
+    /// - Parameter request: Generation request.
+    /// - Returns: Chunk stream ending with a `.final` chunk.
+    public func generateStream(_ request: ModelGenerationRequest) async -> AsyncThrowingStream<ModelStreamChunk, Error> {
+        guard self.engine.settings.enabled else {
+            return AsyncThrowingStream { $0.finish(throwing: OpenClawCoreError.unavailable("Gemini model provider is disabled")) }
         }
-        return GeminiGenerateContentRequest.Content(
-            role: "user",
-            parts: GeminiMultimodalSupport.parts(prompt: prompt, attachments: request.attachments)
-        )
-    }
-
-    private func resolveEndpoint(modelID: String, apiKey: String) throws -> URL {
-        let baseRaw = self.configuration.baseURL.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-        guard !baseRaw.isEmpty, let baseURL = URL(string: baseRaw) else {
-            throw OpenClawCoreError.invalidConfiguration("Gemini base URL is invalid")
-        }
-        let path = "models/\(modelID):generateContent"
-        guard var components = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false) else {
-            throw OpenClawCoreError.invalidConfiguration("Gemini endpoint is invalid")
-        }
-        components.queryItems = [URLQueryItem(name: "key", value: apiKey)]
-        guard let url = components.url else {
-            throw OpenClawCoreError.invalidConfiguration("Gemini endpoint is invalid")
-        }
-        return url
+        return self.engine.stream(request)
     }
 }

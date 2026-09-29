@@ -139,12 +139,14 @@ public actor WebChatChannelAdapter: InboundChannelAdapter {
         try self.assertSharedSecret(headerSecret: sharedSecret, bodySecret: event.sharedSecret)
         let attachments = event.attachments?.compactMap(Self.decodeAttachment(_:)) ?? []
 
+        let userID = event.userID?.trimmingCharacters(in: .whitespacesAndNewlines)
         let inbound = InboundMessage(
             channel: .webchat,
-            accountID: event.userID?.trimmingCharacters(in: .whitespacesAndNewlines),
             peerID: sessionID,
             text: text,
-            attachments: attachments
+            attachments: attachments,
+            senderID: userID,
+            legacyRoutingAccountID: userID
         )
         self.appendTranscript(
             WebChatTranscriptEntry(
@@ -204,7 +206,7 @@ public actor WebChatChannelAdapter: InboundChannelAdapter {
             return
         }
         let provided = (headerSecret ?? bodySecret ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard provided == configured else {
+        guard ChannelWebhookSignature.constantTimeEquals(provided, configured) else {
             throw OpenClawCoreError.unavailable("WebChat shared secret validation failed")
         }
     }
