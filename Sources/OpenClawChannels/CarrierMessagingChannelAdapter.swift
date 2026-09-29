@@ -55,9 +55,12 @@ public actor CarrierMessagingChannelAdapter: InboundChannelAdapter, ReceiptingCh
 
     /// Reactions are available on iOS 27 for RCS recipients with extended messaging.
     nonisolated public var supportedMessageActions: Set<ChannelMessageActionName> {
+        // RCS reactions need the iOS 27 SDK (Swift 6.4); older SDKs lack RCSMessage.Reaction.
+        #if compiler(>=6.4)
         if #available(iOS 27.0, *) {
             return [.react]
         }
+        #endif
         return []
     }
 
@@ -187,10 +190,12 @@ public actor CarrierMessagingChannelAdapter: InboundChannelAdapter, ReceiptingCh
         case .text(let body):
             text = body.body
         default:
+            #if compiler(>=6.4)
             if #available(iOS 27.0, *), case .reply(let reply) = message.content, case .text(let body) = reply.content {
                 text = body.body
                 replyToID = reply.targetMessageID.rawValue
             }
+            #endif
         }
         guard let text else { return }
         let sender = Self.phoneNumber(from: message.handle)
@@ -284,6 +289,7 @@ public actor CarrierMessagingChannelAdapter: InboundChannelAdapter, ReceiptingCh
 
     private func sendRCS(_ text: String, to handle: RCSHandle, serviceID: CellularServiceID, messageID: RCSMessageID, replyToID: String?) async throws {
         let rcs = TelephonyMessagingSession.shared.rcsService
+        #if compiler(>=6.4)
         if #available(iOS 27.0, *), let replyToID, let capabilities = await self.capabilities(for: handle, serviceID: serviceID),
            capabilities.supportsExtendedMessagingReply
         {
@@ -291,6 +297,9 @@ public actor CarrierMessagingChannelAdapter: InboundChannelAdapter, ReceiptingCh
             try await rcs.sendMessage(reply, to: handle, using: serviceID, messageID: messageID)
             return
         }
+        #else
+        _ = replyToID
+        #endif
         try await rcs.sendMessage(RCSMessage.Text(body: text), to: handle, using: serviceID, messageID: messageID)
     }
 
@@ -330,6 +339,7 @@ public actor CarrierMessagingChannelAdapter: InboundChannelAdapter, ReceiptingCh
     ///   - emoji: Emoji.
     ///   - remove: Remove instead of add.
     public func react(peerID: String, messageID: String, emoji: String, remove: Bool) async throws {
+        #if compiler(>=6.4)
         guard #available(iOS 27.0, *) else {
             throw ChannelMessageActionError.unsupported(action: "react", channel: .sms)
         }
@@ -350,6 +360,9 @@ public actor CarrierMessagingChannelAdapter: InboundChannelAdapter, ReceiptingCh
             using: serviceID,
             messageID: RCSMessageID(rawValue: UUID().uuidString)
         )
+        #else
+        throw ChannelMessageActionError.unsupported(action: "react", channel: .sms)
+        #endif
     }
 
     // MARK: Helpers

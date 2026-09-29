@@ -34,7 +34,14 @@ struct PluginAPIV2Tests {
         let id = "acme"
         let skillRoot: URL
         var manifest: PluginManifest? {
-            PluginManifest(id: self.id, name: "Acme", description: "Test plugin", version: "1.2.3", categories: ["tools"], contracts: ["tools": ["plugin_greet"]])
+            PluginManifest(
+                id: self.id,
+                name: "Acme",
+                description: "Test plugin",
+                version: "1.2.3",
+                categories: ["tools"],
+                contracts: ["tools": ["plugin_greet"]]
+            )
         }
 
         func register(api: PluginAPI) async throws {

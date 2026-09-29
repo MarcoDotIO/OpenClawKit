@@ -160,16 +160,20 @@ struct AppleFoundationModelsFrameworkTests {
         #expect(busy?.code == .busy)
     }
 
+    // LanguageModelError and the other FoundationModels 27 error types exist only in the 27 SDKs (Swift 6.4).
+    #if compiler(>=6.4)
     @Test
     func mapsOS27FrameworkErrors() {
         guard #available(macOS 27.0, iOS 27.0, visionOS 27.0, *) else { return }
         Self.checkLanguageModelErrors()
     }
+    #endif
 
     private static func mapped(_ error: any Error) -> FoundationModelsError? {
         FoundationModelsErrorMapper.map(error) as? FoundationModelsError
     }
 
+    #if compiler(>=6.4)
     @available(macOS 27.0, iOS 27.0, visionOS 27.0, *)
     private static func checkLanguageModelErrors() {
         let overflow = Self.mapped(
@@ -214,8 +218,11 @@ struct AppleFoundationModelsFrameworkTests {
         )
         #expect(service?.code == .serviceUnavailable)
     }
+    #endif
 }
 
+// The bridge and engine suite exercises FoundationModels 27 types, which compile only with Swift 6.4+.
+#if compiler(>=6.4)
 @Suite("Apple FM LanguageModel bridge and engine")
 struct AppleFoundationModelsBridgeTests {
     @Test
@@ -646,6 +653,7 @@ struct AppleFoundationModelsBridgeTests {
         #expect(usage.totalTokens == 120)
     }
 }
+#endif
 
 private final class ChunkCollector: @unchecked Sendable {
     private let lock = NSLock()
@@ -774,6 +782,8 @@ struct FoundationModelsAgentToolBridgeTests {
         #expect(try await weather.call(arguments: GeneratedContent(json: #"{"city":"Oslo"}"#)) == "Sunny in Oslo")
     }
 
+    // FoundationModels 27 agent profile and session factory (Swift 6.4+ only).
+    #if compiler(>=6.4)
     @Test
     func agentProfileCompactsHistory() {
         guard #available(macOS 27.0, iOS 27.0, visionOS 27.0, *) else { return }
@@ -806,6 +816,7 @@ struct FoundationModelsAgentToolBridgeTests {
         #expect(skipped.map(\.name) == ["broken"])
         #expect(!session.isResponding)
     }
+    #endif
 }
 
 // MARK: - Live tests (Apple Intelligence required)
