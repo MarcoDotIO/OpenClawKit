@@ -61,7 +61,15 @@ private struct IMessageReflectionRecord: Sendable, Equatable {
 }
 
 /// iMessage adapter with explicit platform guards and deterministic fallback mode.
-public actor IMessageChannelAdapter: InboundChannelAdapter {
+///
+/// On macOS (and Linux, where `cliPath` is an SSH wrapper around `imsg` on the Messages Mac) the
+/// adapter talks to `imsg rpc --json` through ``IMsgRPCTransport`` unless a transport is injected
+/// or ``IMessageChannelConfig/allowUnsupportedPlatformSimulation`` is enabled. Inbound messages
+/// arrive through `watch.subscribe`; own messages (`is_from_me`) and recent reflections of our
+/// sends are dropped, group chats route as `chat_id:<n>` with ``ChannelChatType/group``.
+/// The launching process needs Full Disk Access and Messages Automation; sandboxed App Store
+/// apps cannot spawn `imsg`.
+public actor IMessageChannelAdapter: InboundChannelAdapter, ReceiptingChannelAdapter {
     /// Adapter channel identifier.
     public let id: ChannelID = .imessage
 
@@ -72,14 +80,22 @@ public actor IMessageChannelAdapter: InboundChannelAdapter {
     private var simulatedOutbound: [OutboundMessage] = []
     private var reflectionRecords: [IMessageReflectionRecord] = []
     private let reflectionTTL: TimeInterval = 120
+    private var recentInboundGUIDs = ChannelRecentIDs(capacity: 1_000)
 
     /// Creates an iMessage adapter.
     /// - Parameters:
     ///   - config: iMessage channel configuration.
-    ///   - transport: Optional host-provided native transport.
+    ///   - transport: Optional host-provided native transport. When `nil` on macOS/Linux and
+    ///     simulation is disabled, an ``IMsgRPCTransport`` over `config.cliPath` is created.
     public init(config: IMessageChannelConfig, transport: (any IMessageTransport)? = nil) {
         self.config = config
-        self.transport = transport
+        if let transport {
+            self.transport = transport
+        } else if !config.allowUnsupportedPlatformSimulation, IMsgRPCTransport.isProcessTransportSupported {
+            self.transport = IMsgRPCTransport(config: config)
+        } else {
+            self.transport = nil
+        }
     }
 
     /// Registers or clears inbound callback.
@@ -101,17 +117,53 @@ public actor IMessageChannelAdapter: InboundChannelAdapter {
         }
         self.simulatedOutbound.removeAll(keepingCapacity: true)
         self.reflectionRecords.removeAll(keepingCapacity: true)
+        if let inbound = self.transport as? any IMessageInboundTransport {
+            do {
+                try await inbound.startWatching(includeAttachments: self.config.includeAttachments, sinceRowID: nil) { [weak self] payload in
+                    await self?.handleNativePayload(payload)
+                }
+            } catch {
+                await inbound.stopWatching()
+                throw OpenClawCoreError.unavailable(
+                    "iMessage imsg transport failed to start: \(error.localizedDescription). Install imsg, grant Full Disk Access "
+                        + "and Messages Automation to the launching process, or enable allowUnsupportedPlatformSimulation for simulation fallback."
+                )
+            }
+        }
         self.started = true
     }
 
-    /// Stops adapter lifecycle.
+    /// Stops adapter lifecycle (unsubscribes from `imsg watch`).
     public func stop() async {
         self.started = false
+        if let inbound = self.transport as? any IMessageInboundTransport {
+            await inbound.stopWatching()
+        }
     }
 
-    /// Sends outbound message. In current release this uses deterministic simulation mode.
+    /// Probes the transport (`imsg ping`).
+    /// - Parameter timeoutMs: Probe timeout.
+    /// - Returns: Probe result.
+    public func probe(timeoutMs: Int) async -> ChannelProbeResult {
+        guard let inbound = self.transport as? any IMessageInboundTransport else {
+            return ChannelProbeResult(ok: self.transport != nil || self.config.allowUnsupportedPlatformSimulation, detail: nil)
+        }
+        return await ChannelAsync.probe(timeoutMs: timeoutMs) {
+            try await inbound.ping(timeoutMs: timeoutMs)
+            return "imsg"
+        }
+    }
+
+    /// Sends outbound message through the native transport, or captures it in simulation mode.
     /// - Parameter message: Outbound payload.
     public func send(_ message: OutboundMessage) async throws {
+        _ = try await self.sendReturningReceipt(message)
+    }
+
+    /// Sends and returns the message GUID reported by `imsg` (a local id in simulation mode).
+    /// - Parameter message: Outbound payload.
+    /// - Returns: Receipt.
+    public func sendReturningReceipt(_ message: OutboundMessage) async throws -> ChannelSendReceipt {
         guard self.started else {
             throw OpenClawCoreError.unavailable("iMessage adapter is not started")
         }
@@ -126,9 +178,14 @@ public actor IMessageChannelAdapter: InboundChannelAdapter {
                 attachments: message.attachments,
                 bundleIdentifier: self.config.bundleIdentifier
             )
-            try await transport.send(outbound)
+            var platformID: String?
+            if let inbound = transport as? any IMessageInboundTransport {
+                platformID = try await inbound.sendReturningID(outbound)
+            } else {
+                try await transport.send(outbound)
+            }
             self.recordReflection(peerID: peerID, text: text)
-            return
+            return ChannelSendReceipt(platformMessageID: platformID ?? "local-\(UUID().uuidString.lowercased())")
         }
 
         guard self.config.allowUnsupportedPlatformSimulation else {
@@ -143,6 +200,7 @@ public actor IMessageChannelAdapter: InboundChannelAdapter {
         )
         self.simulatedOutbound.append(normalized)
         self.recordReflection(peerID: peerID, text: text)
+        return ChannelSendReceipt(platformMessageID: "simulated-\(UUID().uuidString.lowercased())")
     }
 
     /// Returns simulated outbound history used by tests and diagnostics.
@@ -173,6 +231,71 @@ public actor IMessageChannelAdapter: InboundChannelAdapter {
         if let inboundHandler {
             await inboundHandler(inbound)
         }
+    }
+
+    /// Maps an `imsg` watch notification to an inbound message (own messages, tapbacks and
+    /// reflections of recent sends are dropped).
+    /// - Parameter payload: Watch payload.
+    public func handleNativePayload(_ payload: IMessagePayload) async {
+        guard self.started, payload.isFromMe != true, payload.isReaction != true else { return }
+        guard let peerID = payload.conversationPeerID else { return }
+        if let guid = payload.guid?.channelTrimmedNonEmpty ?? payload.id.map(String.init), !self.recentInboundGUIDs.insert(guid) {
+            return
+        }
+        let text = payload.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let attachments = self.loadAttachments(payload.attachments ?? [])
+        guard !text.isEmpty || !attachments.isEmpty else { return }
+        if !text.isEmpty, self.shouldSuppressReflection(peerID: peerID, text: text) {
+            return
+        }
+        let isGroup = payload.isGroup == true
+        var metadata: [String: String] = [:]
+        metadata["chatGuid"] = payload.chatGUID
+        metadata["chatIdentifier"] = payload.chatIdentifier
+        metadata["chatName"] = payload.chatName
+        metadata["replyToText"] = payload.replyToText
+        let inbound = InboundMessage(
+            channel: .imessage,
+            accountID: nil,
+            peerID: peerID,
+            text: text,
+            attachments: attachments,
+            senderID: payload.sender?.channelTrimmedNonEmpty,
+            senderName: payload.senderName?.channelTrimmedNonEmpty,
+            chatType: isGroup ? .group : .direct,
+            messageID: payload.guid ?? payload.id.map(String.init),
+            threadID: payload.threadOriginatorGUID?.channelTrimmedNonEmpty,
+            replyToID: payload.replyToGUID?.channelTrimmedNonEmpty,
+            metadata: metadata
+        )
+        if let inboundHandler {
+            await inboundHandler(inbound)
+        }
+    }
+
+    private func loadAttachments(_ attachments: [IMessagePayload.Attachment]) -> [MediaAttachment] {
+        guard self.config.includeAttachments else { return [] }
+        let maxBytes = Int((self.config.policy.mediaMaxMb ?? 16) * 1_024 * 1_024)
+        var total = 0
+        var loaded: [MediaAttachment] = []
+        for attachment in attachments where attachment.missing != true {
+            guard let path = attachment.originalPath?.channelTrimmedNonEmpty else { continue }
+            let expanded = NSString(string: path).expandingTildeInPath
+            if let roots = self.config.attachmentRoots, !roots.isEmpty,
+               !roots.contains(where: { expanded.hasPrefix(NSString(string: $0).expandingTildeInPath) })
+            {
+                continue
+            }
+            guard let data = FileManager.default.contents(atPath: expanded), total + data.count <= maxBytes else { continue }
+            total += data.count
+            loaded.append(MediaAttachment(
+                mimeType: attachment.mimeType ?? "application/octet-stream",
+                data: data,
+                fileName: attachment.transferName,
+                metadata: ["source": "imsg"]
+            ))
+        }
+        return loaded
     }
 
     private func resolvePeerID(from message: OutboundMessage) throws -> String {
