@@ -143,18 +143,18 @@ public struct OpenAIModelProvider: ModelProvider {
         guard self.configuration.enabled else {
             throw OpenClawCoreError.unavailable("OpenAI model provider is disabled")
         }
-        let resolved = try OpenAIKitClientFactory.resolve(
-            providerID: self.id,
-            configuration: self.configuration,
-            request: request
-        )
-
         #if canImport(OpenAIKit)
         if self.usesOpenAIKit, Self.canUseOpenAIKit(request) {
+            // Only the OpenAIKit backend needs a resolved key and base URL up front; the Chat
+            // Completions engine applies `request.auth` overrides, `authHeader: false` and the
+            // default base URL itself, exactly as `generateStream` does.
+            let resolved = try OpenAIKitClientFactory.resolve(
+                providerID: self.id,
+                configuration: self.configuration,
+                request: request
+            )
             return try await self.generateViaOpenAIKit(request: request, resolved: resolved)
         }
-        #else
-        _ = resolved
         #endif
 
         return try await self.engine.generate(request)

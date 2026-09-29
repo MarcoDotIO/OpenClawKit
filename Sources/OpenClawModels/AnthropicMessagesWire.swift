@@ -700,8 +700,10 @@ struct AnthropicMessagesEngine: Sendable {
         try ProviderRequestValidation.validate(request, providerID: settings.providerID, model: model)
         let request = MediaInputPreparation.apply(request, limits: model?.mediaInput?.image)
         let baseURLString = settings.resolvedBaseURLString(for: request, defaultBaseURL: AnthropicMessagesWire.defaultBaseURL)
-        let credential = try self.credential(for: request)
+        let resolvedCredential = try self.credential(for: request)
+        let credential = resolvedCredential?.value
         let usesOAuth = settings.authMode == .oauthToken || settings.authMode == .bearerToken
+            || resolvedCredential?.isAccessToken == true
             || (credential?.hasPrefix("sk-ant-oat") ?? false)
         let isDirect = ProviderRuntimeIdentity.canonicalProviderID(settings.providerID) == "anthropic"
             && [.default, .anthropicPublic].contains(ModelProviderEndpointClass.resolve(baseURL: baseURLString))
@@ -789,7 +791,11 @@ struct AnthropicMessagesEngine: Sendable {
         return Prepared(urlRequest: urlRequest, modelID: modelID, isDirect: isDirect)
     }
 
-    private func credential(for request: ModelGenerationRequest) throws -> String? {
+    /// Credential for the configured auth mode, and whether it is an access token (sent as Bearer).
+    ///
+    /// `.none` (a config without `auth`) falls back to request-time credentials: an auth-profile API
+    /// key is sent as `x-api-key`, an auth-profile access token as `Authorization: Bearer`.
+    private func credential(for request: ModelGenerationRequest) throws -> (value: String, isAccessToken: Bool)? {
         let settings = self.settings
         switch settings.authMode {
         case .awsSDK:
@@ -797,9 +803,12 @@ struct AnthropicMessagesEngine: Sendable {
                 "\(settings.providerID) does not support aws-sdk auth mode for Anthropic-messages requests"
             )
         case .none:
-            return nil
+            if let key = ModelGenerationRequest.normalized(settings.apiKey) ?? request.resolvedAPIKey {
+                return (key, false)
+            }
+            return request.resolvedAccessToken.map { ($0, true) }
         default:
-            return try settings.bearerCredential(for: request)
+            return try settings.bearerCredential(for: request).map { ($0, false) }
         }
     }
 

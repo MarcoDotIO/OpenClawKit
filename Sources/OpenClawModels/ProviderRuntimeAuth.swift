@@ -73,19 +73,34 @@ public actor RuntimeProviderAuthResolver: ProviderRuntimeAuthResolving {
     }
 
     private let transport: any RuntimeAuthHTTPTransport
-    private let now: @Sendable () -> Int
+    private let now: @Sendable () -> Int64
     private var copilotCacheByGitHubToken: [String: CachedCopilotToken] = [:]
 
     /// Creates a runtime auth resolver.
+    ///
+    /// The clock is `Int64` because epoch milliseconds exceed `Int32.max`: on 32-bit `Int`
+    /// platforms (watchOS arm64_32) an `Int` clock cannot represent the current time.
     /// - Parameters:
     ///   - transport: HTTP transport used for refresh and exchange requests.
     ///   - now: Clock returning milliseconds since epoch.
     public init(
         transport: any RuntimeAuthHTTPTransport = HTTPClient(),
-        now: @escaping @Sendable () -> Int = { Int(clamping: Int64(Date().timeIntervalSince1970 * 1000)) }
+        now: @escaping @Sendable () -> Int64 = { OpenClawClock.nowMs() }
     ) {
         self.transport = transport
         self.now = now
+    }
+
+    /// Creates a runtime auth resolver with an `Int` millisecond clock.
+    /// - Parameters:
+    ///   - transport: HTTP transport used for refresh and exchange requests.
+    ///   - legacyNow: Clock returning milliseconds since epoch as `Int`.
+    @available(*, deprecated, message: "Use init(transport:now:) with an Int64 clock; Int overflows on watchOS arm64_32.")
+    public init(
+        transport: any RuntimeAuthHTTPTransport = HTTPClient(),
+        legacyNow: @escaping @Sendable () -> Int
+    ) {
+        self.init(transport: transport, now: { Int64(legacyNow()) })
     }
 
     public func resolve(
@@ -113,9 +128,9 @@ public actor RuntimeProviderAuthResolver: ProviderRuntimeAuthResolving {
             return ProviderRuntimeAuthResolution(credential: credential)
         }
 
-        let now = Int64(self.now())
+        let now = self.now()
         if let cached = self.copilotCacheByGitHubToken[githubToken],
-           Int64(cached.expiresAt) - now > Self.copilotCacheSafetyWindowMs
+           cached.expiresAt - now > Self.copilotCacheSafetyWindowMs
         {
             return ProviderRuntimeAuthResolution(
                 credential: .token(
@@ -172,10 +187,10 @@ public actor RuntimeProviderAuthResolver: ProviderRuntimeAuthResolving {
 
         let accessToken = Self.normalized(value.accessToken)
         let refreshToken = Self.normalized(value.refreshToken)
-        let now = Int64(self.now())
+        let now = self.now()
         let needsRefresh: Bool
         if let expires = value.expires {
-            needsRefresh = Int64(expires) <= now + Self.preemptiveRefreshWindowMs
+            needsRefresh = expires <= now + Self.preemptiveRefreshWindowMs
         } else {
             needsRefresh = accessToken == nil
         }
@@ -215,7 +230,7 @@ public actor RuntimeProviderAuthResolver: ProviderRuntimeAuthResolving {
             provider: value.provider,
             accessToken: nextAccessToken,
             refreshToken: Self.normalized(payload.refreshToken) ?? refreshToken,
-            expires: Self.clampedMilliseconds(now + Int64(expiresIn) * 1000),
+            expires: now + Int64(expiresIn) * 1000,
             clientID: Self.normalized(value.clientID) ?? Self.qwenOAuthClientID,
             email: value.email,
             metadata: value.metadata
@@ -242,10 +257,10 @@ public actor RuntimeProviderAuthResolver: ProviderRuntimeAuthResolving {
         }
         let accessToken = Self.normalized(value.accessToken)
         let refreshToken = Self.normalized(value.refreshToken)
-        let now = Int64(self.now())
+        let now = self.now()
         let needsRefresh: Bool
         if let expires = value.expires {
-            needsRefresh = Int64(expires) <= now + Self.preemptiveRefreshWindowMs
+            needsRefresh = expires <= now + Self.preemptiveRefreshWindowMs
         } else {
             needsRefresh = accessToken == nil
         }
@@ -274,7 +289,7 @@ public actor RuntimeProviderAuthResolver: ProviderRuntimeAuthResolving {
         guard let nextAccessToken = Self.normalized(payload.accessToken) else {
             throw OpenClawCoreError.unavailable("ChatGPT OAuth refresh response missing access token")
         }
-        let expires = payload.expiresIn.map { Self.clampedMilliseconds(now + Int64(max(1, $0)) * 1000) }
+        let expires = payload.expiresIn.map { now + Int64(max(1, $0)) * 1000 }
         let updated = OAuthAuthProfileCredential(
             provider: value.provider,
             accessToken: nextAccessToken,
@@ -333,18 +348,13 @@ public actor RuntimeProviderAuthResolver: ProviderRuntimeAuthResolving {
             integer = parsed
         }
         if integer > Self.copilotMillisecondsThreshold {
-            return Self.clampedMilliseconds(integer)
+            return integer
         }
         let (milliseconds, overflow) = integer.multipliedReportingOverflow(by: 1000)
         guard !overflow else {
             throw OpenClawCoreError.unavailable("github-copilot token exchange response has invalid expires_at")
         }
-        return Self.clampedMilliseconds(milliseconds)
-    }
-
-    /// Narrows an Int64 millisecond value to `Int`, saturating on 32-bit platforms instead of trapping.
-    private static func clampedMilliseconds(_ value: Int64) -> Int64 {
-        value
+        return milliseconds
     }
 
     private static func deriveCopilotBaseURL(from token: String) -> String? {

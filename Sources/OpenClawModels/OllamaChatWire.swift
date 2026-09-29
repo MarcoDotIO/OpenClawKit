@@ -288,7 +288,7 @@ struct OllamaChatEngine: Sendable {
         }
         if !settings.applyRequestAuthOverride(to: &urlRequest) {
             switch settings.authMode {
-            case .none, .awsSDK:
+            case .awsSDK:
                 if let key = ModelGenerationRequest.normalized(settings.apiKey) {
                     urlRequest.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
                 }
