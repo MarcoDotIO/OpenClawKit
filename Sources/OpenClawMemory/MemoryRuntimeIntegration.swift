@@ -7,7 +7,7 @@ import OpenClawProtocol
 // module): memory tools, the `## Memory Recall` prompt section, the Spotlight search tool, config
 // resolution, transcript import and a closure embedding adapter.
 
-/// What ``EmbeddedAgentRuntime/installMemory(engine:configuration:sessionSearch:citationsMode:spotlightSearch:includeSystemFiles:)`` set up.
+/// What ``EmbeddedAgentRuntime/installMemory(engine:configuration:sessionSearch:citationsMode:spotlightSearch:includeSystemFiles:spotlightIndexDelegate:)`` set up.
 public struct MemoryRuntimeInstallation: Sendable, Equatable {
     /// Registered memory tool names (`memory_search`, `memory_get`).
     public var memoryTools: [String]
@@ -35,6 +35,9 @@ public extension EmbeddedAgentRuntime {
     ///   - citationsMode: `memory.citations` (`auto`, `on` or `off`).
     ///   - spotlightSearch: Also register `spotlight_search` (iOS/macOS/visionOS 27 on Apple silicon).
     ///   - includeSystemFiles: Let Spotlight search the user's files too.
+    ///   - spotlightIndexDelegate: Optional `SpotlightMemoryIndexDelegate` (any
+    ///     `CSSearchableIndexDelegate`) so `spotlight_search` hydrates memory items indexed by a
+    ///     `SpotlightMemoryIndex`.
     /// - Returns: What was installed.
     @discardableResult
     func installMemory(
@@ -43,7 +46,8 @@ public extension EmbeddedAgentRuntime {
         sessionSearch: (any MemorySessionSearching)? = nil,
         citationsMode: String? = nil,
         spotlightSearch: Bool = false,
-        includeSystemFiles: Bool = false
+        includeSystemFiles: Bool = false,
+        spotlightIndexDelegate: (any AnyObject & Sendable)? = nil
     ) async -> MemoryRuntimeInstallation {
         await MemoryToolRegistration.registerMemoryTools(
             into: self.toolRegistry,
@@ -53,7 +57,11 @@ public extension EmbeddedAgentRuntime {
         )
         var spotlight = false
         if spotlightSearch {
-            spotlight = await MemoryToolRegistration.registerSpotlightSearch(into: self.toolRegistry, includeSystemFiles: includeSystemFiles)
+            spotlight = await MemoryToolRegistration.registerSpotlightSearch(
+                into: self.toolRegistry,
+                includeSystemFiles: includeSystemFiles,
+                indexDelegate: spotlightIndexDelegate
+            )
         }
         self.addPromptContributor { context in
             MemoryRuntimeIntegration.promptSection(availableTools: context.availableToolNames, citationsMode: citationsMode)

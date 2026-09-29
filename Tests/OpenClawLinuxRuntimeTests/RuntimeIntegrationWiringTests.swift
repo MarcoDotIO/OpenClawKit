@@ -215,6 +215,38 @@ struct RuntimeIntegrationWiringTests {
     }
 
     @Test
+    func spotlightRegistrationAcceptsAMemoryIndexDelegate() async throws {
+        // Objects that are not CSSearchableIndexDelegates are ignored; availability matches the plain call.
+        final class NotADelegate: @unchecked Sendable {}
+        let plain = AgentToolRegistry()
+        let expected = await MemoryToolRegistration.registerSpotlightSearch(into: plain)
+        let registry = AgentToolRegistry()
+        let registered = await MemoryToolRegistration.registerSpotlightSearch(into: registry, indexDelegate: NotADelegate())
+        #expect(registered == expected)
+        #expect(await registry.hasTool(named: "spotlight_search") == registered)
+        #if canImport(CoreSpotlight) && !os(tvOS) && !os(watchOS)
+        let delegate = SpotlightMemoryIndexDelegate(lookup: { _ in [] }, reindexAll: { [] })
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("spotlight-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let provider = ScriptedToolProvider(turns: [ScriptedToolProvider.text("ok")])
+        let runtime = EmbeddedAgentRuntime(
+            toolRegistry: AgentToolRegistry(tools: []),
+            modelRouter: ModelRouter(defaultProviderID: provider.id, providers: [provider]),
+            transcriptStore: InMemorySessionTranscriptStore(),
+            mediaUnderstandingServices: .none
+        )
+        let installation = await runtime.installMemory(
+            engine: MemoryEngine(workspaceRoot: root, configuration: MemoryEngineConfiguration(provider: "none")),
+            spotlightSearch: true,
+            spotlightIndexDelegate: delegate
+        )
+        #expect(installation.spotlightSearch == expected)
+        #expect(await runtime.toolRegistry.hasTool(named: "spotlight_search") == expected)
+        #endif
+    }
+
+    @Test
     func conversationMemoryImportsIntoTranscripts() async throws {
         let entries = [
             ConversationMemoryEntry(
