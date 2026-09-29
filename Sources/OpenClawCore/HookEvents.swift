@@ -350,20 +350,60 @@ public enum InputGateDecision: Codable, Sendable, Equatable {
         case metadata
     }
 
-    /// Decodes a gate decision; anything but `pass`/`block` decodes as a block (fail closed).
+    private struct GateKey: CodingKey {
+        let stringValue: String
+        var intValue: Int? { nil }
+        init(_ string: String) { self.stringValue = string }
+        init?(stringValue: String) { self.stringValue = stringValue }
+        init?(intValue _: Int) { nil }
+    }
+
+    /// Block reason used for a malformed decision (upstream wording).
+    public static let invalidDecisionReason = "before_agent_run returned an invalid decision"
+
+    /// Decodes a gate decision and never throws: only an exact `{"outcome":"pass"}` passes; a well-formed
+    /// block keeps its fields; anything else (a non-object such as `null` or `"block"`, an unknown
+    /// outcome, a missing or empty `reason`, wrongly typed fields, extra keys) decodes as a block with
+    /// ``invalidDecisionReason`` (fail closed, upstream `isHookDecision`).
     public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        let outcome = try container.decodeIfPresent(String.self, forKey: .outcome)
-        if outcome == "pass" {
-            self = .pass
+        let invalid = InputGateDecision.block(reason: Self.invalidDecisionReason)
+        guard let container = try? decoder.container(keyedBy: GateKey.self) else {
+            self = invalid
             return
         }
-        self = .block(
-            reason: try container.decodeIfPresent(String.self, forKey: .reason) ?? "invalid gate decision",
-            message: try container.decodeIfPresent(String.self, forKey: .message),
-            category: try container.decodeIfPresent(String.self, forKey: .category),
-            metadata: try container.decodeIfPresent([String: AnyCodable].self, forKey: .metadata)
-        )
+        let keys = Set(container.allKeys.map(\.stringValue))
+        let outcome = (try? container.decodeIfPresent(String.self, forKey: GateKey(CodingKeys.outcome.rawValue))) ?? nil
+        if outcome == "pass" {
+            self = keys == [CodingKeys.outcome.rawValue] ? .pass : invalid
+            return
+        }
+        let allowed = Set([CodingKeys.outcome, .reason, .message, .category, .metadata].map(\.rawValue))
+        guard outcome == "block", keys.isSubset(of: allowed) else {
+            self = invalid
+            return
+        }
+        func nonEmptyString(_ key: CodingKeys) -> String? {
+            guard let value = (try? container.decodeIfPresent(String.self, forKey: GateKey(key.rawValue))) ?? nil,
+                  !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else {
+                return nil
+            }
+            return value
+        }
+        guard let reason = nonEmptyString(.reason) else {
+            self = invalid
+            return
+        }
+        let message = nonEmptyString(.message)
+        let category = nonEmptyString(.category)
+        let metadata = (try? container.decodeIfPresent([String: AnyCodable].self, forKey: GateKey(CodingKeys.metadata.rawValue))) ?? nil
+        if (keys.contains(CodingKeys.message.rawValue) && message == nil)
+            || (keys.contains(CodingKeys.category.rawValue) && category == nil)
+            || (keys.contains(CodingKeys.metadata.rawValue) && metadata == nil) {
+            self = invalid
+            return
+        }
+        self = .block(reason: reason, message: message, category: category, metadata: metadata)
     }
 
     /// Encodes a gate decision.

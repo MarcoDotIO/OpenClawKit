@@ -48,12 +48,16 @@ public func registerPluginGatewayMethods(on registrar: some GatewayMethodRegistr
     }
 }
 
-/// Attaches a plugin registry to a gateway server: registers the control methods and adds the plugin
-/// method resolver, so plugin gateway methods dispatch after core methods (upstream order).
+/// Attaches a plugin registry to a gateway server: registers the control methods, adds the plugin
+/// method resolver, so plugin gateway methods dispatch after core methods (upstream order), and
+/// broadcasts `plugins.changed {generation}` whenever the plugin set changes.
 /// - Parameters:
 ///   - registry: Plugin registry.
 ///   - server: Gateway server.
 public func attachPluginRegistry(_ registry: PluginRegistry, to server: GatewayServer) async {
     await registerPluginGatewayMethods(on: server, registry: registry)
     await server.addMethodResolver(registry.gatewayMethodResolver())
+    await registry.addChangeListener { [weak server] generation in
+        await server?.emit(.pluginsChanged, payload: AnyCodable(["generation": AnyCodable(generation)]))
+    }
 }

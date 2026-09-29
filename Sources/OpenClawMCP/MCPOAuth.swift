@@ -217,14 +217,36 @@ public protocol MCPAuthorizationProvider: Sendable {
     /// Handles a 401; returns `true` when the request should be retried.
     /// - Parameter wwwAuthenticate: `WWW-Authenticate` header value.
     func handleUnauthorized(wwwAuthenticate: String?) async throws -> Bool
+    /// Handles a 401 for a request that carried `rejectedAuthorization`; returns `true` when the request
+    /// should be retried. Providers can skip a refresh when the rejected credential was already replaced
+    /// by a concurrent caller. The built-in transports call this variant.
+    /// - Parameters:
+    ///   - wwwAuthenticate: `WWW-Authenticate` header value.
+    ///   - rejectedAuthorization: `Authorization` header value of the rejected request.
+    func handleUnauthorized(wwwAuthenticate: String?, rejectedAuthorization: String?) async throws -> Bool
+}
+
+public extension MCPAuthorizationProvider {
+    /// Default: ignores the rejected credential and calls ``handleUnauthorized(wwwAuthenticate:)``.
+    func handleUnauthorized(wwwAuthenticate: String?, rejectedAuthorization _: String?) async throws -> Bool {
+        try await self.handleUnauthorized(wwwAuthenticate: wwwAuthenticate)
+    }
 }
 
 /// OAuth client for one MCP server.
+///
+/// Token refreshes and interactive sign-ins are single-flight: concurrent callers (parallel tool calls,
+/// the server stream, several 401s) share one `refresh_token` request or one browser flow, and a 401
+/// for a credential another caller already replaced is retried without refreshing again. This matters
+/// because dynamic registration creates a public client, whose refresh tokens OAuth 2.1 servers rotate
+/// (and often revoke on reuse).
 public actor MCPOAuthClient: MCPAuthorizationProvider {
     /// Upstream default redirect URL.
     public static let defaultRedirectURL = "http://127.0.0.1:8989/oauth/callback"
     /// Identity used by the embedded runtime.
     public static let sharedIdentity = "shared"
+    /// Longest `expires_in` honoured (10 years); larger values are clamped.
+    public static let maxExpiresInSeconds: Double = 315_360_000
 
     private let serverName: String
     private let serverURL: URL
@@ -234,6 +256,8 @@ public actor MCPOAuthClient: MCPAuthorizationProvider {
     private let http: any MCPHTTPStreaming
     private let now: @Sendable () -> Date
     private var state: MCPOAuthState?
+    private var refreshTask: Task<MCPOAuthTokens, Error>?
+    private var signInTask: Task<Void, Error>?
 
     /// Creates the client.
     /// - Parameters:
@@ -282,33 +306,66 @@ public actor MCPOAuthClient: MCPAuthorizationProvider {
 
     /// `Bearer` header for the next request, refreshing an expired token when possible.
     public func authorizationHeader() async throws -> String? {
-        var state = await self.loadedState()
+        let state = await self.loadedState()
         guard var tokens = state.tokens else { return nil }
         if tokens.isExpired(nowMs: self.nowMs()) {
             guard tokens.refreshToken != nil else { return nil }
-            tokens = try await self.refresh(state: &state)
+            tokens = try await self.refreshTokens(rejectedAccessToken: tokens.accessToken)
         }
-        return "\(tokens.tokenType.isEmpty ? "Bearer" : tokens.tokenType) \(tokens.accessToken)"
+        return Self.header(for: tokens)
     }
 
     /// Handles a 401: refreshes when possible, otherwise runs the interactive sign-in.
     public func handleUnauthorized(wwwAuthenticate: String?) async throws -> Bool {
-        var state = await self.loadedState()
-        if state.tokens?.refreshToken != nil, (try? await self.refresh(state: &state)) != nil {
+        let current = await self.loadedState().tokens.map(Self.header(for:))
+        return try await self.handleUnauthorized(wwwAuthenticate: wwwAuthenticate, rejectedAuthorization: current)
+    }
+
+    /// Handles a 401 for a request that carried `rejectedAuthorization`: when another caller already
+    /// replaced that credential the request is simply retried; otherwise the token is refreshed (shared
+    /// with concurrent callers) or, failing that, the interactive sign-in runs (one browser flow for all
+    /// concurrent callers).
+    public func handleUnauthorized(wwwAuthenticate: String?, rejectedAuthorization: String?) async throws -> Bool {
+        let entry = await self.loadedState()
+        if let tokens = entry.tokens, Self.header(for: tokens) != rejectedAuthorization, !tokens.isExpired(nowMs: self.nowMs()) {
+            // The rejected request carried an older credential (or none); retry with the current one.
+            return true
+        }
+        let rejectedAccessToken = entry.tokens?.accessToken
+        if entry.tokens?.refreshToken != nil, (try? await self.refreshTokens(rejectedAccessToken: rejectedAccessToken)) != nil {
             return true
         }
         guard self.presenter != nil else {
-            state.requiresAuthorization = true
-            try await self.persist(state)
+            // Re-read after the await and only flag the credential that was actually rejected, so fresh
+            // tokens saved by a concurrent caller are never overwritten with a stale copy.
+            var latest = await self.loadedState()
+            guard latest.tokens?.accessToken == rejectedAccessToken else { return latest.tokens != nil }
+            latest.requiresAuthorization = true
+            try await self.persist(latest)
             return false
         }
         try await self.signIn(wwwAuthenticate: wwwAuthenticate)
         return true
     }
 
-    /// Runs discovery, client registration, PKCE authorization and code exchange.
+    /// Runs discovery, client registration, PKCE authorization and code exchange. Concurrent calls
+    /// share one interactive flow.
     /// - Parameter wwwAuthenticate: Optional `WWW-Authenticate` header carrying `resource_metadata`.
     public func signIn(wwwAuthenticate: String? = nil) async throws {
+        guard self.presenter != nil else { throw MCPOAuthError.unsupported("no OAuth presenter is configured") }
+        if let signInTask {
+            try await signInTask.value
+            return
+        }
+        let task = Task { () throws -> Void in
+            defer { self.signInTask = nil }
+            try await self.performSignIn(wwwAuthenticate: wwwAuthenticate)
+        }
+        self.signInTask = task
+        try await task.value
+    }
+
+    private func performSignIn(wwwAuthenticate: String?) async throws {
         guard let presenter else { throw MCPOAuthError.unsupported("no OAuth presenter is configured") }
         var state = await self.loadedState()
         let metadata = try await self.discover(wwwAuthenticate: wwwAuthenticate)
@@ -458,7 +515,24 @@ public actor MCPOAuthClient: MCPAuthorizationProvider {
         state.clientSecret = object["client_secret"]?.stringValue
     }
 
-    private func refresh(state: inout MCPOAuthState) async throws -> MCPOAuthTokens {
+    /// Single-flight refresh: joins an in-flight refresh, or returns the stored tokens when another caller
+    /// already replaced `rejectedAccessToken` with a token that is still valid.
+    private func refreshTokens(rejectedAccessToken: String?) async throws -> MCPOAuthTokens {
+        if let refreshTask { return try await refreshTask.value }
+        if let tokens = await self.loadedState().tokens, tokens.accessToken != rejectedAccessToken, !tokens.isExpired(nowMs: self.nowMs()) {
+            return tokens
+        }
+        if let refreshTask { return try await refreshTask.value }
+        let task = Task { () throws -> MCPOAuthTokens in
+            defer { self.refreshTask = nil }
+            return try await self.refresh()
+        }
+        self.refreshTask = task
+        return try await task.value
+    }
+
+    private func refresh() async throws -> MCPOAuthTokens {
+        let state = await self.loadedState()
         guard let refreshToken = state.tokens?.refreshToken, let clientID = state.clientID else {
             throw MCPOAuthError.tokenRequestFailed("no refresh token")
         }
@@ -477,10 +551,12 @@ public actor MCPOAuthClient: MCPAuthorizationProvider {
         if let secret = state.clientSecret { form["client_secret"] = secret }
         var tokens = try await self.tokenRequest(endpoint: endpoint, form: form)
         if tokens.refreshToken == nil { tokens.refreshToken = refreshToken }
-        state.tokens = tokens
-        state.tokenEndpoint = endpoint
-        state.requiresAuthorization = false
-        try await self.persist(state)
+        // Apply the result to the state as it is now, not to the snapshot taken before the awaits.
+        var latest = await self.loadedState()
+        latest.tokens = tokens
+        latest.tokenEndpoint = endpoint
+        latest.requiresAuthorization = false
+        try await self.persist(latest)
         return tokens
     }
 
@@ -495,14 +571,27 @@ public actor MCPOAuthClient: MCPAuthorizationProvider {
         guard (200..<300).contains(status), let access = object["access_token"]?.stringValue else {
             throw MCPOAuthError.tokenRequestFailed(object["error_description"]?.stringValue ?? object["error"]?.stringValue ?? "HTTP \(status)")
         }
-        let expiresIn = object["expires_in"]?.doubleValue
         return MCPOAuthTokens(
             accessToken: access,
             tokenType: object["token_type"]?.stringValue ?? "Bearer",
             refreshToken: object["refresh_token"]?.stringValue,
-            expiresAtMs: expiresIn.map { self.nowMs() + Int64($0 * 1_000) },
+            expiresAtMs: Self.expiresAtMs(expiresIn: object["expires_in"]?.doubleValue, nowMs: self.nowMs()),
             scope: object["scope"]?.stringValue
         )
+    }
+
+    /// Absolute expiry for a server-supplied `expires_in` (seconds). Non-finite and non-positive values
+    /// mean "no known expiry" (a 401 then triggers the refresh); values above ``maxExpiresInSeconds``
+    /// are clamped, so the arithmetic can never trap.
+    static func expiresAtMs(expiresIn: Double?, nowMs: Int64) -> Int64? {
+        guard let expiresIn, expiresIn.isFinite, expiresIn > 0 else { return nil }
+        let milliseconds = Int64((min(expiresIn, Self.maxExpiresInSeconds) * 1_000).rounded())
+        let (sum, overflow) = nowMs.addingReportingOverflow(milliseconds)
+        return overflow ? nil : sum
+    }
+
+    static func header(for tokens: MCPOAuthTokens) -> String {
+        "\(tokens.tokenType.isEmpty ? "Bearer" : tokens.tokenType) \(tokens.accessToken)"
     }
 
     private func getJSON(_ url: URL) async throws -> [String: AnyCodable] {

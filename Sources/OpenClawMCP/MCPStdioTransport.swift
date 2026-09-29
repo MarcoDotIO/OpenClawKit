@@ -12,12 +12,17 @@ import Darwin
 /// Available on macOS and Linux only (iOS-family platforms cannot spawn processes; Mac App Store
 /// sandboxed apps can only launch executables embedded in their bundle). The command must be
 /// permitted by the exec allowlist unless `allowUnlistedCommands` is set. The child inherits only
-/// `PATH`, `HOME`, `LANG`, `TMPDIR` (plus `LC_*`, `USER`, `LOGNAME`, `SHELL`) and the server's `env`.
+/// `PATH`, `HOME`, `LANG`, `TMPDIR` (plus `LC_*`, `USER`, `LOGNAME`, `SHELL`) and the server's `env`;
+/// loader and interpreter injection variables in `env` (`LD_*`, `DYLD_*`, `NODE_OPTIONS`, …; see
+/// ``MCPStdioEnvironmentPolicy``) are dropped and reported as `mcp.env.dropped` diagnostics.
 ///
 /// stderr lines are reported to the diagnostics sink as `mcp.stderr` with the upstream
 /// `bundle-mcp:<name>:` prefix; a partial line is flushed after 250 ms and each line keeps at most an
-/// 8 KiB tail (`[stderr line truncated]`). Closing the transport closes stdin, then sends SIGTERM and
-/// finally SIGKILL after the grace period.
+/// 8 KiB tail (`[stderr line truncated]`). Writes to stdin run on a dedicated serial queue with
+/// SIGPIPE suppressed, so a server that stopped reading never blocks the actor and a server that exited
+/// yields ``MCPTransportError/closed(_:)`` instead of killing the host. Closing the transport closes
+/// stdin (after pending writes), then sends SIGTERM and finally SIGKILL after the grace period; a write
+/// blocked on a full pipe does not delay that escalation.
 public actor MCPStdioTransport: MCPTransport {
     /// Messages and close events from the server.
     nonisolated public let events: AsyncStream<MCPTransportEvent>
@@ -30,8 +35,14 @@ public actor MCPStdioTransport: MCPTransport {
     private let stdoutDecoder: LineDecoder
     private let stderrCollector: StderrCollector
     private let shutdownGraceSeconds: Double
+    private let writer: StdinWriter
+    private let diagnostics: RuntimeDiagnosticSink?
     private var started = false
     private var closed = false
+    private var finished = false
+
+    /// `env` keys dropped by ``MCPStdioEnvironmentPolicy`` (sorted).
+    nonisolated public let droppedEnvironmentKeys: [String]
 
     /// Environment variables inherited from the host process.
     public static let inheritedEnvironmentKeys: Set<String> = ["PATH", "HOME", "LANG", "TMPDIR", "USER", "LOGNAME", "SHELL"]
@@ -75,12 +86,16 @@ public actor MCPStdioTransport: MCPTransport {
         for (key, value) in ProcessInfo.processInfo.environment where Self.inheritedEnvironmentKeys.contains(key) || key.hasPrefix("LC_") {
             environment[key] = value
         }
-        for (key, value) in config.env ?? [:] {
+        let sanitized = MCPStdioEnvironmentPolicy.sanitize(config.env ?? [:])
+        for (key, value) in sanitized.allowed {
             environment[key] = value
         }
         process.environment = environment
         if let cwd { process.currentDirectoryURL = cwd }
         self.process = process
+        self.droppedEnvironmentKeys = sanitized.dropped
+        self.diagnostics = diagnostics
+        self.writer = StdinWriter(handle: self.stdinPipe.fileHandleForWriting, serverName: serverName)
         self.stdoutDecoder = LineDecoder(maxLineBytes: maxLineBytes)
         self.stderrCollector = StderrCollector(serverName: serverName, diagnostics: diagnostics)
     }
@@ -94,6 +109,17 @@ public actor MCPStdioTransport: MCPTransport {
     public func start() async throws {
         guard !self.started else { return }
         self.started = true
+        if let diagnostics, !self.droppedEnvironmentKeys.isEmpty {
+            for key in self.droppedEnvironmentKeys {
+                await diagnostics(RuntimeDiagnosticEvent(
+                    subsystem: "mcp",
+                    name: "mcp.env.dropped",
+                    metadata: ["server": self.serverName, "key": key]
+                ))
+            }
+        }
+        // A write to a pipe whose reader exited must fail with EPIPE instead of killing the host.
+        StdinWriter.suppressSIGPIPE(on: self.stdinPipe.fileHandleForWriting.fileDescriptor)
         self.process.standardInput = self.stdinPipe
         self.process.standardOutput = self.stdoutPipe
         self.process.standardError = self.stderrPipe
@@ -135,27 +161,27 @@ public actor MCPStdioTransport: MCPTransport {
             try self.process.run()
         } catch {
             self.closed = true
+            self.writer.close()
             throw MCPTransportError.closed("failed to launch \(self.serverName): \(error.localizedDescription)")
         }
     }
 
-    /// Writes one message followed by a newline to stdin.
+    /// Writes one message followed by a newline to stdin (off the actor, in send order).
     public func send(_ message: MCPJSONRPCMessage) async throws {
         guard self.started, !self.closed else { throw MCPTransportError.closed("stdio transport is not running") }
         var data = try message.encoded()
         data.append(0x0A)
-        do {
-            try self.stdinPipe.fileHandleForWriting.write(contentsOf: data)
-        } catch {
-            throw MCPTransportError.closed("failed to write to \(self.serverName): \(error.localizedDescription)")
-        }
+        try await self.writer.write(data)
     }
 
     /// Closes stdin, then escalates to SIGTERM and SIGKILL if the process keeps running.
     public func close() async {
-        guard !self.closed else { return }
+        guard !self.finished else { return }
+        self.finished = true
         self.closed = true
-        try? self.stdinPipe.fileHandleForWriting.close()
+        // Runs after any pending writes; a write blocked on a full pipe fails with EPIPE once the child
+        // is gone, so it never holds up the escalation below.
+        self.writer.close()
         if self.started, self.process.isRunning {
             if !(await self.waitForExit(seconds: self.shutdownGraceSeconds)) {
                 self.process.terminate()
@@ -183,11 +209,80 @@ public actor MCPStdioTransport: MCPTransport {
 
     private func processExited(status: Int32) {
         self.stderrCollector.finish()
+        self.writer.close()
         guard !self.closed else { return }
         self.closed = true
         let error: MCPTransportError? = status == 0 ? nil : .closed("\(self.serverName) exited with status \(status)")
         self.continuation.yield(.closed(error ?? .closed("\(self.serverName) exited")))
         self.continuation.finish()
+    }
+}
+
+/// Serial writer for a child's stdin: writes run on a dedicated queue (never on the transport actor or
+/// the cooperative pool), in submission order, with SIGPIPE suppressed.
+final class StdinWriter: @unchecked Sendable {
+    private let handle: FileHandle
+    private let serverName: String
+    private let queue: DispatchQueue
+    private let lock = NSLock()
+    private var isClosed = false
+
+    #if os(Linux)
+    /// Linux pipes have no per-descriptor SIGPIPE option; ignore the signal process-wide once.
+    private static let ignoreSIGPIPE: Void = {
+        _ = signal(SIGPIPE, SIG_IGN)
+    }()
+    #endif
+
+    init(handle: FileHandle, serverName: String) {
+        self.handle = handle
+        self.serverName = serverName
+        self.queue = DispatchQueue(label: "ai.openclaw.mcp.stdin.\(serverName)")
+    }
+
+    /// Makes writes to `descriptor` fail with EPIPE instead of raising SIGPIPE.
+    static func suppressSIGPIPE(on descriptor: Int32) {
+        #if os(Linux)
+        _ = Self.ignoreSIGPIPE
+        #else
+        _ = fcntl(descriptor, F_SETNOSIGPIPE, 1)
+        #endif
+    }
+
+    /// Writes `data` after every earlier write.
+    /// - Throws: ``MCPTransportError/closed(_:)`` when stdin is closed or the write fails (EPIPE).
+    func write(_ data: Data) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            self.queue.async {
+                guard !self.closedFlag else {
+                    continuation.resume(throwing: MCPTransportError.closed("stdio transport is not running"))
+                    return
+                }
+                do {
+                    try self.handle.write(contentsOf: data)
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: MCPTransportError.closed("failed to write to \(self.serverName): \(error.localizedDescription)"))
+                }
+            }
+        }
+    }
+
+    /// Closes stdin once the writes queued so far finished (idempotent).
+    func close() {
+        self.queue.async {
+            guard !self.closedFlag else { return }
+            self.lock.lock()
+            self.isClosed = true
+            self.lock.unlock()
+            try? self.handle.close()
+        }
+    }
+
+    private var closedFlag: Bool {
+        self.lock.lock()
+        defer { self.lock.unlock() }
+        return self.isClosed
     }
 }
 

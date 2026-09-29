@@ -422,6 +422,8 @@ public actor HookRegistry {
     ///   - event: Initial event.
     ///   - context: Base context.
     ///   - failClosed: Result used when a handler throws (`nil` fails open).
+    ///   - onUndecodable: Result used when a handler returns a payload that does not decode as `Result`
+    ///     (`nil` treats it as "no decision").
     ///   - eventForHandler: Event passed to the next handler given the merged result so far.
     ///   - merge: Merges the accumulated result with the next handler's result.
     ///   - shouldStop: Whether the merged result stops lower-priority handlers.
@@ -431,6 +433,7 @@ public actor HookRegistry {
         event: Event,
         context: HookContext = HookContext(),
         failClosed: Result? = nil,
+        onUndecodable: Result? = nil,
         eventForHandler: @Sendable (Event, Result?) -> Event = { event, _ in event },
         merge: @Sendable (Result?, Result) -> Result = { _, next in next },
         shouldStop: @Sendable (Result) -> Bool = { _ in false }
@@ -441,7 +444,12 @@ public actor HookRegistry {
             handlerContext.event = HookPayloadCoding.encode(eventForHandler(event, merged))
             let next: Result?
             do {
-                next = try await entry.handler(handlerContext)?.decodePayload(Result.self)
+                let result = try await entry.handler(handlerContext)
+                if let payload = result?.payload, !payload.isNull || onUndecodable != nil {
+                    next = HookPayloadCoding.decode(Result.self, from: payload) ?? onUndecodable
+                } else {
+                    next = nil
+                }
             } catch {
                 await self.reportFailure(hook: hook, entry: entry, error: error)
                 if let failClosed {
@@ -516,6 +524,7 @@ public actor HookRegistry {
             event: event,
             context: context,
             failClosed: InputGateDecision.block(reason: "before_agent_run handler failed"),
+            onUndecodable: InputGateDecision.block(reason: InputGateDecision.invalidDecisionReason),
             merge: { accumulated, next in
                 guard let accumulated else { return next }
                 if case .block = accumulated { return accumulated }

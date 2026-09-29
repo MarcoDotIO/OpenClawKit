@@ -11,8 +11,8 @@ public enum CronSchedule: Codable, Sendable, Equatable {
     case at(String)
     /// Every `everyMs`, aligned to `anchorMs` (defaults to the job's creation time).
     case every(everyMs: Int64, anchorMs: Int64?)
-    /// Five-field cron expression evaluated in `tz` (default: the device time zone), plus a
-    /// deterministic per-job `staggerMs` offset.
+    /// Five- or six-field (seconds) cron expression evaluated in `tz` (default: the device time zone),
+    /// plus a deterministic per-job `staggerMs` offset.
     case cron(expr: String, tz: String?, staggerMs: Int64?)
     /// An upstream kind the SDK does not run (`on-exit`, `stream`), kept verbatim.
     case unsupported(kind: String, raw: [String: AnyCodable])
@@ -38,15 +38,32 @@ public enum CronSchedule: Codable, Sendable, Equatable {
             }
             self = .at(at)
         case "every":
-            guard let every = raw["everyMs"]?.int64Value, every > 0 else {
-                throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "every schedule requires everyMs >= 1"))
+            guard let every = raw["everyMs"]?.int64Value, AutomationClock.intervalRange.contains(every) else {
+                throw DecodingError.dataCorrupted(.init(
+                    codingPath: decoder.codingPath,
+                    debugDescription: "every schedule requires everyMs in 1...\(AutomationClock.maxTimestampMs)"
+                ))
             }
-            self = .every(everyMs: every, anchorMs: raw["anchorMs"]?.int64Value)
+            let anchor = raw["anchorMs"]?.int64Value
+            if raw["anchorMs"].map({ !$0.isNull }) == true, !(anchor.map(AutomationClock.timestampRange.contains) ?? false) {
+                throw DecodingError.dataCorrupted(.init(
+                    codingPath: decoder.codingPath,
+                    debugDescription: "every schedule anchorMs must be in 0...\(AutomationClock.maxTimestampMs)"
+                ))
+            }
+            self = .every(everyMs: every, anchorMs: anchor)
         case "cron":
             guard let expr = raw["expr"]?.stringValue else {
                 throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "cron schedule requires expr"))
             }
-            self = .cron(expr: expr, tz: raw["tz"]?.stringValue, staggerMs: raw["staggerMs"]?.int64Value)
+            let stagger = raw["staggerMs"]?.int64Value
+            if raw["staggerMs"].map({ !$0.isNull }) == true, !(stagger.map(AutomationClock.timestampRange.contains) ?? false) {
+                throw DecodingError.dataCorrupted(.init(
+                    codingPath: decoder.codingPath,
+                    debugDescription: "cron schedule staggerMs must be in 0...\(AutomationClock.maxTimestampMs)"
+                ))
+            }
+            self = .cron(expr: expr, tz: raw["tz"]?.stringValue, staggerMs: stagger)
         default:
             self = .unsupported(kind: kind, raw: raw)
         }
@@ -472,18 +489,30 @@ public struct AutomationJob: Codable, Sendable, Equatable, Identifiable {
             if self.state.lastRunAtMs != nil { return nil }
             return at
         case .every(let everyMs, let anchorMs):
+            // Jobs built with the public enum case bypass the Codable bounds, so never trap here.
+            guard everyMs > 0 else { return nil }
             let anchor = anchorMs ?? self.createdAtMs
             if now < anchor { return anchor }
-            let elapsed = now - anchor
-            let periods = elapsed / everyMs + 1
-            return anchor + periods * everyMs
+            let (elapsed, elapsedOverflow) = now.subtractingReportingOverflow(anchor)
+            guard !elapsedOverflow else { return nil }
+            let (span, spanOverflow) = (elapsed / everyMs + 1).multipliedReportingOverflow(by: everyMs)
+            guard !spanOverflow else { return nil }
+            let (next, nextOverflow) = anchor.addingReportingOverflow(span)
+            return nextOverflow ? nil : next
         case .cron(let expr, let tz, let staggerMs):
             guard let expression = try? CronExpression(expr) else { return nil }
             let zone = tz.flatMap { TimeZone(identifier: $0) } ?? defaultTimeZone
             let stagger = Self.staggerOffset(jobID: self.id, staggerMs: staggerMs)
-            let reference = Date(timeIntervalSince1970: Double(now - stagger) / 1_000)
-            guard let next = expression.nextDate(after: reference, in: zone) else { return nil }
-            return Int64((next.timeIntervalSince1970 * 1_000).rounded()) + stagger
+            let (shifted, overflow) = now.subtractingReportingOverflow(stagger)
+            guard !overflow else { return nil }
+            let reference = Date(timeIntervalSince1970: Double(shifted) / 1_000)
+            guard let next = expression.nextDate(after: reference, in: zone),
+                  let nextMs = Int64(exactly: (next.timeIntervalSince1970 * 1_000).rounded())
+            else {
+                return nil
+            }
+            let (fire, fireOverflow) = nextMs.addingReportingOverflow(stagger)
+            return fireOverflow ? nil : fire
         case .unsupported:
             return nil
         }
@@ -507,6 +536,25 @@ public struct AutomationJob: Codable, Sendable, Equatable, Identifiable {
 
 /// Millisecond clock and time parsing helpers for automations.
 public enum AutomationClock {
+    /// Largest timestamp or interval accepted in schedules (upstream `MAX_DATE_TIMESTAMP_MS`, the
+    /// ECMAScript date limit); keeps schedule arithmetic far from Int64 overflow.
+    public static let maxTimestampMs: Int64 = 8_640_000_000_000_000
+    /// Valid `everyMs` values (`1...maxTimestampMs`).
+    public static let intervalRange: ClosedRange<Int64> = 1...maxTimestampMs
+    /// Valid `anchorMs` / `staggerMs` values (`0...maxTimestampMs`).
+    public static let timestampRange: ClosedRange<Int64> = 0...maxTimestampMs
+
+    /// Whole milliseconds for a computed duration, or `nil` when it is not finite, rounds below 1 ms or
+    /// exceeds ``maxTimestampMs`` (never traps on model-supplied values such as `inf` or `1e300`).
+    /// - Parameter milliseconds: Duration in milliseconds.
+    /// - Returns: The rounded duration.
+    public static func durationMs(_ milliseconds: Double) -> Int64? {
+        guard milliseconds.isFinite else { return nil }
+        let rounded = milliseconds.rounded()
+        guard rounded >= 1, rounded <= Double(self.maxTimestampMs) else { return nil }
+        return Int64(rounded)
+    }
+
     /// Current time in milliseconds since the epoch.
     public static func nowMs() -> Int64 {
         Int64((Date().timeIntervalSince1970 * 1_000).rounded())

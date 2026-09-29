@@ -130,10 +130,17 @@ enum MemoryToolSupport {
         }
     }
 
+    /// Largest value ``positiveInt(_:name:tool:)`` returns (Int32.max, so watchOS arm64_32 is covered).
+    static let positiveIntCap = Int(Int32.max)
+
+    /// Parses a model-supplied integer `>= 1`, clamping values above ``positiveIntCap`` instead of
+    /// trapping on out-of-range doubles.
     static func positiveInt(_ value: AnyCodable?, name: String, tool: String) throws -> Int? {
         guard let value, !value.isNull else { return nil }
-        if let int = value.intValue, int >= 1 { return int }
-        if let double = value.doubleValue, double.rounded() == double, double >= 1 { return Int(double) }
+        if let int = value.intValue, int >= 1 { return min(int, Self.positiveIntCap) }
+        if let double = value.doubleValue, double.isFinite, double.rounded() == double, double >= 1 {
+            return double >= Double(Self.positiveIntCap) ? Self.positiveIntCap : Int(double)
+        }
         throw OpenClawCoreError.invalidConfiguration("\(tool): \(name) must be an integer >= 1")
     }
 

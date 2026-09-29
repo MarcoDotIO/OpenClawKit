@@ -133,7 +133,8 @@ public enum MCPJSONRPCMessage: Sendable, Equatable {
         let id: MCPRequestID? = {
             switch object["id"]?.value {
             case .int(let int): return .int(int)
-            case .double(let double) where double.rounded() == double: return .int(Int(double))
+            // Numbers outside Int (and fractional ids) are not usable ids; never convert with a trapping Int(_:).
+            case .double(let double): return Int(exactly: double).map(MCPRequestID.int)
             case .string(let string): return .string(string)
             default: return nil
             }
