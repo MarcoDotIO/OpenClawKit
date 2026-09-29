@@ -139,7 +139,7 @@ public actor A2ATaskStore {
         let waiterID = UUID()
         return await withCheckedContinuation { continuation in
             let timeout = Task { [weak self] in
-                try? await Task.sleep(nanoseconds: UInt64(max(0, timeoutMs)) * 1_000_000)
+                try? await Task.sleep(nanoseconds: ChannelAsync.nanoseconds(milliseconds: timeoutMs))
                 await self?.expireWaiter(taskId: taskId, waiterID: waiterID)
             }
             self.waiters[taskId, default: [:]][waiterID] = Waiter(continuation: continuation, timeout: timeout)

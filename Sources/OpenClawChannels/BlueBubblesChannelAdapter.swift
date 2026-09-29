@@ -155,8 +155,8 @@ public actor BlueBubblesChannelAdapter: InboundChannelAdapter {
             )
         )
         let response = try await self.transport.data(for: request)
-        guard (200..<300).contains(response.statusCode) else {
-            throw OpenClawCoreError.unavailable("BlueBubbles send failed with status \(response.statusCode)")
+        if let failure = ChannelHTTP.sendFailure(response, description: "BlueBubbles send failed with status \(response.statusCode)") {
+            throw failure
         }
     }
 

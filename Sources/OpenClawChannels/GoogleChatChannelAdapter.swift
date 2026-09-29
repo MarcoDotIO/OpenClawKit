@@ -187,15 +187,15 @@ public actor GoogleChatChannelAdapter: InboundChannelAdapter, ReceiptingChannelA
         let target = try self.resolveTarget(from: message)
         let text = try self.resolveOutboundText(from: message)
         let chunks = ChannelTextChunker.chunk(text, for: .googlechat, policy: self.config.policy)
-        var parts: [ChannelSendReceipt.Part] = []
-        for (index, chunk) in chunks.enumerated() {
+        let parts = try await ChannelMultipartDelivery(threadID: target.threadName).run(count: chunks.count) { index in
+            let chunk = chunks[index]
             var name: String?
             if index == 0, let placeholder = self.typingPlaceholders.removeValue(forKey: message.peerID.trimmingCharacters(in: .whitespaces)) {
                 name = try await self.updateMessage(name: placeholder, text: chunk)
             } else {
                 name = try await self.postMessage(text: chunk, target: target)
             }
-            parts.append(ChannelSendReceipt.Part(platformMessageID: name ?? "", index: index, threadID: target.threadName))
+            return [ChannelSendReceipt.Part(platformMessageID: name ?? "", index: index, threadID: target.threadName)]
         }
         return ChannelSendReceipt(parts: parts.filter { !$0.platformMessageID.isEmpty }, threadID: target.threadName)
     }

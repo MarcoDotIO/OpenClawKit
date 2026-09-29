@@ -29,6 +29,9 @@ public actor LineChannelAdapter: InboundChannelAdapter, ReceiptingChannelAdapter
     public static let replyTokenTTL: TimeInterval = 50
     /// Messages per reply/push request.
     public static let maxMessagesPerRequest = 5
+    /// Push attempts under one `X-Line-Retry-Key` for server errors and transport failures.
+    public static let maxPushAttempts = 3
+    static let pushRetryBackoffMs = 250
 
     /// Adapter channel identifier.
     public let id: ChannelID = .line
@@ -238,7 +241,7 @@ public actor LineChannelAdapter: InboundChannelAdapter, ReceiptingChannelAdapter
         guard let token = self.accessToken, let url = URL(string: "\(Self.dataBaseURL)/message/\(messageID)/content") else { return nil }
         let request = ChannelHTTP.jsonRequest(url: url, method: "GET", body: nil, headers: ["Authorization": "Bearer \(token)"], timeout: 30)
         guard let response = try? await self.transport.data(for: request), (200..<300).contains(response.statusCode) else { return nil }
-        let maxBytes = Int((self.config.policy.mediaMaxMb ?? 10) * 1_024 * 1_024)
+        let maxBytes = ChannelMediaLimits.maxBytes(megabytes: self.config.policy.mediaMaxMb, defaultMegabytes: 10)
         guard response.body.count <= maxBytes else { return nil }
         let fallback: String
         switch type {
@@ -273,6 +276,9 @@ public actor LineChannelAdapter: InboundChannelAdapter, ReceiptingChannelAdapter
     }
 
     /// Sends via the reply API while the reply token is fresh, otherwise via push.
+    ///
+    /// Each push batch keeps one `X-Line-Retry-Key` across its retries. A failure after the first
+    /// batch was delivered throws ``ChannelSendError/partiallyDelivered(receipt:failure:)``.
     /// - Parameter message: Outbound payload.
     /// - Returns: Receipt with LINE message ids.
     public func sendReturningReceipt(_ message: OutboundMessage) async throws -> ChannelSendReceipt {
@@ -287,15 +293,17 @@ public actor LineChannelAdapter: InboundChannelAdapter, ReceiptingChannelAdapter
         guard !chunks.isEmpty else {
             throw OpenClawCoreError.invalidConfiguration("LINE outbound text is required")
         }
-        var ids: [String] = []
-        var index = 0
-        while index < chunks.count {
-            let batch = Array(chunks[index..<min(index + Self.maxMessagesPerRequest, chunks.count)])
-            let messages: [[String: Any]] = batch.map { ["type": "text", "text": $0] }
-            ids += try await self.deliver(messages, to: to)
-            index += batch.count
+        let batches = stride(from: 0, to: chunks.count, by: Self.maxMessagesPerRequest).map {
+            Array(chunks[$0..<min($0 + Self.maxMessagesPerRequest, chunks.count)])
         }
-        return ChannelSendReceipt(parts: ids.enumerated().map { ChannelSendReceipt.Part(platformMessageID: $0.element, index: $0.offset) })
+        var nextIndex = 0
+        let parts = try await ChannelMultipartDelivery().run(count: batches.count) { batchIndex in
+            let messages: [[String: Any]] = batches[batchIndex].map { ["type": "text", "text": $0] }
+            let ids = try await self.deliver(messages, to: to)
+            defer { nextIndex += ids.count }
+            return ids.enumerated().map { ChannelSendReceipt.Part(platformMessageID: $0.element, index: nextIndex + $0.offset) }
+        }
+        return ChannelSendReceipt(parts: parts)
     }
 
     private func deliver(_ messages: [[String: Any]], to: String) async throws -> [String] {
@@ -306,7 +314,42 @@ public actor LineChannelAdapter: InboundChannelAdapter, ReceiptingChannelAdapter
                 // Expired or reused reply token: nothing was delivered, fall back to push.
             }
         }
-        return try await self.post("push", body: ["to": to, "messages": messages], retryKey: UUID().uuidString.lowercased())
+        return try await self.push(messages, to: to)
+    }
+
+    /// Pushes one batch, retrying server errors and transport failures under one
+    /// `X-Line-Retry-Key` so LINE answers 409 (accepted earlier) instead of delivering twice
+    /// (upstream `runLinePushWithRetries`). A 429 is not retried here: it proves the push was
+    /// refused, so the registry may retry it.
+    private func push(_ messages: [[String: Any]], to: String) async throws -> [String] {
+        let retryKey = UUID().uuidString.lowercased()
+        var sawAmbiguousAttempt = false
+        var attempt = 1
+        while true {
+            do {
+                return try await self.post("push", body: ["to": to, "messages": messages], retryKey: retryKey)
+            } catch let error as ChannelSendError {
+                let retryable: Bool
+                switch error {
+                case .unknownOutcome:
+                    sawAmbiguousAttempt = true
+                    retryable = true
+                case .notSent:
+                    retryable = true
+                case .rateLimited, .rejected, .partiallyDelivered:
+                    retryable = false
+                }
+                guard retryable, attempt < Self.maxPushAttempts, !Task.isCancelled else {
+                    // A fresh key on a registry retry could deliver twice once any attempt was ambiguous.
+                    if sawAmbiguousAttempt, error.isRetryable {
+                        throw ChannelSendError.unknownOutcome(underlying: error.errorDescription ?? "LINE push failed")
+                    }
+                    throw error
+                }
+                await ChannelAsync.sleep(milliseconds: Self.pushRetryBackoffMs * attempt)
+                attempt += 1
+            }
+        }
     }
 
     private func post(_ operation: String, body: [String: Any], retryKey: String?) async throws -> [String] {

@@ -250,7 +250,8 @@ public actor WhatsAppCloudChannelAdapter: InboundChannelAdapter, ChannelConfigur
                     "statusCode": String(response.statusCode),
                 ]
             )
-            throw OpenClawCoreError.unavailable("WhatsApp Cloud send failed with status \(response.statusCode)")
+            let detail = "WhatsApp Cloud send failed with status \(response.statusCode)"
+            throw ChannelHTTP.sendFailure(response, description: detail) ?? ChannelSendError.rejected(status: response.statusCode, detail: detail)
         }
         await self.emitDiagnostic(
             name: "channel.whatsapp.send.succeeded",

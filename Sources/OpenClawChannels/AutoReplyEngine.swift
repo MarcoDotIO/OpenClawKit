@@ -713,11 +713,11 @@ public actor AutoReplyEngine {
             await self.emitDiagnostic(
                 name: "typing.heartbeat.error",
                 sessionKey: sessionKey,
-                metadata: ["channel": message.channel.rawValue, "error": String(describing: error)]
+                metadata: ["channel": message.channel.rawValue, "error": ChannelErrorText.describe(error)]
             )
         }
         let startedAt = Date()
-        let intervalNs = UInt64(settings.keepaliveIntervalMs) * 1_000_000
+        let intervalNs = ChannelAsync.nanoseconds(milliseconds: settings.keepaliveIntervalMs)
         let initialFailures = consecutiveFailures
         return Task {
             var failures = initialFailures

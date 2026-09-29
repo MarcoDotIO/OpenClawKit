@@ -106,6 +106,8 @@ public struct ChannelGatewayHandlers: Sendable {
 
     /// Maximum `statusIssues` entries (upstream schema `maxItems`).
     public static let maxStatusIssues = 50
+    /// Upper bound for the `channels.status` probe timeout (`timeoutMs` is caller-supplied).
+    public static let maxProbeTimeoutMs = 120_000
 
     let context: ChannelGatewayContext
 
@@ -124,6 +126,7 @@ public struct ChannelGatewayHandlers: Sendable {
     ///   - channelFilter: Optional channel filter.
     /// - Returns: Status report.
     public func statusReport(probe: Bool = false, timeoutMs: Int = 10_000, channelFilter: ChannelID? = nil) async -> ChannelsStatusReport {
+        let timeoutMs = min(max(1, timeoutMs), Self.maxProbeTimeoutMs)
         let config = await self.context.channelsConfig()
         let registered = Set(await self.context.registry.adapterIDs())
         let entries = OpenClawChannelMetadataCatalog.orderedEntries.filter { entry in
@@ -240,7 +243,7 @@ public struct ChannelGatewayHandlers: Sendable {
         }
         let probe = params["probe"]?.boolValue ?? false
         let timeoutMs = params["timeoutMs"]?.intValue ?? 10_000
-        let report = await self.statusReport(probe: probe, timeoutMs: max(1, timeoutMs), channelFilter: filter)
+        let report = await self.statusReport(probe: probe, timeoutMs: min(max(1, timeoutMs), Self.maxProbeTimeoutMs), channelFilter: filter)
         return try AnyCodable(encoding: report)
     }
 

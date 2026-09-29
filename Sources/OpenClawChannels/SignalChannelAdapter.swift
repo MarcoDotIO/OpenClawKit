@@ -291,6 +291,9 @@ public actor SignalChannelAdapter: InboundChannelAdapter, ReceiptingChannelAdapt
     }
 
     /// Sends text (chunked at 4,000 characters) and attachments; returns timestamp receipts.
+    ///
+    /// A failure after the first chunk was delivered throws
+    /// ``ChannelSendError/partiallyDelivered(receipt:failure:)`` (rate limits are retried per chunk).
     /// - Parameter message: Outbound payload.
     /// - Returns: Receipt with the Signal timestamps.
     public func sendReturningReceipt(_ message: OutboundMessage) async throws -> ChannelSendReceipt {
@@ -305,24 +308,24 @@ public actor SignalChannelAdapter: InboundChannelAdapter, ReceiptingChannelAdapt
         }
         let chunks = text.isEmpty ? [""] : ChannelTextChunker.chunk(text, limit: Self.textChunkLimit)
         let quote = message.replyToID.flatMap { replyTo in self.lastInbound[message.peerID].flatMap { $0.timestamp == Int64(replyTo) ? $0 : nil } }
-        var parts: [ChannelSendReceipt.Part] = []
-        for (index, chunk) in chunks.enumerated() {
+        let delivery = ChannelMultipartDelivery(replyToID: message.replyToID)
+        let parts = try await delivery.run(count: chunks.count) { index in
             let attachments = index == 0 ? message.attachments : []
             let timestamp = try await self.sendOne(
                 account: account,
                 recipient: recipient,
-                text: chunk,
+                text: chunks[index],
                 attachments: attachments,
                 quote: index == 0 ? quote : nil
             )
-            parts.append(
+            return [
                 ChannelSendReceipt.Part(
                     platformMessageID: timestamp.map(String.init) ?? "",
                     kind: attachments.isEmpty ? .text : .media,
                     index: index,
                     replyToID: index == 0 ? message.replyToID : nil
-                )
-            )
+                ),
+            ]
         }
         return ChannelSendReceipt(parts: parts, replyToID: message.replyToID)
     }
@@ -361,7 +364,9 @@ public actor SignalChannelAdapter: InboundChannelAdapter, ReceiptingChannelAdapt
 
     /// Encodes attachments as container data URIs within the raw-byte budget.
     private func base64Attachments(_ attachments: [MediaAttachment]) throws -> [String] {
-        let budget = self.config.policy.mediaMaxMb.map { Int($0 * 1_024 * 1_024) } ?? Self.defaultAttachmentBudgetBytes
+        let budget = self.config.policy.mediaMaxMb.map {
+            ChannelMediaLimits.maxBytes(megabytes: $0, defaultMegabytes: Double(Self.defaultAttachmentBudgetBytes) / 1_048_576)
+        } ?? Self.defaultAttachmentBudgetBytes
         var remaining = budget
         var results: [String] = []
         for attachment in attachments {

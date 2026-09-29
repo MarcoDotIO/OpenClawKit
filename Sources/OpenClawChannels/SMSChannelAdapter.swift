@@ -327,6 +327,9 @@ public actor SMSChannelAdapter: InboundChannelAdapter, ReceiptingChannelAdapter,
     }
 
     /// Sends plain-text chunks (and MMS media on the first chunk); returns the Twilio `sid`s.
+    ///
+    /// A failure after the first chunk was delivered throws
+    /// ``ChannelSendError/partiallyDelivered(receipt:failure:)`` (rate limits are retried per chunk).
     /// - Parameter message: Outbound payload.
     /// - Returns: Receipt.
     public func sendReturningReceipt(_ message: OutboundMessage) async throws -> ChannelSendReceipt {
@@ -360,16 +363,16 @@ public actor SMSChannelAdapter: InboundChannelAdapter, ReceiptingChannelAdapter,
             }
             chunks = [""]
         }
-        var parts: [ChannelSendReceipt.Part] = []
-        for (index, chunk) in chunks.enumerated() {
-            let sid = try await self.postMessage(to: to, body: chunk, mediaURLs: index == 0 ? mediaURLs : [])
-            parts.append(ChannelSendReceipt.Part(platformMessageID: sid, kind: index == 0 && !mediaURLs.isEmpty ? .media : .text, index: index))
+        let parts = try await ChannelMultipartDelivery().run(count: chunks.count) { index in
+            let sid = try await self.postMessage(to: to, body: chunks[index], mediaURLs: index == 0 ? mediaURLs : [])
+            return [ChannelSendReceipt.Part(platformMessageID: sid, kind: index == 0 && !mediaURLs.isEmpty ? .media : .text, index: index)]
         }
         return ChannelSendReceipt(parts: parts)
     }
 
     private func postMessage(to: String, body: String, mediaURLs: [String]) async throws -> String {
-        guard body.count <= TwilioSMS.messageBodyMaxLength else {
+        // Twilio counts the Body in UTF-16 code units (upstream `params.text.length`).
+        guard body.utf16.count <= TwilioSMS.messageBodyMaxLength else {
             throw ChannelSendError.rejected(status: 0, detail: "Twilio SMS/MMS Body supports at most \(TwilioSMS.messageBodyMaxLength) characters.")
         }
         var fields: [(String, String)] = [("To", to)]

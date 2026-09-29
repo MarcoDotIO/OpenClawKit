@@ -123,6 +123,22 @@ enum ChannelHTTP {
         }
     }
 
+    /// Classified send failure for a non-2xx response, keeping a channel-specific description
+    /// (HTTP 5xx stays an unknown outcome so the registry never replays it).
+    static func sendFailure(_ response: HTTPResponseData, description: String) -> ChannelSendError? {
+        guard let classified = ChannelSendError.classify(statusCode: response.statusCode, headers: response.headers, body: response.body) else {
+            return nil
+        }
+        switch classified {
+        case .unknownOutcome:
+            return .unknownOutcome(underlying: description)
+        case .rejected(let status, _):
+            return .rejected(status: status, detail: description)
+        case .notSent, .rateLimited, .partiallyDelivered:
+            return classified
+        }
+    }
+
     /// Encodes `application/x-www-form-urlencoded` pairs (spaces as `+`, RFC 3986 unreserved kept).
     static func formEncoded(_ pairs: [(String, String)]) -> Data {
         let body = pairs.map { "\(self.formEscape($0.0))=\(self.formEscape($0.1))" }.joined(separator: "&")
@@ -218,7 +234,7 @@ enum ChannelAsync {
                 try await operation()
             }
             group.addTask {
-                try await Task.sleep(nanoseconds: UInt64(max(1, milliseconds)) * 1_000_000)
+                try await Task.sleep(nanoseconds: self.nanoseconds(milliseconds: max(1, milliseconds)))
                 throw TimeoutError(milliseconds: milliseconds)
             }
             defer { group.cancelAll() }
@@ -258,7 +274,16 @@ enum ChannelAsync {
 
     /// Sleeps without throwing (returns early when cancelled).
     static func sleep(milliseconds: Int) async {
-        try? await Task.sleep(nanoseconds: UInt64(max(0, milliseconds)) * 1_000_000)
+        try? await Task.sleep(nanoseconds: self.nanoseconds(milliseconds: milliseconds))
+    }
+
+    /// Converts milliseconds to nanoseconds, clamping negatives to zero and saturating at
+    /// `Int64.max` instead of overflowing (`UInt64(ms) * 1_000_000` traps for ms above about
+    /// 1.8e13, and the runtime treats delays as signed 64-bit values).
+    static func nanoseconds(milliseconds: Int) -> UInt64 {
+        let ceiling = UInt64(Int64.max)
+        let (product, overflow) = UInt64(max(0, milliseconds)).multipliedReportingOverflow(by: 1_000_000)
+        return overflow ? ceiling : min(product, ceiling)
     }
 }
 
@@ -361,6 +386,26 @@ actor URLSessionChannelWebSocket: ChannelWebSocketConnection {
     func closeCode() async -> Int? {
         let code = self.task.closeCode
         return code == .invalid ? nil : code.rawValue
+    }
+}
+
+// MARK: - Media limits
+
+/// Byte budgets derived from config-supplied `mediaMaxMb` values.
+enum ChannelMediaLimits {
+    /// Converts `mediaMaxMb` into bytes without trapping: non-finite values use the default,
+    /// values at or below zero allow nothing, and values beyond `Int.max` saturate (on 32-bit
+    /// `Int` watchOS, 2048 MB and more already exceed it).
+    /// - Parameters:
+    ///   - megabytes: Configured megabytes.
+    ///   - defaultMegabytes: Default when unset or non-finite.
+    /// - Returns: Byte budget.
+    static func maxBytes(megabytes: Double?, defaultMegabytes: Double) -> Int {
+        let resolved = megabytes.flatMap { $0.isFinite ? $0 : nil } ?? defaultMegabytes
+        let bytes = resolved * 1_048_576
+        if bytes >= Double(Int.max) { return Int.max }
+        if !(bytes > 0) { return 0 }
+        return Int(bytes)
     }
 }
 

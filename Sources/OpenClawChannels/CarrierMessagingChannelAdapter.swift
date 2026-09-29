@@ -261,12 +261,12 @@ public actor CarrierMessagingChannelAdapter: InboundChannelAdapter, ReceiptingCh
             throw OpenClawCoreError.invalidConfiguration("SMS outbound text is required")
         }
         let rcsHandle = await self.rcsHandleIfSupported(peerID: message.peerID, serviceID: serviceID)
-        var parts: [ChannelSendReceipt.Part] = []
-        for (index, chunk) in chunks.enumerated() {
+        let parts = try await ChannelMultipartDelivery().run(count: chunks.count) { index in
+            let chunk = chunks[index]
             if let rcsHandle {
                 let messageID = RCSMessageID(rawValue: UUID().uuidString)
                 try await self.sendRCS(chunk, to: rcsHandle, serviceID: serviceID, messageID: messageID, replyToID: index == 0 ? message.replyToID : nil)
-                parts.append(ChannelSendReceipt.Part(platformMessageID: messageID.rawValue, index: index))
+                return [ChannelSendReceipt.Part(platformMessageID: messageID.rawValue, index: index)]
             } else {
                 let phone = TwilioSMS.normalizePhoneNumber(message.peerID)
                 guard TwilioSMS.looksLikePhoneNumber(phone) else {
@@ -276,7 +276,7 @@ public actor CarrierMessagingChannelAdapter: InboundChannelAdapter, ReceiptingCh
                 let smsID = SMSMessageID(rawValue: self.nextSMSMessageID)
                 let sms = SMSMessage(cellularServiceID: serviceID, handle: SMSHandle(phoneNumber: phone), messageID: smsID, content: SMSContent(body: chunk))
                 try await TelephonyMessagingSession.shared.smsService.sendMessage(sms)
-                parts.append(ChannelSendReceipt.Part(platformMessageID: "sms:\(smsID.rawValue)", index: index))
+                return [ChannelSendReceipt.Part(platformMessageID: "sms:\(smsID.rawValue)", index: index)]
             }
         }
         return ChannelSendReceipt(parts: parts)

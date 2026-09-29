@@ -305,6 +305,9 @@ public actor DiscordChannelAdapter: InboundChannelAdapter, ReceiptingChannelAdap
     }
 
     /// Sends an outbound message and returns the Discord message-id receipt.
+    ///
+    /// A failure after the first chunk was delivered throws
+    /// ``ChannelSendError/partiallyDelivered(receipt:failure:)`` (rate limits are retried per chunk).
     /// - Parameter message: Outbound payload.
     /// - Returns: Receipt with one part per chunk.
     public func sendReturningReceipt(_ message: OutboundMessage) async throws -> ChannelSendReceipt {
@@ -318,9 +321,9 @@ public actor DiscordChannelAdapter: InboundChannelAdapter, ReceiptingChannelAdap
         guard !chunks.isEmpty else {
             throw OpenClawCoreError.invalidConfiguration("Discord outbound text is required")
         }
-        var parts: [ChannelSendReceipt.Part] = []
-        for (index, chunk) in chunks.enumerated() {
-            var payload: [String: Any] = ["content": chunk]
+        let delivery = ChannelMultipartDelivery(threadID: message.threadID, replyToID: message.replyToID)
+        let parts = try await delivery.run(count: chunks.count) { index in
+            var payload: [String: Any] = ["content": chunks[index]]
             if self.config.suppressEmbeds {
                 payload["flags"] = 4
             }
@@ -333,15 +336,15 @@ public actor DiscordChannelAdapter: InboundChannelAdapter, ReceiptingChannelAdap
                 token: token,
                 payload: payload
             )
-            parts.append(
+            return [
                 ChannelSendReceipt.Part(
                     platformMessageID: created.id,
                     kind: .text,
                     index: index,
                     threadID: message.threadID,
                     replyToID: index == 0 ? message.replyToID : nil
-                )
-            )
+                ),
+            ]
         }
         return ChannelSendReceipt(parts: parts, threadID: message.threadID, replyToID: message.replyToID)
     }

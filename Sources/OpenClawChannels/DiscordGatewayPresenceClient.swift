@@ -211,7 +211,7 @@ public actor DiscordGatewayPresenceClient: DiscordPresenceClient {
                 guard let self else { return }
                 await self.sendHeartbeat()
                 let interval = await self.currentHeartbeatIntervalMs()
-                let delayNs = UInt64(interval) * 1_000_000
+                let delayNs = ChannelAsync.nanoseconds(milliseconds: max(1_000, interval))
                 try? await Task.sleep(nanoseconds: delayNs)
             }
         }

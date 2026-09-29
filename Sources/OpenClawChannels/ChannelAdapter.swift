@@ -286,6 +286,12 @@ public struct ChannelDeliveryFailure: Error, LocalizedError, CustomStringConvert
         self.classification = classification
     }
 
+    /// Parts delivered before the failure when a multi-part send failed part-way
+    /// (``ChannelSendError/partiallyDelivered(receipt:failure:)``).
+    public var deliveredReceipt: ChannelSendReceipt? {
+        self.classification?.deliveredReceipt
+    }
+
     /// Localized description.
     public var errorDescription: String? {
         "Failed to deliver message via \(self.channelID.rawValue) after \(self.attempts) attempt(s): \(self.detail)"
@@ -350,9 +356,13 @@ public struct ChannelRuntimeState: Sendable, Equatable {
 /// Registry that tracks channel adapters and dispatches outbound sends.
 ///
 /// Sends are retried only when the failure is safe to retry (``ChannelSendError/isRetryable``):
-/// sends with an unknown outcome (timeouts, dropped connections) are never retried blindly,
-/// which prevents duplicate messages; adapters conforming to ``UnknownSendReconciling`` can
-/// resolve them. `Retry-After` delays (capped at 60 s) are honored.
+/// sends with an unknown outcome (timeouts, dropped connections, HTTP 5xx) are never retried
+/// blindly, which prevents duplicate messages; adapters conforming to ``UnknownSendReconciling``
+/// can resolve them. A multi-part send that failed after delivering some parts
+/// (``ChannelSendError/partiallyDelivered(receipt:failure:)``) is never retried; the delivered
+/// parts are reported through ``ChannelDeliveryFailure/deliveredReceipt``. `Retry-After` delays
+/// (capped at 60 s) are honored. Error text recorded in health snapshots, runtime state and
+/// diagnostics is redacted with ``ChannelErrorText``.
 public actor ChannelRegistry {
     private var adapters: [ChannelID: any ChannelAdapter] = [:]
     private var sentMessages: [OutboundMessage] = []
@@ -608,11 +618,23 @@ public actor ChannelRegistry {
                 let terminal = !classification.isRetryable || attempt >= maxAttempts
                 self.recordSendFailure(channelID: message.channel, error: error, terminal: terminal)
                 if terminal {
-                    if case .unknownOutcome = classification {
+                    switch classification {
+                    case .unknownOutcome:
                         await self.emitDiagnostic(
                             name: "channel.delivery.unknown_outcome",
                             metadata: ["channel": message.channel.rawValue, "attempt": String(attempt)]
                         )
+                    case .partiallyDelivered(let receipt, _):
+                        await self.emitDiagnostic(
+                            name: "channel.delivery.partial",
+                            metadata: [
+                                "channel": message.channel.rawValue,
+                                "attempt": String(attempt),
+                                "deliveredParts": String(receipt.parts.count),
+                            ]
+                        )
+                    default:
+                        break
                     }
                     break
                 }
@@ -796,8 +818,7 @@ public actor ChannelRegistry {
                     "maxSendsPerWindow": String(self.sendThrottlePolicy.maxSendsPerWindow),
                 ]
             )
-            let sleepNs = UInt64(delayMs) * 1_000_000
-            try await Task.sleep(nanoseconds: sleepNs)
+            try await Task.sleep(nanoseconds: ChannelAsync.nanoseconds(milliseconds: delayMs))
 
             let afterDelay = Date()
             let delayedWindowStart = afterDelay.addingTimeInterval(-Double(self.sendThrottlePolicy.windowMs) / 1000.0)
