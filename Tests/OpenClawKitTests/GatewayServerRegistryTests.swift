@@ -247,7 +247,10 @@ struct GatewayServerRegistryTests {
         #expect(GatewayConnectionContext(scopes: ["operator.admin"]).allows(scope: "node") == false)
         #expect(GatewayConnectionContext(role: "node", scopes: []).allows(scope: "node"))
         #expect(GatewayConnectionContext(role: "node", scopes: ["operator.admin"]).allows(scope: "operator.read") == false)
-        #expect(GatewayConnectionContext(scopes: []).allows(scope: "dynamic"))
+        // `dynamic` scopes are resolved per request by the server; on their own only admin satisfies them.
+        #expect(GatewayConnectionContext(scopes: []).allows(scope: "dynamic") == false)
+        #expect(writer.allows(scope: "dynamic") == false)
+        #expect(GatewayConnectionContext(scopes: ["operator.admin"]).allows(scope: "dynamic"))
 
         let connect = ConnectParams(
             minprotocol: 4,
@@ -297,6 +300,8 @@ struct GatewayServerRegistryTests {
             onEvent: { event in await recorder.record(event) }
         )
         try await client.connect(to: GatewayEndpoint(url: URL(string: "ws://127.0.0.1:18789")!))
+        // Connection-bound subscribers receive `sessions.changed` after `sessions.subscribe` (upstream).
+        _ = try await client.send(method: "sessions.subscribe")
         _ = try await client.send(method: "sdk.notify")
         let delivered = await recorder.waitForEvents(count: 1)
         await client.disconnect()

@@ -91,7 +91,17 @@ extension GatewayServer {
             ])
         case .nodePairApprove:
             let requestID = try Self.requiredParam(request, "requestId")
-            guard let node = await self.nodePairing.approve(requestID: requestID) else {
+            // Upstream `approveNodePairing` with caller scopes: the declared commands decide the
+            // scopes needed (admin for system.run and other admin-only commands, write for any
+            // other command); a denied request stays pending.
+            let connection = request.connection
+            let approved = try await self.nodePairing.approve(requestID: requestID) { pending in
+                let required = GatewayMethodScopePolicy.nodePairApprovalScopes(commands: pending.commands)
+                if let missing = required.first(where: { !connection.allows(scope: $0) }) {
+                    throw GatewayMethodError.missingScope(missing, requiredScopes: required)
+                }
+            }
+            guard let node = approved else {
                 throw GatewayMethodError.invalidRequest("unknown requestId")
             }
             self.broadcastNodeResolution(requestID: requestID, nodeID: node.nodeID, decision: "approved")
