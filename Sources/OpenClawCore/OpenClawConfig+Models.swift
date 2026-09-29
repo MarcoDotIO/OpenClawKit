@@ -300,6 +300,8 @@ public struct OpenAIModelConfig: Codable, Sendable, Equatable {
     public var fastMode: Bool?
     public var apiKey: String?
     public var baseURL: String
+    /// Extra headers sent with every request (for example `OpenAI-Organization` or proxy headers).
+    public var headers: [String: String]?
 
     /// Creates OpenAI provider settings.
     /// - Parameters:
@@ -307,18 +309,21 @@ public struct OpenAIModelConfig: Codable, Sendable, Equatable {
     ///   - modelID: OpenAI model identifier.
     ///   - apiKey: OpenAI API key.
     ///   - baseURL: OpenAI-compatible API base URL.
+    ///   - headers: Extra headers sent with every request.
     public init(
         enabled: Bool = false,
         modelID: String = "gpt-4.1-mini",
         fastMode: Bool? = nil,
         apiKey: String? = nil,
-        baseURL: String = "https://api.openai.com/v1"
+        baseURL: String = "https://api.openai.com/v1",
+        headers: [String: String]? = nil
     ) {
         self.enabled = enabled
         self.modelID = modelID
         self.fastMode = fastMode
         self.apiKey = apiKey
         self.baseURL = baseURL
+        self.headers = headers
     }
 }
 
@@ -329,6 +334,8 @@ public struct OpenAICompatibleModelConfig: Codable, Sendable, Equatable {
     public var apiKey: String?
     public var baseURL: String
     public var chatCompletionsPath: String
+    /// Extra headers sent with every request (for example gateway or proxy headers).
+    public var headers: [String: String]?
 
     /// Creates OpenAI-compatible provider settings.
     /// - Parameters:
@@ -337,18 +344,21 @@ public struct OpenAICompatibleModelConfig: Codable, Sendable, Equatable {
     ///   - apiKey: API key or bearer token.
     ///   - baseURL: API base URL.
     ///   - chatCompletionsPath: Relative chat completions endpoint path.
+    ///   - headers: Extra headers sent with every request.
     public init(
         enabled: Bool = false,
         modelID: String = "gpt-4.1-mini",
         apiKey: String? = nil,
         baseURL: String = "https://api.openai.com/v1",
-        chatCompletionsPath: String = "chat/completions"
+        chatCompletionsPath: String = "chat/completions",
+        headers: [String: String]? = nil
     ) {
         self.enabled = enabled
         self.modelID = modelID
         self.apiKey = apiKey
         self.baseURL = baseURL
         self.chatCompletionsPath = chatCompletionsPath
+        self.headers = headers
     }
 }
 
@@ -361,6 +371,11 @@ public struct AnthropicModelConfig: Codable, Sendable, Equatable {
     public var baseURL: String
     public var apiVersion: String
     public var maxTokens: Int
+    /// Extra headers sent with every request.
+    public var headers: [String: String]?
+    /// Anthropic workspace id, sent as the `anthropic-workspace-id` header. Organization-level API
+    /// keys (keys not scoped to a workspace) are rejected without it.
+    public var workspaceID: String?
 
     /// Creates Anthropic provider settings.
     /// - Parameters:
@@ -370,6 +385,8 @@ public struct AnthropicModelConfig: Codable, Sendable, Equatable {
     ///   - baseURL: Anthropic API base URL.
     ///   - apiVersion: Anthropic API version header.
     ///   - maxTokens: Maximum output tokens.
+    ///   - headers: Extra headers sent with every request.
+    ///   - workspaceID: Workspace id sent as `anthropic-workspace-id` (an explicit header wins).
     public init(
         enabled: Bool = false,
         modelID: String = "claude-3-5-haiku-latest",
@@ -377,7 +394,9 @@ public struct AnthropicModelConfig: Codable, Sendable, Equatable {
         apiKey: String? = nil,
         baseURL: String = "https://api.anthropic.com/v1",
         apiVersion: String = "2023-06-01",
-        maxTokens: Int = 512
+        maxTokens: Int = 512,
+        headers: [String: String]? = nil,
+        workspaceID: String? = nil
     ) {
         self.enabled = enabled
         self.modelID = modelID
@@ -386,6 +405,19 @@ public struct AnthropicModelConfig: Codable, Sendable, Equatable {
         self.baseURL = baseURL
         self.apiVersion = apiVersion
         self.maxTokens = max(1, maxTokens)
+        self.headers = headers
+        self.workspaceID = workspaceID
+    }
+
+    /// Headers the provider sends: ``headers`` plus `anthropic-workspace-id` from ``workspaceID``
+    /// unless ``headers`` already sets it (any case).
+    public var resolvedHeaders: [String: String] {
+        var resolved = self.headers ?? [:]
+        let workspace = self.workspaceID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !workspace.isEmpty, !resolved.keys.contains(where: { $0.lowercased() == "anthropic-workspace-id" }) {
+            resolved["anthropic-workspace-id"] = workspace
+        }
+        return resolved
     }
 }
 

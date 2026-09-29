@@ -86,9 +86,11 @@ public struct OpenAIModelProvider: ModelProvider {
         self.configuration = configuration
         self.clientFactory = clientFactory
         self.usesOpenAIKit = usesOpenAIKit
-        // OpenAIModelConfig has no headers or metadata; keep the canonical config's (factory-built providers).
+        // Canonical config headers and metadata (factory-built providers), then the direct config's headers.
         let providerConfig = runtime.providerConfig
         let configuredMetadata = providerConfig?.metadata ?? [:]
+        var headers = providerConfig?.headers ?? [:]
+        headers.merge(configuration.headers ?? [:]) { _, direct in direct }
         let service = ProviderServiceConfig(
             enabled: configuration.enabled,
             apiStyle: .openAICompletions,
@@ -99,7 +101,7 @@ public struct OpenAIModelProvider: ModelProvider {
             baseURL: configuration.baseURL,
             chatCompletionsPath: "chat/completions",
             organizationID: providerConfig?.organizationID,
-            headers: providerConfig?.headers ?? [:],
+            headers: headers,
             metadata: configuredMetadata
         )
         self.engine = OpenAIChatCompletionsEngine(

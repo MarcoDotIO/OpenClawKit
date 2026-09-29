@@ -21,9 +21,10 @@ extension HTTPClient: AnthropicHTTPTransport {}
 /// `interleaved-thinking-2025-05-14`), adaptive thinking for Claude 5-family and 4.6+ models,
 /// native fast mode for Opus 5 / Opus 4.8, and the legacy service tier for older models.
 ///
-/// Headers come from the runtime context's canonical config (`headers`), model headers and
+/// Headers come from the runtime context's canonical config (`headers`),
+/// ``AnthropicModelConfig/headers`` and ``AnthropicModelConfig/workspaceID``, model headers and
 /// ``ModelGenerationRequest/headers``. API keys that are not scoped to a workspace need an
-/// `anthropic-workspace-id` header.
+/// `anthropic-workspace-id` header (set ``AnthropicModelConfig/workspaceID``).
 public struct AnthropicModelProvider: ModelProvider {
     /// Canonical provider identifier.
     public static let providerID = "anthropic"
@@ -48,8 +49,10 @@ public struct AnthropicModelProvider: ModelProvider {
     ) {
         self.id = id
         self.configuration = configuration
-        // AnthropicModelConfig has no headers; keep the canonical config's (factory-built providers),
-        // for example `anthropic-workspace-id` for keys that are not scoped to a workspace.
+        // Canonical config headers (factory-built providers), then the direct config's headers and
+        // workspace id (`anthropic-workspace-id` for keys that are not scoped to a workspace).
+        var headers = runtime.providerConfig?.headers ?? [:]
+        headers.merge(configuration.resolvedHeaders) { _, direct in direct }
         let service = ProviderServiceConfig(
             enabled: configuration.enabled,
             apiStyle: .anthropicMessages,
@@ -60,7 +63,7 @@ public struct AnthropicModelProvider: ModelProvider {
             baseURL: configuration.baseURL,
             messagesPath: "messages",
             apiVersion: configuration.apiVersion,
-            headers: runtime.providerConfig?.headers ?? [:]
+            headers: headers
         )
         self.engine = AnthropicMessagesEngine(
             settings: ProviderEndpointSettings(providerID: id, service: service, api: .anthropicMessages, runtime: runtime),

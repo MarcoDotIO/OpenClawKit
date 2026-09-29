@@ -43,7 +43,9 @@ struct LiveProviderAnthropicTests {
                 enabled: true,
                 modelID: self.model,
                 apiKey: apiKey,
-                maxTokens: LiveProviderFixtures.smallOutput
+                maxTokens: LiveProviderFixtures.smallOutput,
+                // ANTHROPIC_WORKSPACE_ID / OPENCLAW_LIVE_ANTHROPIC_WORKSPACE_ID, sent as `anthropic-workspace-id`.
+                workspaceID: LiveProviderEnvironment.anthropicWorkspaceID
             )
         )
     }
@@ -64,7 +66,6 @@ struct LiveProviderAnthropicTests {
             sessionKey: sessionKey,
             prompt: prompt,
             systemPrompt: systemPrompt,
-            headers: LiveProviderEnvironment.anthropicHeaders,
             policy: ModelGenerationPolicy(streamTokens: stream, maxTokens: maxTokens, thinkingLevel: thinking),
             messages: messages,
             tools: tools,

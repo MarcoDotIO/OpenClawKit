@@ -377,4 +377,78 @@ struct LiveProviderRegressionTests {
 
         #expect(await transport.requests.first?.value(forHTTPHeaderField: "X-Tenant") == "acme")
     }
+
+    // MARK: - Headers on directly constructed providers
+
+    /// Organization-level Anthropic keys need `anthropic-workspace-id`; direct construction sets it
+    /// through `AnthropicModelConfig.workspaceID` without a canonical provider config.
+    @Test
+    func anthropicDirectConfigSendsWorkspaceIDAndHeaders() async throws {
+        let transport = RegressionStubTransport(body: anthropicBody)
+        let provider = AnthropicModelProvider(
+            configuration: AnthropicModelConfig(
+                enabled: true,
+                modelID: "claude-haiku-4-5",
+                apiKey: "sk-ant-test",
+                maxTokens: 64,
+                headers: ["X-Gateway-Route": "green"],
+                workspaceID: "wrkspc_direct"
+            ),
+            transport: transport
+        )
+        _ = try await provider.generate(ModelGenerationRequest(sessionKey: "s", prompt: "hi"))
+        let request = try #require(await transport.requests.first)
+        #expect(request.value(forHTTPHeaderField: "anthropic-workspace-id") == "wrkspc_direct")
+        #expect(request.value(forHTTPHeaderField: "X-Gateway-Route") == "green")
+
+        // An explicit header wins over `workspaceID`.
+        let explicit = AnthropicModelConfig(
+            enabled: true,
+            apiKey: "sk-ant-test",
+            headers: ["Anthropic-Workspace-Id": "wrkspc_header"],
+            workspaceID: "wrkspc_direct"
+        )
+        #expect(explicit.resolvedHeaders == ["Anthropic-Workspace-Id": "wrkspc_header"])
+    }
+
+    @Test
+    func openAIDirectConfigsSendConfiguredHeaders() async throws {
+        let openAITransport = RegressionStubTransport(body: chatCompletionBody)
+        let openAI = OpenAIModelProvider(
+            configuration: OpenAIModelConfig(enabled: true, modelID: "gpt-6-luna", apiKey: "sk-test", headers: ["X-Gateway-Route": "blue"]),
+            transport: openAITransport
+        )
+        _ = try await openAI.generate(ModelGenerationRequest(sessionKey: "s", prompt: "hi"))
+        #expect(await openAITransport.requests.first?.value(forHTTPHeaderField: "X-Gateway-Route") == "blue")
+
+        let compatibleTransport = RegressionStubTransport(body: chatCompletionBody)
+        let compatible = OpenAICompatibleModelProvider(
+            configuration: OpenAICompatibleModelConfig(
+                enabled: true,
+                modelID: "local-model",
+                apiKey: "k",
+                baseURL: "http://127.0.0.1:4000/v1",
+                headers: ["X-Tenant": "direct"]
+            ),
+            transport: compatibleTransport
+        )
+        _ = try await compatible.generate(ModelGenerationRequest(sessionKey: "s", prompt: "hi"))
+        #expect(await compatibleTransport.requests.first?.value(forHTTPHeaderField: "X-Tenant") == "direct")
+    }
+
+    /// Legacy configs without the new keys still decode (the fields are optional).
+    @Test
+    func legacyProviderConfigsDecodeWithoutHeaderFields() throws {
+        let anthropic = try JSONDecoder().decode(
+            AnthropicModelConfig.self,
+            from: Data(#"{"enabled":true,"modelID":"claude-haiku-4-5","baseURL":"https://api.anthropic.com/v1","apiVersion":"2023-06-01","maxTokens":64}"#.utf8)
+        )
+        #expect(anthropic.headers == nil)
+        #expect(anthropic.workspaceID == nil)
+        let openAI = try JSONDecoder().decode(
+            OpenAIModelConfig.self,
+            from: Data(#"{"enabled":true,"modelID":"gpt-4.1","baseURL":"https://api.openai.com/v1"}"#.utf8)
+        )
+        #expect(openAI.headers == nil)
+    }
 }
