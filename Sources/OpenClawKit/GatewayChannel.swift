@@ -821,13 +821,22 @@ public actor GatewayChannelActor {
         let identity = try await Self.loadDeviceIdentityForConnect(
             includeDeviceIdentity: includeDeviceIdentity,
             profile: deviceIdentityProfile)
+        // Stored device auth lives in the SQLite state store (BEGIN IMMEDIATE, 30 s busy timeout):
+        // read it on the native-state queue so a contended database never blocks this actor.
+        var storedEntry: DeviceAuthEntry?
+        if includeDeviceIdentity, options.allowStoredDeviceAuth, let deviceId = identity?.deviceId {
+            storedEntry = await DeviceAuthStore.loadTokenInBackground(
+                deviceId: deviceId,
+                role: role,
+                gatewayID: deviceAuthGatewayID,
+                profile: deviceIdentityProfile)
+        }
+        try self.ensureCurrentConnectAttempt(attemptID, task: task)
+        try self.requireCurrentConnection(connectionGeneration)
         let selectedAuth = self.selectConnectAuth(
             role: role,
             includeDeviceIdentity: includeDeviceIdentity,
-            allowStoredDeviceAuth: options.allowStoredDeviceAuth,
-            deviceAuthGatewayID: deviceAuthGatewayID,
-            deviceIdentityProfile: deviceIdentityProfile,
-            deviceId: identity?.deviceId,
+            storedEntry: storedEntry,
             requestedScopes: requestedScopes)
         self.gatewayStateReporter.context.authSource = selectedAuth.authSource.rawValue
         let scopes = self.resolveConnectScopes(
@@ -950,7 +959,7 @@ public actor GatewayChannelActor {
             {
                 // The gateway rejected the stored device token itself; clear the stale local copy
                 // so reconnects fall back to explicit credentials or pairing.
-                DeviceAuthStore.clearToken(
+                await DeviceAuthStore.clearTokenInBackground(
                     deviceId: identity.deviceId,
                     role: role,
                     gatewayID: deviceAuthGatewayID,
@@ -1008,27 +1017,17 @@ extension GatewayChannelActor {
         }
     }
 
+    /// Chooses connect credentials; `storedEntry` is the stored device token for this role (read
+    /// off-actor by the caller), or `nil` when stored device auth does not apply.
     private func selectConnectAuth(
         role: String,
         includeDeviceIdentity: Bool,
-        allowStoredDeviceAuth: Bool,
-        deviceAuthGatewayID: String?,
-        deviceIdentityProfile: GatewayDeviceIdentityProfile,
-        deviceId: String?,
+        storedEntry: DeviceAuthEntry?,
         requestedScopes: [String]) -> SelectedConnectAuth
     {
         let explicitToken = self.token.gatewayTrimmedNonEmpty
         let explicitBootstrapToken = self.bootstrapToken.gatewayTrimmedNonEmpty
         let explicitPassword = self.password.gatewayTrimmedNonEmpty
-        let storedEntry: DeviceAuthEntry? = if includeDeviceIdentity, allowStoredDeviceAuth, let deviceId {
-            DeviceAuthStore.loadToken(
-                deviceId: deviceId,
-                role: role,
-                gatewayID: deviceAuthGatewayID,
-                profile: deviceIdentityProfile)
-        } else {
-            nil
-        }
         let storedToken = storedEntry?.token
         let storedScopes = storedEntry?.scopes ?? []
         let requestedScopesExceedStoredToken = Self.requestedScopesExceedStoredToken(
@@ -1221,55 +1220,53 @@ extension GatewayChannelActor {
         return requestedScopes
     }
 
-    @discardableResult
-    private func persistBootstrapHandoffToken(
-        deviceId: String,
-        role: String,
-        token: String,
-        scopes: [String],
-        deviceAuthGatewayID: String?,
-        deviceIdentityProfile: GatewayDeviceIdentityProfile) -> Bool
-    {
-        guard let filteredScopes = Self.filteredBootstrapHandoffScopes(role: role, scopes: scopes) else {
-            return false
-        }
-        return DeviceAuthStore.storeTokenResult(
-            deviceId: deviceId,
-            role: role,
-            token: token,
-            scopes: filteredScopes,
-            gatewayID: deviceAuthGatewayID,
-            profile: deviceIdentityProfile).persisted
+    /// A device token hello-ok issued, with the scopes to persist.
+    struct DeviceTokenWrite: Sendable {
+        let role: String
+        let token: String
+        let scopes: [String]
     }
 
-    private func persistIssuedDeviceToken(
+    /// Which issued token to persist: bootstrap-authenticated sockets only persist handoff tokens on
+    /// transports that allow it, with handoff-filtered scopes.
+    nonisolated static func issuedDeviceTokenWrite(
         authSource: GatewayAuthSource,
-        deviceId: String,
+        persistBootstrapHandoff: Bool,
         role: String,
         token: String,
-        scopes: [String],
-        deviceAuthGatewayID: String?,
-        deviceIdentityProfile: GatewayDeviceIdentityProfile) -> Bool
+        scopes: [String]) -> DeviceTokenWrite?
     {
-        if authSource == .bootstrapToken {
-            guard self.shouldPersistBootstrapHandoffTokens() else {
-                return false
-            }
-            return self.persistBootstrapHandoffToken(
-                deviceId: deviceId,
-                role: role,
-                token: token,
-                scopes: scopes,
-                deviceAuthGatewayID: deviceAuthGatewayID,
-                deviceIdentityProfile: deviceIdentityProfile)
+        guard authSource == .bootstrapToken else {
+            return DeviceTokenWrite(role: role, token: token, scopes: scopes)
         }
-        return DeviceAuthStore.storeTokenResult(
-            deviceId: deviceId,
-            role: role,
-            token: token,
-            scopes: scopes,
-            gatewayID: deviceAuthGatewayID,
-            profile: deviceIdentityProfile).persisted
+        guard persistBootstrapHandoff,
+              let filteredScopes = Self.filteredBootstrapHandoffScopes(role: role, scopes: scopes)
+        else { return nil }
+        return DeviceTokenWrite(role: role, token: token, scopes: filteredScopes)
+    }
+
+    /// Persists every issued token in one native-state-queue hop (one hop instead of a store open
+    /// and a full-fsync commit per token on this actor).
+    /// - Returns: The roles whose token reached disk.
+    nonisolated static func persistDeviceTokens(
+        _ writes: [DeviceTokenWrite],
+        deviceId: String,
+        gatewayID: String?,
+        profile: GatewayDeviceIdentityProfile) async -> Set<String>
+    {
+        guard !writes.isEmpty else { return [] }
+        let persisted = try? await DeviceIdentityPaths.runOnNativeStateQueue {
+            writes.filter { write in
+                DeviceAuthStore.storeTokenResult(
+                    deviceId: deviceId,
+                    role: write.role,
+                    token: write.token,
+                    scopes: write.scopes,
+                    gatewayID: gatewayID,
+                    profile: profile).persisted
+            }.map(\.role)
+        }
+        return Set(persisted ?? [])
     }
 
     private func handleConnectResponse(
@@ -1311,7 +1308,11 @@ extension GatewayChannelActor {
         self.lastHello = (connectionGeneration, ok)
         let auth = ok.auth
         var receivedRoles = Set<String>()
-        var persistedRoles = Set<String>()
+        // Capture actor state before the persistence hop, so a reentrant disconnect cannot change it.
+        let authSource = self.lastAuthSource
+        let persistBootstrapHandoff = self.shouldPersistBootstrapHandoffTokens()
+        let persists = identity != nil && options.allowsDeviceAuthPersistence
+        var writes: [DeviceTokenWrite] = []
         if let deviceToken = auth["deviceToken"]?.stringValue {
             let authRole = auth["role"]?.stringValue ?? role
             receivedRoles.insert(authRole)
@@ -1319,16 +1320,14 @@ extension GatewayChannelActor {
             let sameStoredToken = authRole == role && deviceToken == selectedAuth.storedToken
             // Hello scopes describe this socket. Reissuing the stored token must not narrow its reusable grant.
             let scopes = sameStoredToken ? (selectedAuth.storedScopes ?? helloScopes) : helloScopes
-            if let identity, options.allowsDeviceAuthPersistence, self.persistIssuedDeviceToken(
-                authSource: self.lastAuthSource,
-                deviceId: identity.deviceId,
+            if persists, let write = Self.issuedDeviceTokenWrite(
+                authSource: authSource,
+                persistBootstrapHandoff: persistBootstrapHandoff,
                 role: authRole,
                 token: deviceToken,
-                scopes: scopes,
-                deviceAuthGatewayID: deviceAuthGatewayID,
-                deviceIdentityProfile: deviceIdentityProfile)
+                scopes: scopes)
             {
-                persistedRoles.insert(authRole)
+                writes.append(write)
             }
         }
         if let tokenEntries = auth["deviceTokens"]?.arrayValue {
@@ -1341,18 +1340,22 @@ extension GatewayChannelActor {
                 }
                 let scopes = rawEntry["scopes"]?.arrayValue?.compactMap(\.stringValue) ?? []
                 receivedRoles.insert(authRole)
-                if let identity, options.allowsDeviceAuthPersistence, self.shouldPersistBootstrapHandoffTokens(),
-                   self.persistBootstrapHandoffToken(
-                       deviceId: identity.deviceId,
-                       role: authRole,
-                       token: deviceToken,
-                       scopes: scopes,
-                       deviceAuthGatewayID: deviceAuthGatewayID,
-                       deviceIdentityProfile: deviceIdentityProfile)
+                if persists, persistBootstrapHandoff,
+                   let filteredScopes = Self.filteredBootstrapHandoffScopes(role: authRole, scopes: scopes)
                 {
-                    persistedRoles.insert(authRole)
+                    writes.append(DeviceTokenWrite(role: authRole, token: deviceToken, scopes: filteredScopes))
                 }
             }
+        }
+        var persistedRoles = Set<String>()
+        if let identity, !writes.isEmpty {
+            persistedRoles = await Self.persistDeviceTokens(
+                writes,
+                deviceId: identity.deviceId,
+                gatewayID: deviceAuthGatewayID,
+                profile: deviceIdentityProfile)
+            // The socket may have been retired during the hop; never admit it afterwards.
+            try self.requireCurrentConnection(connectionGeneration)
         }
         self.acceptedHTTPBearer = (connectionGeneration, selectedAuth.httpResourceBearer(hello: ok, role: role))
         self.lastInboundAt = ContinuousClock.now
