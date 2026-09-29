@@ -493,11 +493,10 @@ enum ExecSecretProcess {
             } else if now - lastOutput >= noOutputNanos {
                 return (output, .noOutput)
             }
-            let nextEvent = min(deadline, lastOutput + noOutputNanos, drainDeadline ?? UInt64.max)
-            // Wake at least every 50 ms to notice the child's exit.
-            let waitMs = Int32(min(50, max(1, (nextEvent - now) / 1_000_000)))
+            // While draining, the deadline and no-output timer may already lie in the past.
+            let nextEvent = drainDeadline ?? min(deadline, lastOutput + noOutputNanos)
             var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
-            let ready = poll(&descriptor, 1, waitMs)
+            let ready = poll(&descriptor, 1, Self.pollWaitMs(now: now, nextEvent: nextEvent))
             if ready < 0 {
                 if errno == EINTR { continue }
                 return (output, nil)
@@ -518,6 +517,13 @@ enum ExecSecretProcess {
                 return (output, nil)
             }
         }
+    }
+
+    /// Milliseconds to wait for the next event: 1…50 (wake at least every 50 ms to notice the child's
+    /// exit), and 1 when the event is already due (never underflows).
+    static func pollWaitMs(now: UInt64, nextEvent: UInt64) -> Int32 {
+        let remainingMs = nextEvent > now ? (nextEvent - now) / 1_000_000 : 0
+        return Int32(min(50, max(1, remainingMs)))
     }
 
     /// Writes the request without raising `SIGPIPE` (the child may exit without reading) and without

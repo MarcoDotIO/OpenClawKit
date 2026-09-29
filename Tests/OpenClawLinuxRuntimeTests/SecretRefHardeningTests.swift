@@ -228,6 +228,34 @@ struct SecretRefHardeningTests {
     }
 
     @Test
+    func execProviderPollWaitNeverUnderflowsWhenAnEventIsOverdue() {
+        // While stdout is drained after the child exits, the deadline and the no-output timer may
+        // already lie in the past; the wait must clamp instead of trapping on UInt64 underflow.
+        #expect(ExecSecretProcess.pollWaitMs(now: 5_000_000_000, nextEvent: 1_000_000_000) == 1)
+        #expect(ExecSecretProcess.pollWaitMs(now: 5_000_000_000, nextEvent: 5_000_000_000) == 1)
+        #expect(ExecSecretProcess.pollWaitMs(now: 5_000_000_000, nextEvent: 5_020_000_000) == 20)
+        #expect(ExecSecretProcess.pollWaitMs(now: 0, nextEvent: UInt64.max) == 50)
+    }
+
+    @Test
+    func execProviderThatExitsAtTheEndOfItsSilentWindowSucceeds() async throws {
+        // Exits right as the no-output window closes, so the exit is noticed with the timer overdue.
+        for _ in 0..<3 {
+            let run = try await self.runExec(
+                "cat >/dev/null\necho '{\"protocolVersion\":1,\"values\":{\"k\":\"v\"}}'\nsleep 0.29\nexit 0",
+                timeoutMs: 3_000,
+                noOutputTimeoutMs: 300
+            )
+            if case .failure(let error) = run.result {
+                // Losing the race to the no-output timer is allowed; crashing is not.
+                #expect(String(describing: error).contains("produced no output for 300ms"))
+            } else {
+                #expect(try DefaultSecretRefResolver.parseExecResponse(try run.result.get(), id: "k", providerName: "vault", jsonOnly: true) == "v")
+            }
+        }
+    }
+
+    @Test
     func execProviderThatNeverReadsStdinDoesNotRaiseSIGPIPE() async throws {
         let run = try await self.runExec("exec 0<&-\necho '{\"protocolVersion\":1,\"values\":{\"k\":\"v\"}}'")
         #expect(try DefaultSecretRefResolver.parseExecResponse(try run.result.get(), id: "k", providerName: "vault", jsonOnly: true) == "v")
