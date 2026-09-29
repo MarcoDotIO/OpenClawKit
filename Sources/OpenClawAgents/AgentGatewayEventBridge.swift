@@ -82,7 +82,7 @@ actor AgentGatewayEventBridge {
                 await self.emitChat(.status(status), server: server)
             }
             if self.options.forwardSessionEvents {
-                await self.syncTranscript(sessionKey: sessionKey, server: server)
+                await self.syncTranscript(sessionKey: sessionKey, runStartedAt: state.startedAt, server: server)
                 await self.emitLifecycleChange(frame, state: state, phase: "start", server: server)
             }
         case "end", "error":
@@ -92,7 +92,7 @@ actor AgentGatewayEventBridge {
                 await self.emitChat(self.terminalChatEvent(frame, state: state), server: server)
             }
             if self.options.forwardSessionEvents {
-                await self.syncTranscript(sessionKey: sessionKey, server: server)
+                await self.syncTranscript(sessionKey: sessionKey, runStartedAt: state.startedAt, server: server)
                 await self.emitLifecycleChange(frame, state: state, phase: frame.lifecyclePhase ?? "end", server: server)
             }
         default:
@@ -243,12 +243,16 @@ actor AgentGatewayEventBridge {
         await server.broadcast(event: GatewayEventName.sessionTool.rawValue, payload: AnyCodable(payload))
         let phase = frame.data["phase"]?.stringValue
         if phase == "start" || phase == "result" {
-            await self.syncTranscript(sessionKey: sessionKey, server: server)
+            await self.syncTranscript(sessionKey: sessionKey, runStartedAt: state.startedAt, server: server)
         }
     }
 
     /// Emits `session.message` for transcript rows appended since the last sync of the session.
-    private func syncTranscript(sessionKey: String, server: GatewayServer) async {
+    ///
+    /// The first sync of a session (or one after the active path moved backwards) anchors on the
+    /// first row stamped at or after `runStartedAt`: frames are bridged asynchronously, so the run's
+    /// prompt may already be persisted when its `lifecycle` start frame is handled here.
+    private func syncTranscript(sessionKey: String, runStartedAt: Int64, server: GatewayServer) async {
         guard await server.wantsSessionEvents(sessionKey: sessionKey),
               let runtime, let store = runtime.transcriptStore
         else { return }
@@ -262,11 +266,14 @@ actor AgentGatewayEventBridge {
             return (entry.id, message)
         }
         let cursorKey = "\(sessionKey)\u{0}\(sessionID)"
-        guard let cursor = self.transcriptCursors[cursorKey], cursor <= rows.count else {
-            // First sync (or the active path moved backwards): start from the current tail.
-            self.transcriptCursors[cursorKey] = rows.count
-            return
+        let cursor: Int
+        if let known = self.transcriptCursors[cursorKey], known <= rows.count {
+            cursor = known
+        } else {
+            // First sync (or the active path moved backwards): rows persisted by this run onwards.
+            cursor = rows.firstIndex { $0.message.timestamp >= runStartedAt } ?? rows.count
         }
+        self.transcriptCursors[cursorKey] = cursor
         guard cursor < rows.count else { return }
         let active = await runtime.activeRunIDs(sessionKey: sessionKey)
         let agentID = await self.agentID(sessionKey: sessionKey)

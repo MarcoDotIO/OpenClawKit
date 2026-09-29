@@ -129,6 +129,41 @@ struct GatewayEventStreamTests {
     }
 
     @Test
+    func lateSubscriberReceivesTheNextRunsPromptAndReply() async throws {
+        let stack = await Harness.runtimeStack("events-late-subscribe", turns: [
+            ScriptedToolProvider.text("first reply"),
+            ScriptedToolProvider.text("second reply"),
+        ])
+        let chat = await stack.server.events(filter: .only(.chat))
+        _ = try Harness.payload(await Harness.call(stack.server, "sessions.send", [
+            "key": AnyCodable("agent:main:main"), "message": AnyCodable("one"),
+        ]))
+        _ = await Harness.collect(chat) { frames in frames.contains { $0.payload?.dictionaryValue?["state"] == AnyCodable("final") } }
+        // Keep the second run's start strictly after the first run's rows (millisecond timestamps).
+        try await Task.sleep(nanoseconds: 20_000_000)
+
+        let connection = GatewayConnectionContext(connectionID: "conn-late", scopes: [GatewayConnectionContext.operatorAdminScope])
+        let bound = await stack.server.events(filter: .connection("conn-late"))
+        _ = try Harness.payload(await Harness.call(
+            stack.server, "sessions.messages.subscribe", ["key": AnyCodable("agent:main:main")], connection: connection
+        ))
+        _ = try Harness.payload(await Harness.call(
+            stack.server, "sessions.send", ["key": AnyCodable("agent:main:main"), "message": AnyCodable("two")], connection: connection
+        ))
+        let frames = await Harness.collect(bound) { frames in
+            frames.filter { $0.event == "session.message" }.count >= 2
+                && frames.contains { $0.event == "chat" && $0.payload?.dictionaryValue?["state"] == AnyCodable("final") }
+        }
+        // The first sync anchors on the run start, so the second run's prompt is not skipped even when
+        // it is persisted before the bridge handles the lifecycle start frame.
+        let messages = frames.filter { $0.event == "session.message" }.compactMap { $0.payload?.dictionaryValue }
+        #expect(messages.compactMap { $0["message"]?.dictionaryValue?["role"]?.stringValue } == ["user", "assistant"])
+        #expect(messages.compactMap { $0["messageSeq"]?.intValue } == [3, 4])
+        let prompt = messages.first?["message"]?.dictionaryValue?["content"]?.arrayValue?.first?.dictionaryValue?["text"]?.stringValue
+        #expect(prompt?.contains("two") == true)
+    }
+
+    @Test
     func abortEmitsAbortedChatEventAndFiltersSelectEvents() async throws {
         let stack = await Harness.runtimeStack("events-abort", turns: [
             { _ in
