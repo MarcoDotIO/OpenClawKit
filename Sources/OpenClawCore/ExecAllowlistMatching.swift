@@ -313,10 +313,9 @@ public struct ExecCommandResolution: Sendable, Equatable {
     /// - Parameter resolution: Resolution.
     /// - Returns: `true` for shells.
     public static func isShellTarget(_ resolution: ExecCommandResolution) -> Bool {
-        [resolution.rawExecutable, resolution.resolvedPath, resolution.resolvedRealPath]
-            .compactMap { $0 }
-            .map(Self.normalizedExecutableName)
-            .contains(where: Self.shellWrapperNames.contains)
+        let candidates: [String?] = [resolution.rawExecutable, resolution.resolvedPath, resolution.resolvedRealPath]
+        let names: [String] = candidates.compactMap { $0 }.map(Self.normalizedExecutableName)
+        return names.contains(where: Self.shellWrapperNames.contains)
     }
 
     /// Whether a resolution needs an `argPattern`-bound rule (or a bare `*`): a shell with any
@@ -330,13 +329,18 @@ public struct ExecCommandResolution: Sendable, Equatable {
     /// Whether the resolved executable is a dispatch carrier (``blockedCarrierNames``, the
     /// transparent wrappers, `env`, `busybox` or `toybox`).
     static func isDispatchCarrierTarget(_ resolution: ExecCommandResolution) -> Bool {
-        [resolution.rawExecutable, resolution.resolvedPath, resolution.resolvedRealPath]
-            .compactMap { $0 }
-            .map(Self.normalizedExecutableName)
-            .contains {
-                $0 == "env" || $0 == "busybox" || $0 == "toybox" || Self.blockedCarrierNames.contains($0)
-                    || ExecDispatchWrapper.transparentNames.contains($0)
-            }
+        let candidates: [String?] = [resolution.rawExecutable, resolution.resolvedPath, resolution.resolvedRealPath]
+        let names: [String] = candidates.compactMap { $0 }.map(Self.normalizedExecutableName)
+        return names.contains(where: Self.isDispatchCarrierName)
+    }
+
+    /// Whether a normalized executable name is a dispatch carrier.
+    private static func isDispatchCarrierName(_ name: String) -> Bool {
+        let multiplexers: Set<String> = ["env", "busybox", "toybox"]
+        if multiplexers.contains(name) || Self.blockedCarrierNames.contains(name) {
+            return true
+        }
+        return ExecDispatchWrapper.transparentNames.contains(name)
     }
 
     /// Lowercased basename without a Windows `.exe` suffix.
