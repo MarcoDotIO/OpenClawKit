@@ -354,15 +354,58 @@ enum ExecSecretProcess {
         case outputLimit
     }
 
+    /// How the direct child ended, observed without reaping it.
+    struct ChildExit: Equatable {
+        /// Whether a signal ended the child (`status` is then the signal number).
+        var signaled: Bool
+        /// Exit status, or the terminating signal.
+        var status: Int32
+    }
+
+    /// Tracks the direct child's exit.
+    ///
+    /// Foundation's `terminationHandler` is timely on Darwin, but on Linux swift-corelibs-foundation
+    /// detects the exit through a socket the child (and every process it spawns) inherits, so a
+    /// backgrounded helper delays it until the helper exits. On Glibc the monitor therefore also
+    /// peeks with `waitid(WNOWAIT)`, which leaves the child for Foundation to reap.
     private final class ExitSignal: @unchecked Sendable {
         let semaphore = DispatchSemaphore(value: 0)
         private let lock = NSLock()
         private var exited = false
+        private var peeked: ChildExit?
+        private var pid: pid_t = 0
+
+        func track(pid: pid_t) {
+            self.lock.lock()
+            self.pid = pid
+            self.lock.unlock()
+        }
+
+        /// Whether Foundation reported the exit (its termination status is then valid).
+        var foundationReportedExit: Bool {
+            self.lock.lock()
+            defer { self.lock.unlock() }
+            return self.exited
+        }
+
+        /// The exit observed by peeking, when Foundation had not reported it yet.
+        var peekedExit: ChildExit? {
+            self.lock.lock()
+            defer { self.lock.unlock() }
+            return self.peeked
+        }
 
         var hasExited: Bool {
             self.lock.lock()
             defer { self.lock.unlock() }
-            return self.exited
+            if self.exited || self.peeked != nil {
+                return true
+            }
+            if self.pid > 0, let exit = ExecSecretProcess.peekExit(pid: self.pid) {
+                self.peeked = exit
+                return true
+            }
+            return false
         }
 
         func markExited() {
@@ -374,12 +417,33 @@ enum ExecSecretProcess {
 
         /// Waits until the process exits or `deadline` passes.
         func wait(until deadline: UInt64) -> Bool {
-            if self.hasExited { return true }
-            let now = DispatchTime.now().uptimeNanoseconds
-            guard deadline > now else { return false }
-            _ = self.semaphore.wait(timeout: .now() + .nanoseconds(Int(min(deadline - now, UInt64(Int.max)))))
-            return self.hasExited
+            while !self.hasExited {
+                let now = DispatchTime.now().uptimeNanoseconds
+                guard deadline > now else { return false }
+                // Re-check at least every 20 ms (the peek has no wake-up of its own).
+                _ = self.semaphore.wait(timeout: .now() + .nanoseconds(Int(min(deadline - now, 20_000_000))))
+            }
+            return true
         }
+    }
+
+    /// Peeks at the direct child's exit without reaping it (`waitid` with `WNOWAIT`); Glibc only,
+    /// where Foundation's own exit notification can lag (see `ExitSignal`).
+    static func peekExit(pid: pid_t) -> ChildExit? {
+        #if canImport(Glibc)
+        var info = siginfo_t()
+        guard waitid(P_PID, id_t(pid), &info, WEXITED | WNOHANG | WNOWAIT) == 0,
+              info._sifields._sigchld.si_pid == pid
+        else {
+            return nil
+        }
+        let code = info.si_code
+        let signaled = code == Int32(CLD_KILLED) || code == Int32(CLD_DUMPED)
+        return ChildExit(signaled: signaled, status: info._sifields._sigchld.si_status)
+        #else
+        _ = pid
+        return nil
+        #endif
     }
 
     private static func runBlocking(
@@ -407,6 +471,7 @@ enum ExecSecretProcess {
         try process.run()
         try? stdout.fileHandleForWriting.close()
         let pid = process.processIdentifier
+        exitSignal.track(pid: pid)
         // Foundation makes the child a process-group leader on Darwin and Linux; only signal the
         // group when that holds, never our own group.
         let groupID: pid_t? = (pid > 0 && getpgid(pid) == pid && pid != getpgrp()) ? pid : nil
@@ -449,15 +514,19 @@ enum ExecSecretProcess {
                 )
             }
         }
-        guard process.terminationReason == .exit else {
-            throw OpenClawCoreError.unavailable(
-                "Exec provider \"\(limits.providerName)\" was terminated by signal \(process.terminationStatus)."
-            )
+        // Foundation's status is valid only once it reported the exit; a peeked exit covers Linux
+        // children whose backgrounded helpers still hold Foundation's exit socket.
+        let exit = exitSignal.foundationReportedExit
+            ? ChildExit(signaled: process.terminationReason != .exit, status: process.terminationStatus)
+            : exitSignal.peekedExit
+        guard let exit else {
+            throw OpenClawCoreError.unavailable("Exec provider \"\(limits.providerName)\" timed out after \(limits.timeoutMs)ms.")
         }
-        guard process.terminationStatus == 0 else {
-            throw OpenClawCoreError.unavailable(
-                "Exec provider \"\(limits.providerName)\" exited with status \(process.terminationStatus)."
-            )
+        guard !exit.signaled else {
+            throw OpenClawCoreError.unavailable("Exec provider \"\(limits.providerName)\" was terminated by signal \(exit.status).")
+        }
+        guard exit.status == 0 else {
+            throw OpenClawCoreError.unavailable("Exec provider \"\(limits.providerName)\" exited with status \(exit.status).")
         }
         return output
     }
