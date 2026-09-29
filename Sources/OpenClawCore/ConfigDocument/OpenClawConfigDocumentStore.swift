@@ -207,6 +207,25 @@ public actor OpenClawConfigDocumentStore {
         return newDirectory
     }
 
+    /// Upstream `resolveDefaultAgentWorkspaceDir`: `OPENCLAW_WORKSPACE_DIR` (made absolute), else
+    /// `<OPENCLAW_STATE_DIR>/workspace`, else `~/.openclaw-<profile>/workspace` for a non-default
+    /// `OPENCLAW_PROFILE`, else `~/.openclaw/workspace`.
+    /// - Parameter environment: Process environment.
+    /// - Returns: Default agent workspace directory.
+    public static func defaultAgentWorkspaceDirectory(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL {
+        if let override = environment["OPENCLAW_WORKSPACE_DIR"]?.trimmingCharacters(in: .whitespacesAndNewlines), !override.isEmpty {
+            return URL(fileURLWithPath: override, isDirectory: true).standardizedFileURL
+        }
+        if environment["OPENCLAW_STATE_DIR"]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+            return self.defaultStateDirectory(environment: environment).appendingPathComponent("workspace", isDirectory: true)
+        }
+        let home = self.homeDirectory(environment: environment)
+        if let profile = self.normalizedProfileName(environment["OPENCLAW_PROFILE"]) {
+            return home.appendingPathComponent(".openclaw-\(profile)", isDirectory: true).appendingPathComponent("workspace", isDirectory: true)
+        }
+        return home.appendingPathComponent(".openclaw", isDirectory: true).appendingPathComponent("workspace", isDirectory: true)
+    }
+
     /// Upstream `normalizeProfileName`: trimmed, not `default`, matching `^[a-z0-9][a-z0-9_-]{0,63}$` (case-insensitive).
     static func normalizedProfileName(_ raw: String?) -> String? {
         guard let profile = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !profile.isEmpty,
@@ -253,7 +272,7 @@ public actor OpenClawConfigDocumentStore {
         let loaded: LoadedConfigDocument
         do {
             let data = try OpenClawFileSystem.readData(self.fileURL)
-            loaded = try Self.decodeLoaded(data, migrateLegacyKeys: migrateLegacyKeys)
+            loaded = try Self.decodeLoaded(data, migrateLegacyKeys: migrateLegacyKeys, environment: self.environment)
         } catch {
             self.observer?(.loadFailed(message: String(describing: error)))
             throw error
@@ -272,7 +291,11 @@ public actor OpenClawConfigDocumentStore {
         return OpenClawCrypto.sha256Hex(try OpenClawFileSystem.readData(self.fileURL))
     }
 
-    static func decodeLoaded(_ data: Data, migrateLegacyKeys: Bool) throws -> LoadedConfigDocument {
+    static func decodeLoaded(
+        _ data: Data,
+        migrateLegacyKeys: Bool,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) throws -> LoadedConfigDocument {
         // Strict JSON first (like the macOS app), then JSON5.
         let parsed: (value: AnyCodable, keyOrder: ConfigKeyOrder)
         if let strict = try? OpenClawJSON5.parseWithKeyOrder(data, allowJSON5: false) {
@@ -287,9 +310,9 @@ public actor OpenClawConfigDocumentStore {
         var keyOrder = parsed.keyOrder
         let changes: [ConfigMigrationChange]
         if migrateLegacyKeys {
-            changes = OpenClawConfigMigrator.migrate(&tree, keyOrder: &keyOrder)
+            changes = OpenClawConfigMigrator.migrate(&tree, keyOrder: &keyOrder, environment: environment)
         } else {
-            changes = OpenClawConfigMigrator.proposedChanges(for: tree)
+            changes = OpenClawConfigMigrator.proposedChanges(for: tree, environment: environment)
         }
         let collector = ConfigDecodeIssueCollector()
         var document = try ConfigTreeCoding.decode(OpenClawConfigDocument.self, from: AnyCodable(.object(tree)), issues: collector)
@@ -378,7 +401,7 @@ public actor OpenClawConfigDocumentStore {
         }
         var applied: [ConfigMigrationChange] = []
         if options.migrateLegacyKeys {
-            applied = OpenClawConfigMigrator.migrate(&tree, keyOrder: &keyOrder)
+            applied = OpenClawConfigMigrator.migrate(&tree, keyOrder: &keyOrder, environment: self.environment)
         }
         if options.stripSDKOnlyKeys {
             OpenClawConfigDocument.stripSDKOnlyKeys(from: &tree)
@@ -392,7 +415,7 @@ public actor OpenClawConfigDocumentStore {
             try self.rotateBackups(previous: previousData, fileManager: fileManager)
         }
         try Self.atomicWrite(data, to: self.fileURL)
-        let loaded = try Self.decodeLoaded(data, migrateLegacyKeys: false)
+        let loaded = try Self.decodeLoaded(data, migrateLegacyKeys: false, environment: self.environment)
         self.lastKeyOrder = loaded.keyOrder
         return (loaded, applied)
     }

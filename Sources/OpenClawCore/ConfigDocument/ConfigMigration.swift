@@ -46,27 +46,40 @@ public enum OpenClawConfigMigrator {
     }
 
     /// Applies every ported migration in place.
-    /// - Parameter root: Raw config object.
+    /// - Parameters:
+    ///   - root: Raw config object.
+    ///   - environment: Environment for migrations that resolve default paths (the legacy first-agent
+    ///     workspace pin uses `OPENCLAW_WORKSPACE_DIR`, `OPENCLAW_STATE_DIR`, `OPENCLAW_PROFILE`, `HOME`).
     /// - Returns: Applied changes (empty when the tree is already canonical).
     @discardableResult
-    public static func migrate(_ root: inout [String: AnyCodable]) -> [ConfigMigrationChange] {
+    public static func migrate(
+        _ root: inout [String: AnyCodable],
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> [ConfigMigrationChange] {
         var keyOrder = ConfigKeyOrder()
-        return self.migrate(&root, keyOrder: &keyOrder)
+        return self.migrate(&root, keyOrder: &keyOrder, environment: environment)
     }
 
     /// Applies every ported migration in place and keeps the authored key order up to date.
     /// - Parameters:
     ///   - root: Raw config object.
     ///   - keyOrder: Authored key order; updated for moved and created objects.
+    ///   - environment: Environment for migrations that resolve default paths.
     /// - Returns: Applied changes.
     @discardableResult
-    public static func migrate(_ root: inout [String: AnyCodable], keyOrder: inout ConfigKeyOrder) -> [ConfigMigrationChange] {
+    public static func migrate(
+        _ root: inout [String: AnyCodable],
+        keyOrder: inout ConfigKeyOrder,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> [ConfigMigrationChange] {
         let tree = MigrationObject(root, keyOrder: keyOrder)
         var changes: [ConfigMigrationChange] = []
-        for rule in ConfigMigrationRules.all {
-            var messages: [String] = []
-            rule.apply(tree, &messages)
-            changes.append(contentsOf: messages.map { ConfigMigrationChange(id: rule.id, message: $0) })
+        ConfigMigrationContext.$environment.withValue(environment) {
+            for rule in ConfigMigrationRules.all {
+                var messages: [String] = []
+                rule.apply(tree, &messages)
+                changes.append(contentsOf: messages.map { ConfigMigrationChange(id: rule.id, message: $0) })
+            }
         }
         guard !changes.isEmpty else {
             return []
@@ -79,11 +92,16 @@ public enum OpenClawConfigMigrator {
     }
 
     /// Returns the changes a migration pass would apply, without mutating `root`.
-    /// - Parameter root: Raw config object.
+    /// - Parameters:
+    ///   - root: Raw config object.
+    ///   - environment: Environment for migrations that resolve default paths.
     /// - Returns: Proposed changes.
-    public static func proposedChanges(for root: [String: AnyCodable]) -> [ConfigMigrationChange] {
+    public static func proposedChanges(
+        for root: [String: AnyCodable],
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> [ConfigMigrationChange] {
         var copy = root
-        return self.migrate(&copy)
+        return self.migrate(&copy, environment: environment)
     }
 
     /// Legacy shapes the SDK does not migrate automatically (upstream rejects or migrates them elsewhere).
@@ -113,6 +131,12 @@ public enum OpenClawConfigMigrator {
         let candidate = words[1].trimmingCharacters(in: CharacterSet(charactersIn: ".,;:()\""))
         return candidate.contains(where: { $0 == " " }) ? "" : candidate
     }
+}
+
+/// Per-pass inputs for migration rules (the rules keep the upstream `(raw, changes)` shape).
+enum ConfigMigrationContext {
+    /// Environment of the current migration pass.
+    @TaskLocal static var environment: [String: String] = ProcessInfo.processInfo.environment
 }
 
 /// One migration rule applied to a mutable tree.

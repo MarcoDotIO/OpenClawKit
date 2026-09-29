@@ -324,6 +324,7 @@ extension ConfigMigrationRules {
         }
         let entries = MigrationObject()
         var ids: Set<String> = []
+        var converted: [MigrationObject] = []
         for (sourceIndex, value) in list.items.enumerated() {
             guard let entry = value.object else {
                 changes.append("Removed malformed agents.list[\(sourceIndex)] entry.")
@@ -343,14 +344,41 @@ extension ConfigMigrationRules {
             let config = entry.deepCopy()
             config.remove("id")
             entries[id] = .object(config)
+            converted.append(config)
             ids.insert(id)
             if id != requestedID {
                 changes.append("Moved duplicate agents.list id \"\(requestedID)\" to agents.entries.\(id).")
             }
         }
+        if let workspace = Self.legacyFirstAgentWorkspacePin(agents, converted), let first = converted.first {
+            first["workspace"] = .string(workspace)
+        }
         agents["entries"] = .object(entries)
         agents.remove("list")
         changes.append("Moved agents.list → keyed agents.entries.")
+    }
+
+    /// Upstream `resolveLegacyFirstAgentWorkspacePin`: shipped markerless multi-agent lists gave their
+    /// first agent (in source order) the shared workspace, so keep it once the roster is keyed.
+    ///
+    /// Applies when `agents.ownership` is unset, there is more than one entry, no entry has a
+    /// `default` other than `false`, and the first entry has no (or a blank) `workspace`. The pin is
+    /// the trimmed `agents.defaults.workspace`, else the default agent workspace directory.
+    static func legacyFirstAgentWorkspacePin(_ agents: MigrationObject, _ entries: [MigrationObject]) -> String? {
+        guard !agents.has("ownership"), entries.count > 1, let first = entries.first,
+              entries.allSatisfy({ !$0.has("default") || $0.bool("default") == false })
+        else {
+            return nil
+        }
+        if let workspace = first["workspace"] {
+            guard let text = workspace.stringValue, text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return nil
+            }
+        }
+        if let configured = ConfigValueSupport.nonEmpty(agents.object("defaults")?.string("workspace")?.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            return configured
+        }
+        return OpenClawConfigDocumentStore.defaultAgentWorkspaceDirectory(environment: ConfigMigrationContext.environment).path
     }
 
     static func stampExplicitOwnership(_ root: MigrationObject, _ changes: inout [String]) {
