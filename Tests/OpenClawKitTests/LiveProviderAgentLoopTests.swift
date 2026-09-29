@@ -131,26 +131,17 @@ struct LiveProviderAgentLoopTests {
         #expect(response.providerID == fallback.id)
         #expect(response.text.lowercased().contains("pong"))
 
-        // Known gap (ModelProvider.swift, outside the provider files): generateStream returns the first
-        // provider's stream before any HTTP response, so a 401 surfaces while iterating and never
-        // reaches the fallback chain. Remove the known-issue wrapper once the router falls back on
-        // streams that fail before their first chunk.
+        // Streaming falls back too: the rejected provider's stream fails (401) before its first chunk,
+        // so the router moves on to the fallback provider.
         // A fresh router: the failed generate above may already have deprioritized the rejected provider.
         let streamRouter = ModelRouter(defaultProviderID: rejected.id, providers: [rejected, fallback])
-        try await withKnownIssue("ModelRouter.generateStream does not fall back when a stream fails before its first chunk") {
-            var streamed = ""
-            try await liveCall {
-                for try await chunk in await streamRouter.generateStream(request) {
-                    streamed += chunk.text
-                }
+        var streamed = ""
+        try await liveCall {
+            for try await chunk in await streamRouter.generateStream(request) {
+                streamed += chunk.text
             }
-            LiveUsageLedger.record("router.fallback.stream", model: LiveProviderEnvironment.model(.xai), usage: nil)
-            #expect(streamed.lowercased().contains("pong"))
-        } matching: { issue in
-            if case .errorCaught(let error) = issue.kind {
-                return String(describing: error).contains("401")
-            }
-            return false
         }
+        LiveUsageLedger.record("router.fallback.stream", model: LiveProviderEnvironment.model(.xai), usage: nil)
+        #expect(streamed.lowercased().contains("pong"))
     }
 }
