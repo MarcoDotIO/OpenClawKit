@@ -135,7 +135,12 @@ struct IMAPMailboxWatcherTests {
     static let now = Date(timeIntervalSince1970: 1_800_000_000)
     static let internalDate = "15-Jan-2027 08:00:00 +0000"
 
-    static func mail(from: String = "Alice <alice@example.com>", to: String = "bot+s3cret@example.org", id: String = "<m1@example.com>", extra: String = "") -> String {
+    static func mail(
+        from: String = "Alice <alice@example.com>",
+        to: String = "bot+s3cret@example.org",
+        id: String = "<m1@example.com>",
+        extra: String = ""
+    ) -> String {
         """
         From: \(from)
         To: \(to)
@@ -161,7 +166,13 @@ struct IMAPMailboxWatcherTests {
     }
 
     static func account(_ configure: (inout IMAPAccountConfig) -> Void = { _ in }) -> IMAPAccountConfig {
-        var account = IMAPAccountConfig(host: "imap.example.org", user: "bot", password: "pw", agentId: "mail", allowedSenders: ["alice@example.com", "@trusted.example"])
+        var account = IMAPAccountConfig(
+            host: "imap.example.org",
+            user: "bot",
+            password: "pw",
+            agentId: "mail",
+            allowedSenders: ["alice@example.com", "@trusted.example"]
+        )
         account.addressTokens = [IMAPAccountConfig.AddressToken(token: "s3cret", senders: ["alice@example.com"])]
         account.pollSeconds = 15
         configure(&account)
@@ -212,7 +223,11 @@ struct IMAPMailboxWatcherTests {
         #expect(verdict(Self.mail(from: "Alice@example.com")).reason == "sender-not-allowed")
         #expect(verdict(Self.mail(from: "eve@evil.example")).reason == "sender-not-allowed")
 
-        let noToken = Self.mail(from: "ops@TRUSTED.example", to: "bot@example.org", extra: "Authentication-Results: mx.example.org; dkim=pass; dmarc=pass header.from=trusted.example\n")
+        let noToken = Self.mail(
+            from: "ops@TRUSTED.example",
+            to: "bot@example.org",
+            extra: "Authentication-Results: mx.example.org; dkim=pass; dmarc=pass header.from=trusted.example\n"
+        )
         let strict = verdict(noToken, account: account)
         #expect(strict.accepted == false)
         #expect(strict.strength == .unverified)
