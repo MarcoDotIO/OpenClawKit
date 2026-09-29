@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import OpenClawCore
+import OpenClawMemory
 import OpenClawModels
 import OpenClawProtocol
 import OpenClawSkills
@@ -107,5 +108,67 @@ struct RuntimeNumericHardeningTests {
                 _ = try await tool.execute(arguments: try Self.decoded(json))
             }
         }
+    }
+
+    @Test
+    func integerArgumentsOutsideTheSafeRangeAreInvalid() throws {
+        let schema: [String: AnyCodable] = [
+            "type": AnyCodable("object"),
+            "properties": AnyCodable([
+                "lines": AnyCodable(["type": AnyCodable("integer"), "minimum": AnyCodable(1)]),
+                "scale": AnyCodable(["type": AnyCodable("number")]),
+                "either": AnyCodable(["type": AnyCodable(["integer", "null"])]),
+            ] as [String: AnyCodable]),
+        ]
+        for json in [
+            #"{"lines":1e19}"#, #"{"lines":9223372036854775807}"#, #"{"lines":9007199254740992}"#,
+            #"{"either":-1e300}"#, #"{"either":18446744073709551615}"#,
+        ] {
+            #expect(AgentToolRegistry.integerRangeViolation(try Self.decoded(json), schema: schema) != nil, "\(json)")
+        }
+        for json in [#"{"lines":9007199254740991}"#, #"{"lines":3}"#, #"{"scale":1e300}"#, #"{"either":null}"#, #"{"other":1e300}"#] {
+            #expect(AgentToolRegistry.integerRangeViolation(try Self.decoded(json), schema: schema) == nil, "\(json)")
+        }
+    }
+
+    @Test
+    func hugeMemoryToolNumbersFailInsteadOfTrapping() async throws {
+        let root = try RuntimeExtTestSupport.temporaryDirectory("memory-numbers")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try "Remember the falcon.\nSecond line.\n".write(to: root.appendingPathComponent("MEMORY.md"), atomically: true, encoding: .utf8)
+        let engine = MemoryEngine(workspaceRoot: root)
+        // Each of these reached `Int(double)` or `start + count - 1` / `limit * 4` in the memory tools
+        // and trapped the host process.
+        let calls = [
+            ("memory_get", #"{"path":"MEMORY.md","lines":1e19}"#),
+            ("memory_get", #"{"path":"MEMORY.md","lines":9223372036854775807}"#),
+            ("memory_search", #"{"query":"falcon","maxResults":9223372036854775807}"#),
+            ("memory_get", #"{"path":"MEMORY.md","lines":1}"#),
+        ]
+        var turns: [ScriptedToolProvider.Turn] = []
+        for (index, call) in calls.enumerated() {
+            turns.append(ScriptedToolProvider.call(call.0, id: "n\(index)", try Self.decoded(call.1)))
+        }
+        turns.append(ScriptedToolProvider.text("done"))
+        let provider = ScriptedToolProvider(turns: turns)
+        let runtime = EmbeddedAgentRuntime(
+            toolRegistry: AgentToolRegistry(tools: [MemorySearchTool(engine: engine), MemoryGetTool(engine: engine)]),
+            modelRouter: ModelRouter(defaultProviderID: provider.id, providers: [provider]),
+            transcriptStore: InMemorySessionTranscriptStore()
+        )
+        let result = try await runtime.run(AgentRunRequest(sessionKey: "memory-numbers", prompt: "go"), timeoutMs: 10_000)
+        #expect(result.toolResults.count == 4)
+        for rejected in result.toolResults.prefix(3) {
+            #expect(rejected.isError)
+            #expect(rejected.output.text.contains("must be an integer between"))
+        }
+        #expect(result.toolResults.last?.isError == false)
+        #expect(result.toolResults.last?.output.text.contains("falcon") == true)
+
+        // Direct registry calls (the `tools.invoke` path) are refused the same way.
+        let registry = AgentToolRegistry(tools: [MemoryGetTool(engine: engine)])
+        let direct = try await registry.invoke(AgentToolCall(name: "memory_get", arguments: try Self.decoded(#"{"path":"MEMORY.md","lines":1e19}"#)))
+        #expect(direct.isError)
+        #expect(direct.output.text.hasPrefix("Invalid arguments for memory_get"))
     }
 }

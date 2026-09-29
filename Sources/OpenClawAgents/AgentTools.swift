@@ -283,6 +283,11 @@ public actor AgentToolRegistry {
         guard let tool = self.tool(named: call.name) else {
             return AgentToolResult(name: call.name, toolCallID: toolCallID, output: .error("Tool not found: \(call.name)"))
         }
+        // Every entry point (agent loop, `tools.invoke`, direct callers) refuses integers a tool
+        // could trap on.
+        if let violation = Self.integerRangeViolation(call.arguments, schema: tool.descriptor.parameters) {
+            return AgentToolResult(name: call.name, toolCallID: toolCallID, output: .error("Invalid arguments for \(call.name): \(violation)"))
+        }
         let invocation = AgentToolInvocation(toolCallID: toolCallID, arguments: call.arguments, context: context)
         let startedAt = Date()
         let output: AgentToolOutput
@@ -297,6 +302,38 @@ public actor AgentToolRegistry {
         let durationMs = RuntimeTime.elapsedMilliseconds(since: startedAt)
         // Echo the called name: some providers require tool results to match the proposed call name.
         return AgentToolResult(name: call.name, toolCallID: toolCallID, output: output, durationMs: durationMs)
+    }
+
+    /// Largest magnitude of a model-supplied argument declared `integer` (JSON's safe-integer range,
+    /// `2^53 - 1`, which is also the most upstream's JavaScript numbers carry exactly).
+    static let maxToolArgumentInteger: Int64 = 9_007_199_254_740_991
+
+    /// Rejects top-level `integer` arguments outside the safe-integer range or the platform `Int`.
+    ///
+    /// JSON Schema counts any integral double as an integer, so `1e19` or `9223372036854775807`
+    /// passes validation, and tools that convert with `Int(_:)` or do arithmetic on the value trap
+    /// the host process (on watchOS `arm64_32`, `Int` is 32-bit). An out-of-range value becomes an
+    /// invalid-arguments error instead.
+    static func integerRangeViolation(_ arguments: [String: AnyCodable], schema: [String: AnyCodable]) -> String? {
+        guard let properties = schema["properties"]?.dictionaryValue else { return nil }
+        for name in arguments.keys.sorted() {
+            guard let value = arguments[name], let property = properties[name]?.dictionaryValue else { continue }
+            let types = property["type"]?.stringValue.map { [$0] } ?? property["type"]?.arrayValue?.compactMap(\.stringValue) ?? []
+            guard types.contains("integer"), !types.contains("number") else { continue }
+            let inRange: Bool
+            switch value.value {
+            case .int(let number):
+                inRange = Int64(number).magnitude <= UInt64(Self.maxToolArgumentInteger)
+            case .double(let number):
+                inRange = Int(exactly: number) != nil && number.magnitude <= Double(Self.maxToolArgumentInteger)
+            default:
+                continue
+            }
+            if !inRange {
+                return "$.\(name) must be an integer between -\(Self.maxToolArgumentInteger) and \(Self.maxToolArgumentInteger)"
+            }
+        }
+        return nil
     }
 
     private static func describe(_ error: Error) -> String {

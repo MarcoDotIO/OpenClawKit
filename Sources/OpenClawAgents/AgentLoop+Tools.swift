@@ -690,7 +690,10 @@ extension AgentLoop {
         if descriptor.parameters == AgentToolDescriptor.emptyParametersSchema {
             return nil
         }
-        return JSONSchemaValidator.firstViolation(instance: AnyCodable(.object(arguments)), against: descriptor.parameters)
+        if let violation = JSONSchemaValidator.firstViolation(instance: AnyCodable(.object(arguments)), against: descriptor.parameters) {
+            return violation
+        }
+        return AgentToolRegistry.integerRangeViolation(arguments, schema: descriptor.parameters)
     }
 
     /// Records tool calls a provider executed in-process: an assistant tool-call message, the results,
