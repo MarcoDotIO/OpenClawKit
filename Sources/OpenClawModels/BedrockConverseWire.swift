@@ -162,9 +162,6 @@ enum BedrockConverseWire {
             }
         }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty || !toolCalls.isEmpty else {
-            throw OpenClawCoreError.unavailable("\(providerID) response did not include text content")
-        }
         let usage = root[wireKey: "usage"].flatMap { value -> ModelUsage? in
             guard value.dictionaryValue != nil else { return nil }
             let read = value.wireInt("cacheReadInputTokens") ?? 0
@@ -192,6 +189,11 @@ enum BedrockConverseWire {
             default:
                 return ModelStopReason(providerValue: raw)
             }
+        }
+        // An output limit reached by reasoning alone, or a guardrail block, is a valid empty turn
+        // (returned with usage and stop reason), not a failure that would trigger fallback.
+        guard !trimmed.isEmpty || !toolCalls.isEmpty || stopReason?.permitsEmptyOutput == true else {
+            throw OpenClawCoreError.unavailable("\(providerID) response did not include text content")
         }
         return ModelGenerationResponse(
             text: toolCalls.isEmpty ? trimmed : text,

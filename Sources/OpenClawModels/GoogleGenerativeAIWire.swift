@@ -333,6 +333,10 @@ enum GoogleGenerativeAIWire {
             assembler.modelID = model
         }
         let candidate = root[wireKey: "candidates"]?.arrayValue?.first
+        if candidate == nil, root[wireKey: "promptFeedback"]?.dictionaryValue != nil {
+            // A blocked prompt returns `promptFeedback.blockReason` and no candidates.
+            assembler.stopReason = .contentFilter
+        }
         for part in candidate?[wireKey: "content"]?[wireKey: "parts"]?.arrayValue ?? [] {
             if let call = part[wireKey: "functionCall"] ?? part[wireKey: "function_call"], let name = call.wireString("name") {
                 let index = assembler.nextToolCallIndex
@@ -388,8 +392,14 @@ struct GoogleGenerativeAIEngine: Sendable {
         _ = GoogleGenerativeAIWire.apply(root, assembler: &assembler)
         assembler.modelID = prepared.modelID
         let parsed = assembler.response()
+        if parsed.stopReason == .error {
+            let reason = root[wireKey: "candidates"]?.arrayValue?.first?.wireString("finishReason") ?? "error"
+            throw OpenClawCoreError.unavailable("\(self.settings.providerID) generation stopped (\(reason))")
+        }
         let text = parsed.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty || !parsed.toolCalls.isEmpty else {
+        // Safety blocks and output limits reached by thoughts alone are valid empty turns (matching
+        // the streaming path), not failures that would trigger fallback and profile cooldowns.
+        guard !text.isEmpty || !parsed.toolCalls.isEmpty || parsed.stopReason.permitsEmptyOutput else {
             throw OpenClawCoreError.unavailable("\(self.settings.providerID) response did not include generated text")
         }
         return ModelGenerationResponse(

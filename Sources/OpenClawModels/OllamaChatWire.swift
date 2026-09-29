@@ -224,7 +224,7 @@ struct OllamaChatEngine: Sendable {
         _ = OllamaChatWire.apply(try ProviderWireJSON.decode(response.body), assembler: &assembler)
         let parsed = assembler.response()
         let text = parsed.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty || !parsed.toolCalls.isEmpty else {
+        guard !text.isEmpty || !parsed.toolCalls.isEmpty || parsed.stopReason.permitsEmptyOutput else {
             throw OpenClawCoreError.unavailable("\(self.settings.providerID) response did not include message content")
         }
         return ModelGenerationResponse(
