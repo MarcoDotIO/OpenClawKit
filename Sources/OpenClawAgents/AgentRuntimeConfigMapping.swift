@@ -59,8 +59,10 @@ struct ConfigDocumentJSON: Sendable {
 }
 
 public extension ToolPolicy {
-    /// Tool policy from `tools.profile/allow/alsoAllow/deny`, with `agents.entries.<id>.tools` fields
-    /// overriding the root fields they set.
+    /// Tool policy from `tools.profile/allow/alsoAllow/deny` and `agents.entries.<id>.tools`, layered
+    /// like upstream's policy pipeline: the agent's `profile` (and profile `alsoAllow`) replaces the
+    /// global one, but the global and agent `allow`/`deny` lists are separate stages. A per-agent list
+    /// can only restrict further: denies accumulate and allow lists intersect.
     /// - Parameters:
     ///   - document: Config document.
     ///   - agentID: Agent whose overrides apply.
@@ -70,14 +72,40 @@ public extension ToolPolicy {
     }
 
     internal static func resolve(from json: ConfigDocumentJSON, agentID: String?) -> ToolPolicy {
+        let root = Self.decodeLevel(json.object(["tools"]))
+        let agent = json.agentPath(agentID).flatMap { Self.decodeLevel(json.object($0 + ["tools"])) }
+        guard let agent, agent.profile != nil || agent.allow != nil || agent.alsoAllow != nil || agent.deny != nil else {
+            return root ?? .allowAll
+        }
+        // Profile stage: the agent's profile/alsoAllow override the global ones (upstream
+        // `agentTools?.profile ?? globalTools?.profile`). Denies accumulate; each level's allow list
+        // (with its own alsoAllow) is its own stage.
+        let deny = (root?.deny ?? []) + (agent.deny ?? [])
+        var policy = ToolPolicy(
+            profile: agent.profile ?? root?.profile,
+            alsoAllow: agent.alsoAllow ?? root?.alsoAllow,
+            deny: deny.isEmpty ? nil : deny
+        )
+        if let allow = root?.allow, !allow.isEmpty {
+            policy = policy.intersecting(ToolPolicy(allow: allow, alsoAllow: root?.alsoAllow))
+        }
+        if let allow = agent.allow, !allow.isEmpty {
+            policy = policy.intersecting(ToolPolicy(allow: allow, alsoAllow: agent.alsoAllow))
+        }
+        return policy
+    }
+
+    /// Decodes one `tools` level (`profile`, `allow`, `alsoAllow`, `deny`).
+    private static func decodeLevel(_ object: [String: AnyCodable]?) -> ToolPolicy? {
+        guard let object else { return nil }
         var raw: [String: AnyCodable] = [:]
         for key in ["profile", "allow", "alsoAllow", "deny"] {
-            if let value = json.layered(agentID, agentPath: ["tools", key], rootPath: ["tools", key]) {
+            if let value = object[key], !value.isNull {
                 raw[key] = value
             }
         }
-        guard !raw.isEmpty, let data = try? JSONEncoder().encode(AnyCodable(raw)) else { return .allowAll }
-        return (try? JSONDecoder().decode(ToolPolicy.self, from: data)) ?? .allowAll
+        guard !raw.isEmpty, let data = try? JSONEncoder().encode(AnyCodable(raw)) else { return nil }
+        return try? JSONDecoder().decode(ToolPolicy.self, from: data)
     }
 }
 
