@@ -44,10 +44,22 @@ public struct NoopRelevantEntitiesUpdater: OpenClawRelevantEntitiesUpdating {
 /// Keeps the Now Playing relevance in sync with talk mode.
 ///
 /// Call ``talkStarted(sessionKey:title:)`` when talk playback starts and ``talkStopped()`` when it ends.
+/// Updates reach the updater strictly in call order (a quick start/stop can never leave the stopped
+/// session published), and a failed update is retried by the next call for the same state.
 public actor OpenClawTalkRelevanceCoordinator {
+    private enum Operation: Sendable {
+        case set(sessionKey: String, title: String?)
+        case clear
+    }
+
     private let updater: any OpenClawRelevantEntitiesUpdating
     /// Session currently marked relevant.
     public private(set) var activeSessionKey: String?
+    /// The last update in the chain; each new update waits for it.
+    private var tail: Task<Void, Never>?
+    private var latestOperation: UInt64 = 0
+    /// Set when the newest update failed, so the system may still show a session.
+    private var needsClear = false
 
     /// Creates a coordinator.
     /// - Parameter updater: Relevance updater; `nil` uses `RelevantEntities` on OS 27, otherwise a no-op.
@@ -62,14 +74,50 @@ public actor OpenClawTalkRelevanceCoordinator {
     public func talkStarted(sessionKey: String, title: String? = nil) async {
         guard self.activeSessionKey != sessionKey else { return }
         self.activeSessionKey = sessionKey
-        try? await self.updater.setNowPlayingSession(OpenClawSessionAppEntity(sessionKey: sessionKey, title: title))
+        await self.apply(.set(sessionKey: sessionKey, title: title))
     }
 
     /// Clears the relevance when talk stops.
     public func talkStopped() async {
-        guard self.activeSessionKey != nil else { return }
+        guard self.activeSessionKey != nil || self.needsClear else { return }
         self.activeSessionKey = nil
-        try? await self.updater.clearNowPlayingSession()
+        self.needsClear = false
+        await self.apply(.clear)
+    }
+
+    /// Runs `operation` after every earlier update, and waits for it.
+    private func apply(_ operation: Operation) async {
+        self.latestOperation &+= 1
+        let operationID = self.latestOperation
+        let previous = self.tail
+        let updater = self.updater
+        let task = Task {
+            await previous?.value
+            let succeeded: Bool
+            do {
+                switch operation {
+                case let .set(sessionKey, title):
+                    try await updater.setNowPlayingSession(OpenClawSessionAppEntity(sessionKey: sessionKey, title: title))
+                case .clear:
+                    try await updater.clearNowPlayingSession()
+                }
+                succeeded = true
+            } catch {
+                succeeded = false
+            }
+            self.finish(operationID, succeeded: succeeded)
+        }
+        self.tail = task
+        await task.value
+    }
+
+    private func finish(_ operationID: UInt64, succeeded: Bool) {
+        // Only the newest update decides; a newer call already replaced the desired state.
+        guard !succeeded, operationID == self.latestOperation else { return }
+        // Forget the key so a retry for the same session is not skipped, and let the next
+        // talkStopped() clear whatever the system may still show.
+        self.activeSessionKey = nil
+        self.needsClear = true
     }
 
     static func makeSystemUpdater() -> any OpenClawRelevantEntitiesUpdating {
