@@ -1,4 +1,5 @@
 import Foundation
+import OpenClawKit
 
 // Ported from upstream OpenClaw 2026.9.6 `ChatInlineWidgetView.swift`
 // (`OpenClawChatWidgetURLResolver.resolveResource`). Upstream takes the kit's `GatewayCanvasHostRoute`;
@@ -12,6 +13,9 @@ public protocol OpenClawChatCanvasSurfaceRoute: Sendable, Equatable {
     /// SHA-256 TLS certificate fingerprint the widget web view must pin, if any.
     var tlsFingerprintSHA256: String? { get }
 }
+
+/// The node session's canvas route (``GatewayNodeSession/currentCanvasHostRoute()``) resolves inline widgets directly.
+extension GatewayCanvasHostRoute: OpenClawChatCanvasSurfaceRoute {}
 
 extension OpenClawChatWidgetURLResolver {
     /// Resolves an inline widget `target` against the current node or operator canvas surface.

@@ -8,6 +8,21 @@ import OpenClawProtocol
 @Suite("Spotlight memory backends")
 struct SpotlightMemoryTests {
     @Test
+    func timeoutRaceReturnsWithoutJoiningAStalledOperation() async {
+        let started = Date()
+        // The operation ignores cancellation and never finishes on its own, like a stalled CSUserQuery.
+        let value: Int? = await SpotlightTimeoutRace.first(timeoutSeconds: 0.2) {
+            while true {
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+        }
+        #expect(value == nil)
+        #expect(Date().timeIntervalSince(started) < 2)
+        let fast: Int? = await SpotlightTimeoutRace.first(timeoutSeconds: 5) { 42 }
+        #expect(fast == 42)
+    }
+
+    @Test
     func mirrorBackedSearchAndIdentifierParsing() async throws {
         let index = SpotlightMemoryIndex(indexName: "ai.openclaw.memory.tests.\(UUID().uuidString)", useUserQuery: false)
         try await index.upsert([

@@ -20,6 +20,7 @@ public actor SpotlightMemoryIndex: MemorySearchBackend {
     private let mirror = MemoryIndex()
     private var documents: [String: MemoryDocument] = [:]
     private let useUserQuery: Bool
+    private let userQueryTimeoutSeconds: Double
 
     /// Creates the index.
     /// - Parameters:
@@ -27,15 +28,19 @@ public actor SpotlightMemoryIndex: MemorySearchBackend {
     ///   - domainPrefix: Domain identifier prefix.
     ///   - protection: File protection class for indexed items (`nil` uses the app default).
     ///   - useUserQuery: Query Spotlight (`false` searches the in-memory mirror only).
+    ///   - userQueryTimeoutSeconds: Deadline for one `CSUserQuery`; on timeout the query is cancelled and
+    ///     the search falls back to the in-memory mirror (the system embedding service can stall).
     public init(
         indexName: String = "ai.openclaw.memory",
         domainPrefix: String = "openclaw.memory",
         protection: FileProtectionType? = .completeUntilFirstUserAuthentication,
-        useUserQuery: Bool = true
+        useUserQuery: Bool = true,
+        userQueryTimeoutSeconds: Double = 3
     ) {
         self.indexName = indexName
         self.domainPrefix = domainPrefix
         self.useUserQuery = useUserQuery
+        self.userQueryTimeoutSeconds = userQueryTimeoutSeconds
         if let protection {
             self.index = CSSearchableIndex(name: indexName, protectionClass: protection)
         } else {
@@ -171,19 +176,39 @@ public actor SpotlightMemoryIndex: MemorySearchBackend {
         context.fetchAttributes = ["title", "textContent"]
         context.maxResultCount = limit
         context.enableRankedResults = true
-        let userQuery = CSUserQuery(userQueryString: query, userQueryContext: context)
-        var identifiers: [String] = []
-        for try await response in userQuery.responses {
-            if case .item(let hit) = response {
-                let id = hit.item.uniqueIdentifier
-                if id.isEmpty == false, !identifiers.contains(id) {
-                    identifiers.append(id)
+        let userQuery = UserQueryBox(CSUserQuery(userQueryString: query, userQueryContext: context))
+        let identifiers = await SpotlightTimeoutRace.first(
+            timeoutSeconds: self.userQueryTimeoutSeconds,
+            onTimeout: { userQuery.query.cancel() },
+            operation: { () -> [String]? in
+                var identifiers: [String] = []
+                do {
+                    for try await response in userQuery.query.responses {
+                        if case .item(let hit) = response {
+                            let id = hit.item.uniqueIdentifier
+                            if id.isEmpty == false, !identifiers.contains(id) {
+                                identifiers.append(id)
+                            }
+                            if identifiers.count >= limit { break }
+                        }
+                    }
+                } catch {
+                    // A failed query falls back to the mirror like an empty one.
                 }
-                if identifiers.count >= limit { break }
+                userQuery.query.cancel()
+                return identifiers
             }
+        )
+        return identifiers ?? []
+    }
+
+    /// Carries a `CSUserQuery` across the timeout race (CoreSpotlight query objects are thread-safe to cancel).
+    private final class UserQueryBox: @unchecked Sendable {
+        let query: CSUserQuery
+
+        init(_ query: CSUserQuery) {
+            self.query = query
         }
-        userQuery.cancel()
-        return identifiers
     }
 }
 

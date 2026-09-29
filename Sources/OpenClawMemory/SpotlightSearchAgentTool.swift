@@ -109,17 +109,12 @@ public struct SpotlightSearchAgentTool: AgentTool {
     // MARK: - Helpers
 
     static func firstReply(_ task: Task<SpotlightSearchTool.SearchReply?, Never>, timeoutSeconds: Double) async -> SpotlightSearchTool.SearchReply? {
-        await withTaskGroup(of: SpotlightSearchTool.SearchReply?.self) { group in
-            group.addTask { await task.value }
-            group.addTask {
-                try? await Task.sleep(nanoseconds: UInt64(max(0.05, timeoutSeconds) * 1_000_000_000))
-                task.cancel()
-                return nil
-            }
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first
-        }
+        // Non-joining race: a reply stream that ignores cancellation must not keep the tool call waiting.
+        await SpotlightTimeoutRace.first(
+            timeoutSeconds: timeoutSeconds,
+            onTimeout: { task.cancel() },
+            operation: { await task.value }
+        )
     }
 
     /// Converts a `GenerationSchema` (Codable) into the JSON Schema subset tools accept.

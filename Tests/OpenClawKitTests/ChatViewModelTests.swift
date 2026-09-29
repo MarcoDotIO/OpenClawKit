@@ -9037,6 +9037,10 @@ struct ChatViewModelTests {
         try await waitUntil("first compact attempted") {
             await transport.compactSessionKeys() == ["main"]
         }
+        // The view model publishes the error after the failed call returns; wait for it instead of racing it.
+        try await waitUntil("compact failure surfaced") {
+            await MainActor.run { vm.errorText } == "Unable to compact the thread. Please try again."
+        }
         #expect(await MainActor.run { vm.errorText } == "Unable to compact the thread. Please try again.")
 
         await MainActor.run {
