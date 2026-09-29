@@ -41,8 +41,24 @@ struct ChannelErrorRedactionTests {
         #expect(!redacted.contains(Self.telegramToken))
         #expect(redacted.contains("password=<redacted>"))
         #expect(ChannelErrorText.redact("Authorization: Bearer abcdefghijklmnop") == "Authorization: Bearer <redacted>")
+        #expect(ChannelErrorText.redact(#""authorization":"Bot MTIzNDU2.abc""#) == #""authorization":"Bot <redacted>""#)
+        #expect(ChannelErrorText.redact("sent Bearer abcdefghijklmnopqrstuvwx") == "sent Bearer <redacted>")
         #expect(ChannelErrorText.redact("https://user:secret@host.example/x") == "https://<redacted>@host.example/x")
         #expect(ChannelErrorText.redact("plain failure") == "plain failure")
+    }
+
+    @Test
+    func redactionKeepsOrdinaryProseReadable() {
+        // Scheme words outside an Authorization header are not credentials (upstream only redacts
+        // standalone `Bearer` values of 18+ characters).
+        for text in [
+            "Telegram bot unavailable: connection refused",
+            "Discord Bot configuration rejected",
+            "Basic authentication required by the relay",
+            "Bearer authentication failed",
+        ] {
+            #expect(ChannelErrorText.redact(text) == text)
+        }
     }
 
     @Test

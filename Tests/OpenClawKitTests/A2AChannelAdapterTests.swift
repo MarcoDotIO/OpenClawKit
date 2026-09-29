@@ -396,6 +396,10 @@ struct A2AChannelAdapterTests {
         #expect(await http.count("/redirect") == 1)
     }
 
+    // Darwin only: swift-corelibs-foundation traps in `URLProtocolClient.urlProtocol(_:wasRedirectedTo:
+    // redirectResponse:)`. Its URLSession does consult the session delegate's
+    // `willPerformHTTPRedirection` for `data(for:)` (checked against a loopback 307 with the Swift 6.2
+    // Linux image), which is what `ChannelNoRedirectHTTPTransport` relies on.
     #if canImport(Darwin)
     /// Serves `/a2a` as a 307 to `/attacker` and records every request (URLSession stub).
     final class RedirectingProtocol: URLProtocol, @unchecked Sendable {

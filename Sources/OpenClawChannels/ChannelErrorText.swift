@@ -48,20 +48,25 @@ public enum ChannelErrorText {
         let marker = NSRegularExpression.escapedTemplate(for: redactedMarker)
         let queryKeys = "access[-_]?token|auth[-_]?token|refresh[-_]?token|id[-_]?token|api[-_]?key|apikey|client[-_]?secret"
             + "|app[-_]?secret|private[-_]?key|token|key|secret|password|passwd|pass|auth|signature|sig|guid"
-        let patterns: [(String, String)] = [
+        let credential = #"[-A-Za-z0-9._~+/=]"#
+        let patterns: [(pattern: String, template: String, caseInsensitive: Bool)] = [
             // Telegram bot API path segment and bare tokens (`123456:AA...`).
-            (#"\bbot\d{6,}:[A-Za-z0-9_-]{20,}"#, "bot\(marker)"),
-            (#"\b\d{6,}:[A-Za-z0-9_-]{20,}\b"#, marker),
+            (#"\bbot\d{6,}:[A-Za-z0-9_-]{20,}"#, "bot\(marker)", true),
+            (#"\b\d{6,}:[A-Za-z0-9_-]{20,}\b"#, marker, true),
             // Credential query items (`?password=...`, `&token=...`), also percent-encoded `=`.
-            (#"([?&;](?:"# + queryKeys + #")(?:=|%3D))[^&#\s"'<>]+"#, "$1\(marker)"),
+            (#"([?&;](?:"# + queryKeys + #")(?:=|%3D))[^&#\s"'<>]+"#, "$1\(marker)", true),
             // URL userinfo (`https://user:secret@host`).
-            (#"(://)[^/@\s"'<>]+:[^/@\s"'<>]*@"#, "$1\(marker)@"),
-            // Authorization header values.
-            (#"\b(Bearer|Basic|Bot)\s+[-A-Za-z0-9._~+/=]{8,}"#, "$1 \(marker)"),
+            (#"(://)[^/@\s"'<>]+:[^/@\s"'<>]*@"#, "$1\(marker)@", true),
+            // Authorization header values (upstream `AUTHORIZATION_{BEARER,BASIC,BOT}_REDACT_PATTERN`).
+            (#"(\bAuthorization["']?\s*[:=]\s*["']?(?:Bearer|Basic|Bot)\s+)"# + credential + "+", "$1\(marker)", true),
+            // Standalone bearer tokens (upstream `STANDALONE_BEARER_REDACT_PATTERN`: case-sensitive,
+            // 18+ characters, so prose such as "Bearer authentication failed" stays readable).
+            (#"(\bBearer\s+)"# + credential + #"{18,}(?![-A-Za-z0-9._~+/=])"#, "$1\(marker)", false),
         ]
-        return patterns.compactMap { pattern, template in
-            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return nil }
-            return Rule(regex: regex, template: template)
+        return patterns.compactMap { rule in
+            let options: NSRegularExpression.Options = rule.caseInsensitive ? [.caseInsensitive] : []
+            guard let regex = try? NSRegularExpression(pattern: rule.pattern, options: options) else { return nil }
+            return Rule(regex: regex, template: rule.template)
         }
     }()
 }
