@@ -1061,13 +1061,14 @@ Each item lists the migration. Snippets are in the DocC article "Migrating to
 
 ### Tests
 
-- 3,416 macOS tests pass under `swift test` (Swift Testing), including ported
+- 3,711 macOS tests pass under `swift test` (Swift Testing: 3,147 in
+  `OpenClawKitTests`, 544 in `OpenClawLinuxRuntimeTests`, 20 E2E), including ported
   upstream suites for generated protocol models, gateway channel and node
   session, native state (85 upstream tests), Talk relay and voice selection,
   Watch commands and chat delivery, ChatUI core, rendering, shell, store and
   outbox, provider catalog and runtime, Apple FM, media understanding, channels,
   config documents and the agent runtime.
-- 403 Linux tests (`OpenClawLinuxRuntimeTests`) pass in the Swift 6.2 Docker
+- 533 Linux tests (`OpenClawLinuxRuntimeTests`) pass in the Swift 6.2 Docker
   gate, including smoke suites for protocol sync, channels core and adapters,
   media understanding and the config contract corpus.
 - Gated live suites: `LiveProvider*Tests` (OpenAI Responses, OpenAI Chat
@@ -1075,14 +1076,13 @@ Each item lists the migration. Snippets are in the DocC article "Migrating to
   `OPENCLAW_LIVE_PROVIDER_TESTS=1`), `AppleFoundationModelsLiveTests`
   (`OPENCLAW_LIVE_APPLE_FM=1`, plus `OPENCLAW_LIVE_APPLE_PCC=1`), media
   (`OPENCLAW_LIVE_APPLE_MEDIA=1`, `OPENCLAW_LIVE_SPEECH=1`) and CoreAI
-  (`OPENCLAW_COREAI_MODEL_PATH`). The final live provider pass ran 64 tests in 6
-  suites: the OpenAI Responses, OpenAI Chat Completions, xAI and OpenAI/xAI
-  agent-loop tests passed live (48 billed calls, well under $0.01). The
-  Anthropic invalid-key test passed live; the other Anthropic Messages and
-  Anthropic agent-loop tests record a known issue until `ANTHROPIC_WORKSPACE_ID`
-  is set for a key that is not scoped to a workspace. The streaming half of the
-  router fallback test is a known issue (`ModelRouter.generateStream` does not
-  fall back before the first chunk).
+  (`OPENCLAW_COREAI_MODEL_PATH`). The final live provider pass on the release
+  tree ran 67 tests in 6 suites and all passed: OpenAI Responses, OpenAI Chat
+  Completions, Anthropic Messages (including signed extended thinking replayed
+  before tool use; organization-level keys need `ANTHROPIC_WORKSPACE_ID`), xAI,
+  the OpenAI/Anthropic/xAI agent loops with a real tool, and router fallback for
+  both `generate` and `generateStream` (63 billed calls on the cheapest models,
+  well under $0.05).
 - Release gates: `swift build -Xswiftc -warnings-as-errors`,
   `Scripts/lint-swift.sh` (0 violations, Examples included),
   `Scripts/validate-apple-matrix.sh`, `Scripts/build-apple-platforms.sh all`

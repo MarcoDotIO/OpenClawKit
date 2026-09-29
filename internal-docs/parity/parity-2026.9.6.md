@@ -213,13 +213,13 @@ web UI, Node daemon internals or TS plugin runtime.
 
 ## Validation Status
 
-State of release branch `release/2026.3.0` at `21b3d72` plus the docs, CI and example
-changes of the release-docs branch:
+State of release branch `release/2026.3.0` after the release-review fixes:
 
 - Passed: `swift build -Xswiftc -warnings-as-errors` (macOS)
-- Passed: `swift test` on macOS: 3,416 tests
+- Passed: `swift test` on macOS: 3,711 tests (3,147 `OpenClawKitTests`, 544
+  `OpenClawLinuxRuntimeTests`, 20 E2E)
 - Passed: Linux Swift 6.2 gate in Docker (`swift:6.2`): strict build, networking
-  concurrency gate and 403 `OpenClawLinuxRuntimeTests`
+  concurrency gate and 533 `OpenClawLinuxRuntimeTests`
 - Passed: `Scripts/lint-swift.sh` with 0 violations (Sources, Tests, Examples,
   `Package.swift`)
 - Passed: all five Apple platforms build every product (`OpenClawKit-Package`;
@@ -243,24 +243,20 @@ changes of the release-docs branch:
   `Scripts/build-docs-site.sh`, `Scripts/build-ios-example.sh` and
   `Scripts/build-tvos-example.sh`
 - Live provider suite (`OPENCLAW_LIVE_PROVIDER_TESTS=1 swift test --filter
-  LiveProvider`), final pass: 64 tests in 6 suites.
-  - Passed live: OpenAI Responses (15 tests), OpenAI Chat Completions (12), xAI (10,
-    Responses route from the catalog and the direct Chat Completions provider), and the
-    OpenAI and xAI agent loops with a calculator tool.
-  - 48 billed calls: `gpt-6-luna` 35 calls (2,840 input / 694 output tokens) and
-    `grok-4.20-0309-non-reasoning` 13 calls (1,699 input / 125 output tokens). All 18
-    live runs together cost about $0.01 at catalog prices.
-  - Anthropic: the invalid-key test passed live. The other 9 Anthropic Messages tests
-    and the 2 Anthropic agent-loop tests record a known issue: the supplied key is not
-    scoped to a workspace, so every Messages call needs an `anthropic-workspace-id`
-    header. Set `ANTHROPIC_WORKSPACE_ID` (or use a workspace-scoped key) and run
-    `--filter LiveProviderAnthropic` and `--filter LiveProviderAgentLoop`.
-  - Known issue: the streaming half of `routerFallsBackFromRejectedKeyToNextProvider`
-    (`ModelRouter.generateStream` does not fall back before the first chunk).
-  - The live runs found and fixed three SDK bugs: OpenAIKit dropping `/v1` (every
+  LiveProvider`), final pass on the release tree: 67 tests in 6 suites, all passed.
+  - OpenAI Responses (15), OpenAI Chat Completions (12), Anthropic Messages (10, with
+    a workspace-scoped key; signed extended thinking replayed before tool use), xAI
+    (10, catalog Responses route and direct Chat Completions), agent loops with a
+    calculator tool on OpenAI, Anthropic and xAI, and router fallback for both
+    `generate` and `generateStream`.
+  - 63 billed calls on `gpt-6-luna`, `claude-haiku-4-5` and
+    `grok-4.20-0309-non-reasoning` (about 12k input / 1.5k output tokens), well under
+    $0.05. Organization-level Anthropic keys need `ANTHROPIC_WORKSPACE_ID`
+    (`anthropic-workspace-id`).
+  - The live runs found and fixed four SDK bugs: OpenAIKit dropping `/v1` (every
     plain request failed with 404), factory-built providers dropping configured
-    headers, and non-streaming generate throwing when reasoning exhausted the output
-    limit.
+    headers, non-streaming generate throwing when reasoning exhausted the output
+    limit, and Anthropic prompted JSON arriving inside a Markdown fence.
 - Apple Foundation Models live tests (7) passed on the development Mac (AFM 3 Core
   Advanced, 8,192-token context, vision supported). Private Cloud Compute generation was not verified end to end:
   unsigned test processes lack the managed entitlement (`ModelManagerError` 1046), which

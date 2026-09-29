@@ -102,13 +102,13 @@ decisions".
 ## Validation gate
 
 1. `swift build -Xswiftc -warnings-as-errors`
-2. `swift test` (3,416 tests on macOS at release)
+2. `swift test` (3,711 tests on macOS at release)
 3. `Scripts/lint-swift.sh` (0 violations, Examples included)
 4. `Scripts/validate-apple-matrix.sh`
 5. `Scripts/typecheck-apple-sdks.sh all`
 6. `Scripts/build-apple-platforms.sh all`
 7. `Scripts/check-apple-weak-links.sh all`
-8. The Linux Swift 6.2 gate (403 tests at release)
+8. The Linux Swift 6.2 gate (533 tests at release)
 9. `Scripts/check-upstream-drift.sh`
 10. `Scripts/build-docs-site.sh`
 11. `Scripts/build-ios-example.sh`, `Scripts/test-ios-example.sh`,

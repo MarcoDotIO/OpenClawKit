@@ -8,8 +8,8 @@ OpenClawKit uses Swift Testing (`import Testing`) for unit, E2E and gated live c
 swift test
 ```
 
-At `2026.3.0` this runs 3,416 tests on macOS (Xcode 27.1, Swift 6.4). The Linux runtime
-target runs 403 tests under Swift 6.2.
+At `2026.3.0` this runs 3,711 tests on macOS (Xcode 27.1, Swift 6.4). The Linux runtime
+target runs 533 tests under Swift 6.2.
 
 ## Test Structure
 
@@ -140,11 +140,9 @@ OPENCLAW_LIVE_PROVIDER_TESTS=1 swift test --filter LiveProvider
   descriptions redact configured keys.
 - The stubbed offline regressions (`LiveProviderRegressionTests`) always run.
 
-Status at `2026.3.0`: the final pass ran 64 tests in 6 suites. OpenAI Responses, OpenAI
-Chat Completions, xAI and the OpenAI/xAI agent loops passed live; the Anthropic invalid-key
-test passed live, and the remaining Anthropic tests wait for a workspace id. The streaming
-half of `routerFallsBackFromRejectedKeyToNextProvider` is a known issue:
-`ModelRouter.generateStream` does not fall back when a stream fails before its first chunk.
+Status at `2026.3.0`: the final pass on the release tree ran 67 tests in 6 suites and all
+passed: OpenAI Responses, OpenAI Chat Completions, Anthropic Messages, xAI, the
+OpenAI/Anthropic/xAI agent loops and router fallback for `generate` and `generateStream`.
 
 ## Other Gated Live Tests
 
