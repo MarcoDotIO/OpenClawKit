@@ -426,3 +426,34 @@ struct ChatComposerIOSPasteSupportTests {
     }
 }
 #endif
+
+struct ChatSuggestedActionsTargetTests {
+    private func message(
+        _ role: String,
+        _ text: String,
+        provenance: OpenClawChatInputProvenance? = nil) -> OpenClawChatMessage
+    {
+        OpenClawChatMessage(
+            role: role,
+            content: [OpenClawChatMessageContent(type: "text", text: text, mimeType: nil, fileName: nil, content: nil)],
+            timestamp: 1000,
+            provenance: provenance)
+    }
+
+    @Test func `latest inbound message is the only suggested actions target`() {
+        let user = self.message("user", "Book a table")
+        let reply = self.message("assistant", "Call +1 555 0100 at 7pm")
+        let thinkingOnly = self.message("assistant", "<think>plan</think>")
+        let tool = self.message("toolResult", "ok")
+
+        #expect(chatSuggestedActionsMessageID(in: [user, reply, thinkingOnly, tool]) == reply.id)
+        #expect(chatSuggestedActionsMessageID(in: [reply, user]) == nil)
+        #expect(chatSuggestedActionsMessageID(in: []) == nil)
+
+        let external = self.message(
+            "user",
+            "Running late",
+            provenance: OpenClawChatInputProvenance(kind: "external_user", sourceChannel: "telegram"))
+        #expect(chatSuggestedActionsMessageID(in: [reply, external]) == external.id)
+    }
+}

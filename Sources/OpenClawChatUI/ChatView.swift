@@ -104,6 +104,21 @@ func chatReaderScrollReleasesFollow(_ phase: ChatReaderScrollPhase) -> Bool {
     }
 }
 
+/// The message that shows Apple Intelligence suggested actions: the latest visible user/assistant message when it
+/// is inbound (an assistant reply or an external sender's message). Nil once the owner has replied, so suggestions
+/// never trail older turns.
+func chatSuggestedActionsMessageID(in messages: [OpenClawChatMessage]) -> UUID? {
+    for message in messages.reversed() {
+        let role = message.role.lowercased()
+        guard role == "user" || role == "assistant" else { continue }
+        let text = ChatMessageVisibleText.visibleText(in: message).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { continue }
+        let isOwnerMessage = role == "user" && message.provenance?.kind != "external_user"
+        return isOwnerMessage ? nil : message.id
+    }
+    return nil
+}
+
 // ChatUI views ship on iOS, macOS and visionOS. tvOS and watchOS get only the non-UI chat core
 // (view model, transport, models, parsers), because these views rely on APIs such as TextEditor,
 // textSelection and PhotosPicker that are unavailable there.
@@ -166,6 +181,7 @@ public struct OpenClawChatView: View {
     @State private var viewModel: OpenClawChatViewModel
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.openClawChatDesktopLayout) private var isDesktopLayout
+    @Environment(\.openClawSuggestedActionsEnabled) private var suggestedActionsEnabled
     @State private var scrollerBottomID = UUID()
     @State private var scrollPosition: UUID?
     @State private var hasPerformedInitialScroll = false
@@ -379,7 +395,8 @@ public struct OpenClawChatView: View {
     private var content: some View {
         VStack(spacing: 0) {
             self.messageList
-            #if os(macOS)
+                // macOS: upstream's find bar (Command-F). iOS and visionOS: the system search field, which needs
+                // the navigation container the split shell (desktop layout) provides.
                 .modifier(ChatTranscriptSearch(
                     rows: self.transcriptRows,
                     sessionKey: self.viewModel.sessionKey,
@@ -390,7 +407,6 @@ public struct OpenClawChatView: View {
                 .onChange(of: self.isSearchPresented) { wasPresented, isPresented in
                     if wasPresented, !isPresented { self.composerFocusRequest += 1 }
                 }
-            #endif
                 .padding(.horizontal, Layout.outerPaddingHorizontal)
             if !self.usesInlineProgressCard {
                 self.progressCard
@@ -632,6 +648,9 @@ public struct OpenClawChatView: View {
     @ViewBuilder
     private var messageListRows: some View {
         let contextWindowTokens = self.viewModel.contextUsage?.contextWindowTokens
+        let suggestedActionsMessageID = self.suggestedActionsEnabled
+            ? chatSuggestedActionsMessageID(in: self.viewModel.messages)
+            : nil
 
         if let introText = visibleEmptyAssistantIntro {
             ChatAssistantIntroCard(
@@ -652,7 +671,10 @@ public struct OpenClawChatView: View {
         ForEach(self.transcriptRows) { row in
             switch row {
             case let .message(message):
-                self.messageRow(for: message, contextWindowTokens: contextWindowTokens)
+                self.messageRow(
+                    for: message,
+                    contextWindowTokens: contextWindowTokens,
+                    showsSuggestedActions: message.id == suggestedActionsMessageID)
                     .background(
                         RoundedRectangle(cornerRadius: 12)
                             .fill(OpenClawChatTheme.accent.opacity(self.searchMessageID == message.id ? 0.08 : 0)))
@@ -719,7 +741,8 @@ public struct OpenClawChatView: View {
     @ViewBuilder
     private func messageRow(
         for msg: OpenClawChatMessage,
-        contextWindowTokens: Int?) -> some View
+        contextWindowTokens: Int?,
+        showsSuggestedActions: Bool = false) -> some View
     {
         let bubble = ChatMessageBubble(
             message: msg,
@@ -760,7 +783,8 @@ public struct OpenClawChatView: View {
                     artifactId: artifactId,
                     kind: kind,
                     playback: playback)
-            })
+            },
+            suggestedActionsHistory: showsSuggestedActions ? self.viewModel.messages : nil)
             .frame(
                 maxWidth: .infinity,
                 alignment: msg.role.lowercased() == "user" ? .trailing : .leading)
