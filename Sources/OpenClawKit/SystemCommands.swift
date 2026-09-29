@@ -23,9 +23,10 @@ public enum OpenClawFileSystemCommand: String, Codable, Sendable {
 ///
 /// Apple hosts that implement one of these declare the constant in `GatewayConnectOptions.commands`.
 public enum OpenClawNodeCommandName {
-    /// `system.run.prepare`: build an approval plan before `system.run`. Hosts that do not advertise
-    /// it still receive approved `system.run` calls carrying `approved`/`approvalDecision`, because the
-    /// gateway synthesizes a local plan.
+    /// `system.run.prepare`: build the approval plan (``OpenClawSystemRunPrepareResult``, with the
+    /// node's exec policy snapshot embedded in the plan) before `system.run`. Required for node
+    /// approvals: the gateway never synthesizes a plan, and the exec tool refuses to request
+    /// approval from a node that does not advertise this command.
     public static let systemRunPrepare = "system.run.prepare"
     /// `terminal.upload`: stage an uploaded file for a workspace terminal (admin-only).
     public static let terminalUpload = "terminal.upload"
@@ -63,7 +64,8 @@ public struct OpenClawSystemRunParams: Codable, Sendable, Equatable {
     public var command: [String]
     /// Original shell text of the command, when known.
     public var rawCommand: String?
-    /// Approval plan prepared by `system.run.prepare` or synthesized by the gateway.
+    /// Approval plan the node returned from `system.run.prepare`, forwarded by the gateway from the
+    /// approval record (raw wire value; decode it with ``approvalPlan()``).
     public var systemRunPlan: AnyCodable?
     /// Working directory.
     public var cwd: String?
@@ -77,7 +79,8 @@ public struct OpenClawSystemRunParams: Codable, Sendable, Equatable {
     public var agentId: String?
     /// Session that requested the run.
     public var sessionKey: String?
-    /// `true` when an operator already approved this run (no prior `system.run.prepare` needed).
+    /// `true` when an operator approved this run; the approval was requested with the plan in
+    /// ``systemRunPlan``, which then carries the policy snapshot to re-check before launch.
     public var approved: Bool?
     /// Approval decision (`allow-once`, `allow-always`, …) when ``approved`` is set.
     public var approvalDecision: String?
@@ -87,10 +90,6 @@ public struct OpenClawSystemRunParams: Codable, Sendable, Equatable {
     public var runId: String?
     /// Suppresses the exit notification for this run.
     public var suppressNotifyOnExit: Bool?
-    /// Persisted exec policy the approval was granted under (delayed authority). Exec hosts compare
-    /// it with the policy re-read right before launch (``OpenClawSystemRunApprovalPolicySnapshot/isCurrent(_:)``)
-    /// and deny with `SYSTEM_RUN_DENIED` when it no longer holds.
-    public var policySnapshot: OpenClawSystemRunApprovalPolicySnapshot?
 
     /// Creates `system.run` params.
     public init(
@@ -107,8 +106,7 @@ public struct OpenClawSystemRunParams: Codable, Sendable, Equatable {
         runId: String? = nil,
         systemRunPlan: AnyCodable? = nil,
         approvalSource: String? = nil,
-        suppressNotifyOnExit: Bool? = nil,
-        policySnapshot: OpenClawSystemRunApprovalPolicySnapshot? = nil)
+        suppressNotifyOnExit: Bool? = nil)
     {
         self.command = command
         self.rawCommand = rawCommand
@@ -124,7 +122,30 @@ public struct OpenClawSystemRunParams: Codable, Sendable, Equatable {
         self.approvalSource = approvalSource
         self.runId = runId
         self.suppressNotifyOnExit = suppressNotifyOnExit
-        self.policySnapshot = policySnapshot
+    }
+
+    /// Whether the run carries delayed approval authority: `approved`, a recognized
+    /// ``approvalDecision`` (`allow-once` / `allow-always`) or `approvalSource == "auto-review"`.
+    /// Such runs must carry a prepared policy snapshot in ``systemRunPlan`` (upstream
+    /// `forwardedDelayedApproval`).
+    public var carriesDelayedApproval: Bool {
+        self.approved == true
+            || self.approvalDecision == "allow-once"
+            || self.approvalDecision == "allow-always"
+            || self.approvalSource == "auto-review"
+    }
+
+    /// Decodes ``systemRunPlan``.
+    /// - Returns: `nil` when the gateway forwarded no plan.
+    /// - Throws: ``OpenClawNodeError`` (`INVALID_REQUEST: systemRunPlan invalid`) when a plan is present
+    ///   but malformed, matching upstream (a malformed snapshot is never silently dropped).
+    public func approvalPlan() throws -> OpenClawSystemRunApprovalPlan? {
+        guard let systemRunPlan else { return nil }
+        do {
+            return try OpenClawSystemRunApprovalPlan(wireValue: systemRunPlan)
+        } catch {
+            throw OpenClawNodeError(code: .invalidRequest, message: "INVALID_REQUEST: systemRunPlan invalid")
+        }
     }
 
     /// Timeout to apply: the explicit positive ``timeoutMs`` or, when absent, the host default (the
