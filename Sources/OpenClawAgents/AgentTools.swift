@@ -294,7 +294,7 @@ public actor AgentToolRegistry {
             try Task.checkCancellation()
             output = .error(Self.describe(error))
         }
-        let durationMs = Int(Date().timeIntervalSince(startedAt) * 1000)
+        let durationMs = RuntimeTime.elapsedMilliseconds(since: startedAt)
         // Echo the called name: some providers require tool results to match the proposed call name.
         return AgentToolResult(name: call.name, toolCallID: toolCallID, output: output, durationMs: durationMs)
     }

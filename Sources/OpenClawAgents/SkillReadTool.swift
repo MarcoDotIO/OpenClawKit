@@ -20,6 +20,8 @@ public struct SkillReadTool: AgentTool {
     public static let defaultMaxBytes = 50 * 1_024
     /// Largest image returned as an image block (SDK limit; upstream resizes instead).
     public static let maxImageBytes = 5 * 1_024 * 1_024
+    /// Largest prefix of a text file the tool loads (16 MB); longer files page within this window.
+    public static let maxTextFileBytes = 16 * 1_024 * 1_024
 
     /// Tool name.
     public let name = SkillReadTool.toolName
@@ -91,14 +93,17 @@ public struct SkillReadTool: AgentTool {
         if isDirectory.boolValue {
             return .error("Read requires a file path, but \(rawPath) is a directory. List the directory, then read a specific file.")
         }
+        let imageMIMEType = Self.imageMIMETypes[url.pathExtension.lowercased()]
         let data: Data
+        let fileSize: UInt64
         do {
-            data = try Data(contentsOf: url)
+            // Never load a whole multi-GB workspace file: read at most the cap (plus one byte to detect overflow).
+            (data, fileSize) = try Self.readPrefix(of: url, maxBytes: imageMIMEType == nil ? Self.maxTextFileBytes : Self.maxImageBytes + 1)
         } catch {
             return .error("Could not read \(rawPath): \(error.localizedDescription)")
         }
-        if let mimeType = Self.imageMIMETypes[url.pathExtension.lowercased()] {
-            guard data.count <= Self.maxImageBytes else {
+        if let mimeType = imageMIMEType {
+            guard fileSize <= UInt64(Self.maxImageBytes), data.count <= Self.maxImageBytes else {
                 return .error("Image \(rawPath) is larger than \(Self.maxImageBytes / 1_048_576)MB")
             }
             return AgentToolOutput(
@@ -107,8 +112,29 @@ public struct SkillReadTool: AgentTool {
             )
         }
         let offset = max(1, invocation.arguments["offset"]?.intValue ?? 1)
-        let limit = invocation.arguments["limit"]?.doubleValue.map { max(1, Int($0)) }
-        return Self.page(text: String(decoding: data, as: UTF8.self), offset: offset, limit: limit)
+        // `limit` is a model-supplied JSON number: clamp it before converting (1e30 or -1e30 would trap).
+        let limit = RuntimeTime.clampedInt(invocation.arguments["limit"]?.doubleValue, to: 1...Self.defaultMaxLines)
+        let page = Self.page(text: String(decoding: data, as: UTF8.self), offset: offset, limit: limit)
+        guard fileSize > UInt64(data.count), !page.isError else {
+            return page
+        }
+        let notice = "\n\n[File is larger than \(Self.maxTextFileBytes / 1_048_576)MB; only the first "
+            + "\(Self.maxTextFileBytes / 1_048_576)MB can be read with this tool.]"
+        return AgentToolOutput(content: [.text(page.text + notice)], details: page.details)
+    }
+
+    /// Reads at most `maxBytes` from the start of a file.
+    /// - Parameters:
+    ///   - url: File URL.
+    ///   - maxBytes: Byte cap.
+    /// - Returns: The prefix and the file size.
+    static func readPrefix(of url: URL, maxBytes: Int) throws -> (Data, UInt64) {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let size = try handle.seekToEnd()
+        try handle.seek(toOffset: 0)
+        let data = try handle.read(upToCount: maxBytes) ?? Data()
+        return (data, size)
     }
 
     /// Pages text by line with the upstream byte and line caps.

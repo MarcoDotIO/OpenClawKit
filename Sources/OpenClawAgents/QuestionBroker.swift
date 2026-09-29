@@ -308,12 +308,13 @@ public actor QuestionBroker {
             sessionKey: sessionKey,
             runID: runID,
             createdAtMs: now,
-            expiresAtMs: now + timeout,
+            expiresAtMs: RuntimeTime.deadline(now, plusMilliseconds: timeout),
             status: .pending
         )
         self.questions[requestID] = record
+        let sleepNs = RuntimeTime.sleepNanoseconds(milliseconds: timeout)
         self.expiryTasks[requestID] = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(timeout) * 1_000_000)
+            try? await Task.sleep(nanoseconds: sleepNs)
             await self?.expire(requestID)
         }
         self.publish(record)
@@ -348,8 +349,9 @@ public actor QuestionBroker {
         return await withCheckedContinuation { continuation in
             self.waiters[id, default: [:]][token] = continuation
             if let timeoutMs {
+                let sleepNs = RuntimeTime.sleepNanoseconds(milliseconds: max(1, timeoutMs))
                 Task {
-                    try? await Task.sleep(nanoseconds: UInt64(max(1, timeoutMs)) * 1_000_000)
+                    try? await Task.sleep(nanoseconds: sleepNs)
                     self.expireWaiter(id, token: token)
                 }
             }
