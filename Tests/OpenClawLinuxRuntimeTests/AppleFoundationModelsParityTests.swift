@@ -356,6 +356,55 @@ struct AppleFoundationModelsSchemaConverterTests {
     }
 
     @Test
+    func integerBoundsBeyondThePlatformIntAreUnboundedNotErrors() throws {
+        // JSON integers that do not fit `Int` decode as `.double` (on arm64_32 watchOS already above
+        // Int32.max, e.g. zod's ±(2^53-1)); bounds looser than every Int become "no guide".
+        let wide = try FoundationModelsSchemaConverter.parse(
+            try json(#"{"type":"integer","minimum":-18446744073709551615,"maximum":18446744073709551615}"#),
+            name: "id"
+        )
+        #expect(wide == .integer(minimum: nil, maximum: nil))
+        let direct = try FoundationModelsSchemaConverter.parse(
+            ["type": AnyCodable("integer"), "minimum": AnyCodable(-1e19), "maximum": AnyCodable(1e19)],
+            name: "id"
+        )
+        #expect(direct == .integer(minimum: nil, maximum: nil))
+        let zod = try FoundationModelsSchemaConverter.parse(
+            try json(#"{"type":"integer","minimum":-9007199254740991,"maximum":9007199254740991}"#),
+            name: "n"
+        )
+        if MemoryLayout<Int>.size == 8 {
+            #expect(zod == .integer(minimum: -9_007_199_254_740_991, maximum: 9_007_199_254_740_991))
+        } else {
+            #expect(zod == .integer(minimum: nil, maximum: nil))
+        }
+        let unboundedCounts = try FoundationModelsSchemaConverter.parse(
+            try json(#"{"type":"array","items":{"type":"string","maxLength":18446744073709551615},"maxItems":18446744073709551615}"#),
+            name: "list"
+        )
+        #expect(unboundedCounts == .array(item: .string, minimumElements: nil, maximumElements: nil))
+        // Fractional and unsatisfiable bounds still fail like upstream.
+        for schema in [
+            #"{"type":"integer","minimum":1.5}"#,
+            #"{"type":"integer","minimum":18446744073709551615}"#,
+            #"{"type":"integer","maximum":-18446744073709551615}"#,
+            #"{"type":"array","items":{"type":"string"},"minItems":18446744073709551615}"#,
+        ] {
+            let parsed = try json(schema)
+            expectFoundationModelsError("Expected integer", code: .invalidSchema) {
+                _ = try FoundationModelsSchemaConverter.parse(parsed, name: "tool")
+            }
+        }
+        // The sanitizer keeps wide bounds instead of dropping them as invalid.
+        let (sanitized, notices) = FoundationModelsSchemaConverter.sanitize(
+            try json(#"{"type":"integer","maximum":18446744073709551615}"#),
+            path: "n"
+        )
+        #expect(notices.isEmpty)
+        #expect(sanitized["maximum"] != nil)
+    }
+
+    @Test
     func sanitizerRewritesAgentToolSchemasIntoTheSupportedSubset() throws {
         let schema = try json(
             """
