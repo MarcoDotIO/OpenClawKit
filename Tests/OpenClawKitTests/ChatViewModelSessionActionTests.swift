@@ -912,7 +912,7 @@ struct ChatViewModelSessionActionTests {
 
         #expect(viewModel.sessionBranches == newBranches)
         firstGate.release()
-        await firstRefresh.value
+        _ = await firstRefresh.value
 
         #expect(viewModel.sessionBranches == newBranches)
         #expect(viewModel.isLoadingSessionBranches == false)

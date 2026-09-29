@@ -53,8 +53,7 @@ struct ChatModelSignInTests {
     @Test func `closing during admission cancels the old wizard without publishing into the new session`() async throws {
         let started = AsyncStream<Void>.makeStream()
         var pendingLogin: CheckedContinuation<Data, Never>?
-        var current = true
-        var admitted = false
+        let flags = SignInTestFlags()
         var statusReads = 0
         var newSessionCatalogRefreshes = 0
         var cancelledSessionIDs: [String] = []
@@ -75,7 +74,7 @@ struct ChatModelSignInTests {
                 case "wizard.cancel":
                     try cancelledSessionIDs.append(#require(params["sessionId"]?.stringValue))
                     #expect(params["closeInput"]?.boolValue == true)
-                    if !admitted {
+                    if !flags.admitted {
                         throw GatewayResponseError(
                             method: method, code: "INVALID_REQUEST", message: "Not admitted yet",
                             details: ["code": AnyCodable("WIZARD_NOT_FOUND")])
@@ -86,7 +85,7 @@ struct ChatModelSignInTests {
                     throw CancellationError()
                 }
             },
-            isCurrent: { current })
+            isCurrent: { flags.current })
         let model = ChatModelSignInModel(context: context, onAuthChanged: { newSessionCatalogRefreshes += 1 })
         await model.refresh()
         let option = try #require(model.authStatus?.loginOptions.first)
@@ -95,9 +94,9 @@ struct ChatModelSignInTests {
         _ = await events.next()
         let oldSessionID = try #require(model.sessionID)
         let response = try JSONEncoder().encode(WizardStartResult(sessionid: oldSessionID, done: false))
-        current = false
+        flags.current = false
         await model.close()
-        admitted = true
+        flags.admitted = true
         pendingLogin?.resume(returning: response)
         await login.value
         started.continuation.finish()
@@ -181,4 +180,11 @@ struct ChatModelSignInTests {
         #expect(statusReads == 2)
         #expect(catalogRefreshes == 1)
     }
+}
+
+/// Main-actor flags the admission test flips after the sign-in context's `@Sendable` closures capture them.
+@MainActor
+private final class SignInTestFlags {
+    var current = true
+    var admitted = false
 }
