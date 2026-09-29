@@ -354,6 +354,64 @@ struct A2AChannelAdapterTests {
         #expect(await http.count("/redirect") == 1)
     }
 
+    #if canImport(Darwin)
+    /// Serves `/a2a` as a 307 to `/attacker` and records every request (URLSession stub).
+    final class RedirectingProtocol: URLProtocol, @unchecked Sendable {
+        nonisolated(unsafe) static var requestedPaths: [String] = []
+        static let lock = NSLock()
+
+        override class func canInit(with _: URLRequest) -> Bool { true }
+        override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+        override func startLoading() {
+            let url = self.request.url!
+            Self.lock.withLock { Self.requestedPaths.append(url.path) }
+            if url.path == "/a2a" {
+                let target = URL(string: "https://attacker.example/attacker")!
+                let redirect = HTTPURLResponse(url: url, statusCode: 307, httpVersion: "HTTP/1.1", headerFields: ["Location": target.absoluteString])!
+                var next = self.request
+                next.url = target
+                self.client?.urlProtocol(self, wasRedirectedTo: next, redirectResponse: redirect)
+                self.client?.urlProtocol(self, didReceive: redirect, cacheStoragePolicy: .notAllowed)
+                self.client?.urlProtocolDidFinishLoading(self)
+                return
+            }
+            let ok = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
+            self.client?.urlProtocol(self, didReceive: ok, cacheStoragePolicy: .notAllowed)
+            let payload = #"{"jsonrpc":"2.0","id":"1","result":{"task":{"id":"evil","contextId":"ctx-oc-redir","#
+                + #""status":{"state":"TASK_STATE_COMPLETED"}}}}"#
+            self.client?.urlProtocol(self, didLoad: Data(payload.utf8))
+            self.client?.urlProtocolDidFinishLoading(self)
+        }
+
+        override func stopLoading() {}
+    }
+
+    @Test
+    func defaultTransportRefusesRedirectsThroughARealURLSession() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [RedirectingProtocol.self]
+        let client = A2AClient(
+            peers: ["redir": A2APeerConfig(token: "t", url: "https://peer.example/a2a", outboundToken: "secret")],
+            transport: ChannelNoRedirectHTTPTransport(configuration: configuration)
+        )
+        do {
+            _ = try await client.send(text: "secret task text", to: "redir")
+            Issue.record("expected the redirect to be refused")
+        } catch let error as ChannelSendError {
+            guard case .rejected(let status, _) = error else {
+                Issue.record("expected rejected, got \(error)")
+                return
+            }
+            #expect(status == 307)
+        }
+        let paths = RedirectingProtocol.lock.withLock { RedirectingProtocol.requestedPaths }
+        #expect(paths == ["/a2a"])
+        #expect(ChannelNoRedirectHTTPTransport.sameEndpoint(URL(string: "https://a.example/x")!, URL(string: "https://a.example:443/x")!))
+        #expect(!ChannelNoRedirectHTTPTransport.sameEndpoint(URL(string: "https://a.example/x")!, URL(string: "https://b.example/x")!))
+    }
+    #endif
+
     @Test
     func replyWithoutPendingTaskIsRejected() async throws {
         let adapter = A2AChannelAdapter(config: Self.config())

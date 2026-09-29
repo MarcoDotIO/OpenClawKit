@@ -261,7 +261,7 @@ public actor BlueBubblesChannelAdapter: InboundChannelAdapter {
     private func assertWebhookPassword(_ providedPassword: String?) throws {
         let configured = try self.resolvePassword()
         let provided = providedPassword?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard provided == configured else {
+        guard ChannelWebhookSignature.constantTimeEquals(provided, configured) else {
             throw OpenClawCoreError.unavailable("BlueBubbles webhook authentication failed")
         }
     }

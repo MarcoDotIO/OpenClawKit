@@ -55,14 +55,15 @@ public struct ChannelAccessEvaluation: Sendable, Equatable {
     public var decision: ChannelAccessDecision
     /// Decisive reason code.
     public var reasonCode: ChannelAccessReasonCode
-    /// Whether the message is an authorized control command (bypasses mention gating).
+    /// Whether the sender may run commands (control commands and skill commands): admitted DM
+    /// senders, and group senders matching the group allowlist (upstream `commandAuthorized`).
     public var commandAuthorized: Bool
 
     /// Creates an evaluation.
     /// - Parameters:
     ///   - decision: Decision.
     ///   - reasonCode: Decisive reason code.
-    ///   - commandAuthorized: Whether a control command was authorized.
+    ///   - commandAuthorized: Whether the sender may run commands.
     public init(decision: ChannelAccessDecision, reasonCode: ChannelAccessReasonCode, commandAuthorized: Bool = false) {
         self.decision = decision
         self.reasonCode = reasonCode
@@ -82,9 +83,11 @@ public struct ChannelAccessEvaluation: Sendable, Equatable {
 ///
 /// Groups: `disabled` blocks; `open` admits; `allowlist` (default) requires the sender in
 /// `groupAllowFrom`, falling back to `allowFrom` when `groupAllowFrom` is unset (an explicit `[]`
-/// blocks all). Then control commands (`/health`, `/status`, `/help`) need an allowlisted sender,
-/// and `requireMention` (default `true`, per-group overridable) drops unmentioned messages when
-/// the adapter can detect mentions; implicit mentions count when enabled.
+/// blocks all). Then commands (`/health`, `/status`, `/help` plus the caller's
+/// `additionalCommands`, such as `/skill` and skill commands) need an allowlisted sender, and
+/// `requireMention` (default `true`, per-group overridable) drops unmentioned messages when the
+/// adapter can detect mentions; implicit mentions count when enabled. Only allowlisted group
+/// senders are ``ChannelAccessEvaluation/commandAuthorized``.
 public struct ChannelAccessPolicyEvaluator: Sendable {
     /// Control commands handled by the auto-reply engine.
     public static let controlCommands: Set<String> = ["/health", "/status", "/help"]
@@ -111,11 +114,14 @@ public struct ChannelAccessPolicyEvaluator: Sendable {
     ///   - message: Inbound message.
     ///   - config: Resolved messaging policy.
     ///   - store: Pairing store.
+    ///   - additionalCommands: Extra registered commands (for example `/skill` and skill command
+    ///     names) that, like control commands, need an authorized sender in groups.
     /// - Returns: Detailed evaluation.
     public func evaluateDetailed(
         _ message: InboundMessage,
         config: ChannelMessagingPolicyConfig,
-        store: ChannelPairingStore?
+        store: ChannelPairingStore?,
+        additionalCommands: Set<String> = []
     ) async -> ChannelAccessEvaluation {
         let sender = message.senderID?.trimmingCharacters(in: .whitespacesAndNewlines)
         if message.isFromBot {
@@ -134,7 +140,7 @@ public struct ChannelAccessPolicyEvaluator: Sendable {
         if message.chatType == .direct {
             return await self.evaluateDirect(message, sender: sender, config: config, store: store)
         }
-        return self.evaluateGroup(message, sender: sender, config: config)
+        return self.evaluateGroup(message, sender: sender, config: config, additionalCommands: additionalCommands)
     }
 
     // MARK: Direct messages
@@ -206,7 +212,8 @@ public struct ChannelAccessPolicyEvaluator: Sendable {
     private func evaluateGroup(
         _ message: InboundMessage,
         sender: String?,
-        config: ChannelMessagingPolicyConfig
+        config: ChannelMessagingPolicyConfig,
+        additionalCommands: Set<String>
     ) -> ChannelAccessEvaluation {
         func block(_ code: ChannelAccessReasonCode) -> ChannelAccessEvaluation {
             ChannelAccessEvaluation(decision: .block(reason: code.rawValue), reasonCode: code)
@@ -236,7 +243,7 @@ public struct ChannelAccessPolicyEvaluator: Sendable {
             senderReason = .groupPolicyAllowed
         }
 
-        let isCommand = Self.isControlCommand(message.text)
+        let isCommand = Self.isControlCommand(message.text, additionalCommands: additionalCommands)
         if isCommand, !matched {
             return block(.controlCommandUnauthorized)
         }
@@ -251,7 +258,7 @@ public struct ChannelAccessPolicyEvaluator: Sendable {
         if message.eventKind == .userRequest, requireMention, canDetectMention, !effectiveWasMentioned {
             return ChannelAccessEvaluation(decision: .mentionRequired, reasonCode: .mentionRequired)
         }
-        return ChannelAccessEvaluation(decision: .allow, reasonCode: senderReason, commandAuthorized: isCommand)
+        return ChannelAccessEvaluation(decision: .allow, reasonCode: senderReason, commandAuthorized: matched)
     }
 
     // MARK: Helpers
@@ -268,15 +275,28 @@ public struct ChannelAccessPolicyEvaluator: Sendable {
     }
 
     /// Whether text is a control command handled by the auto-reply engine.
-    /// - Parameter text: Message text.
-    /// - Returns: `true` for `/health`, `/status` and `/help` (optionally `@botname`-suffixed).
-    public static func isControlCommand(_ text: String) -> Bool {
+    /// - Parameters:
+    ///   - text: Message text.
+    ///   - additionalCommands: Extra registered commands (`/name`), matched case-insensitively
+    ///     with `_` and `-` treated alike.
+    /// - Returns: `true` for `/health`, `/status`, `/help` and `additionalCommands` (optionally
+    ///   `@botname`-suffixed).
+    public static func isControlCommand(_ text: String, additionalCommands: Set<String> = []) -> Bool {
         let first = text.trimmingCharacters(in: .whitespacesAndNewlines)
             .split(maxSplits: 1, omittingEmptySubsequences: true, whereSeparator: \.isWhitespace)
             .first
             .map { String($0).lowercased() } ?? ""
         let command = first.split(separator: "@", maxSplits: 1).first.map(String.init) ?? first
-        return Self.controlCommands.contains(command)
+        if Self.controlCommands.contains(command) {
+            return true
+        }
+        guard command.hasPrefix("/"), !additionalCommands.isEmpty else { return false }
+        let normalized = Self.normalizedCommandName(command)
+        return additionalCommands.contains { Self.normalizedCommandName($0) == normalized }
+    }
+
+    private static func normalizedCommandName(_ command: String) -> String {
+        command.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().replacingOccurrences(of: "_", with: "-")
     }
 
     /// Normalizes an allowlist entry for matching.

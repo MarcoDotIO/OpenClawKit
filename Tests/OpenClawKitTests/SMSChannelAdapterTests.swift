@@ -39,6 +39,56 @@ struct SMSChannelAdapterTests {
         ChannelHTTP.formEncoded(form)
     }
 
+    static let mediaHex = "0123456789abcdef0123456789ABCDEF"
+
+    @Test
+    func inboundMediaURLsAreBoundToTheAccountAndMessage() {
+        func check(_ raw: String) -> Bool {
+            TwilioSMS.inboundMediaURL(raw, accountSid: "AC123", messageSid: "MM1") != nil
+        }
+        let base = "https://api.twilio.com/2010-04-01/Accounts/AC123/Messages/MM1/Media/ME\(Self.mediaHex)"
+        #expect(check(base))
+        #expect(!check("https://api.twilio.com/2010-04-01/Accounts/ACother/Messages/MM1/Media/ME\(Self.mediaHex)"))
+        #expect(!check("https://api.twilio.com/2010-04-01/Accounts/AC123/Messages/MM2/Media/ME\(Self.mediaHex)"))
+        #expect(!check("https://api.twilio.com/2010-04-01/Accounts.json"))
+        #expect(!check("https://api.twilio.com/2010-04-01/Accounts/AC123/Messages.json"))
+        #expect(!check("https://api.twilio.com:8443/2010-04-01/Accounts/AC123/Messages/MM1/Media/ME\(Self.mediaHex)"))
+        #expect(!check("https://user:pw@api.twilio.com/2010-04-01/Accounts/AC123/Messages/MM1/Media/ME\(Self.mediaHex)"))
+        #expect(!check(base + "?x=1"))
+        #expect(!check("http://api.twilio.com/2010-04-01/Accounts/AC123/Messages/MM1/Media/ME\(Self.mediaHex)"))
+        #expect(!check("https://api.twilio.com/2010-04-01/Accounts/AC123/Messages/MM1/Media/MEzz"))
+    }
+
+    @Test
+    func mediaIsNotDownloadedForAnotherAccountOrANonMediaPath() async throws {
+        let http = ScriptedChannelHTTP()
+        await http.on("/Messages.json", method: "GET", json: #"{"messages":[{"body":"secret history"}]}"#)
+        var policy = ChannelMessagingPolicyConfig()
+        policy.allowFrom = ["*"]
+        let adapter = SMSChannelAdapter(
+            config: Self.config {
+                $0.policy = policy
+                $0.dangerouslyDisableSignatureValidation = true
+            },
+            environment: [:],
+            transport: http
+        )
+        let collector = ChannelEventCollector()
+        await adapter.setInboundHandler { await collector.append($0) }
+        try await adapter.start()
+        let listing = "https://api.twilio.com/2010-04-01/Accounts/AC123/Messages.json"
+        let forged = [("MessageSid", "MM7"), ("AccountSid", "AC123"), ("From", "+15550003333"), ("NumMedia", "1"),
+                      ("MediaUrl0", listing), ("MediaContentType0", "text/plain")]
+        let foreign = [("MessageSid", "MM8"), ("AccountSid", "ACother"), ("From", "+15550003333"), ("NumMedia", "1"),
+                       ("MediaUrl0", "https://api.twilio.com/2010-04-01/Accounts/ACother/Messages/MM8/Media/ME\(Self.mediaHex)")]
+        _ = await adapter.handleWebhook(requestURL: URL(string: Self.publicURL)!, headers: [:], body: Self.body(forged))
+        _ = await adapter.handleWebhook(requestURL: URL(string: Self.publicURL)!, headers: [:], body: Self.body(foreign))
+        try await waitUntil("both delivered") { await collector.messages.count == 2 }
+        await adapter.stop()
+        #expect(await collector.messages.allSatisfy { $0.attachments.isEmpty })
+        #expect(await http.records.isEmpty)
+    }
+
     @Test
     func signatureMatchesTwilioDocumentationVector() {
         let signature = ChannelWebhookSignature.twilioSignature(
@@ -131,7 +181,7 @@ struct SMSChannelAdapterTests {
     @Test
     func mediaIsDownloadedOnlyForAuthorizedSenders() async throws {
         let http = ScriptedChannelHTTP()
-        await http.on("/Media/ME1", response: HTTPResponseData(statusCode: 200, headers: ["Content-Type": "image/jpeg"], body: Data([9, 9])))
+        await http.on("/Media/ME\(Self.mediaHex)", response: HTTPResponseData(statusCode: 200, headers: ["Content-Type": "image/jpeg"], body: Data([9, 9])))
         var policy = ChannelMessagingPolicyConfig()
         policy.allowFrom = ["+1 555 000 3333"]
         let adapter = SMSChannelAdapter(
@@ -145,10 +195,10 @@ struct SMSChannelAdapterTests {
         let collector = ChannelEventCollector()
         await adapter.setInboundHandler { await collector.append($0) }
         try await adapter.start()
-        let mediaURL = "https://api.twilio.com/2010-04-01/Accounts/AC123/Messages/MM1/Media/ME1"
-        let allowed = [("MessageSid", "MM1"), ("From", "+15550003333"), ("NumMedia", "2"), ("MediaUrl0", mediaURL), ("MediaContentType0", "image/jpeg"),
-                       ("MediaUrl1", "https://evil.example.com/x.png")]
-        let stranger = [("MessageSid", "MM2"), ("From", "+15550004444"), ("NumMedia", "1"), ("MediaUrl0", mediaURL)]
+        let mediaURL = "https://api.twilio.com/2010-04-01/Accounts/AC123/Messages/MM1/Media/ME\(Self.mediaHex)"
+        let allowed = [("MessageSid", "MM1"), ("AccountSid", "AC123"), ("From", "+15550003333"), ("NumMedia", "2"), ("MediaUrl0", mediaURL),
+                       ("MediaContentType0", "image/jpeg"), ("MediaUrl1", "https://evil.example.com/x.png")]
+        let stranger = [("MessageSid", "MM2"), ("AccountSid", "AC123"), ("From", "+15550004444"), ("NumMedia", "1"), ("MediaUrl0", mediaURL)]
         _ = await adapter.handleWebhook(requestURL: URL(string: Self.publicURL)!, headers: [:], body: Self.body(allowed))
         _ = await adapter.handleWebhook(requestURL: URL(string: Self.publicURL)!, headers: [:], body: Self.body(stranger))
         try await waitUntil("both delivered") { await collector.messages.count == 2 }
@@ -160,7 +210,7 @@ struct SMSChannelAdapterTests {
         #expect(messages[0].text.contains("could not be included"))
         #expect(messages[1].attachments.isEmpty)
         #expect(messages[1].text.contains("not yet authorized"))
-        let download = try #require(await http.requests("/Media/ME1").first)
+        let download = try #require(await http.requests("/Media/ME\(Self.mediaHex)").first)
         #expect(download.headers["Authorization"] == "Basic " + Data("AC123:tok-secret".utf8).base64EncodedString())
         #expect(await http.count("/x.png") == 0)
     }

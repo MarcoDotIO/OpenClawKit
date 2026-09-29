@@ -234,7 +234,7 @@ public enum ChannelSendError: Error, LocalizedError, Sendable, Equatable {
                 return .unknownOutcome(underlying: urlError.localizedDescription)
             }
         }
-        return .notSent(underlying: String(describing: error), retryAfterMs: nil)
+        return .notSent(underlying: ChannelErrorText.describe(error), retryAfterMs: nil)
     }
 
     /// Parses an HTTP `Retry-After` header (delta seconds or HTTP date) into milliseconds.

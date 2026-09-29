@@ -166,7 +166,7 @@ public struct ChannelGatewayHandlers: Sendable {
                 configured: credentialsConfigured,
                 running: runtime.running,
                 connected: runtime.running && health.status != .offline,
-                lastError: health.lastError ?? runtime.lastError,
+                lastError: (health.lastError ?? runtime.lastError).map(ChannelErrorText.redact),
                 healthState: healthState
             )
             snapshot.lastInboundAt = runtime.lastInboundAt.map(Self.epochMs)
@@ -210,7 +210,7 @@ public struct ChannelGatewayHandlers: Sendable {
             if let reporter = await self.context.registry.adapter(for: entry.id) as? any ChannelTransportHealthReporting {
                 let transport = await reporter.transportHealth()
                 if transport.state == .degraded || transport.state == .blocked, let message = transport.lastError {
-                    issues.append(ChannelStatusIssue(channel: id, kind: .runtime, message: message))
+                    issues.append(ChannelStatusIssue(channel: id, kind: .runtime, message: ChannelErrorText.redact(message)))
                 }
             }
         }
@@ -269,7 +269,7 @@ public struct ChannelGatewayHandlers: Sendable {
                     channel: channel.rawValue,
                     accountID: accountID,
                     kind: .runtime,
-                    message: (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+                    message: ChannelErrorText.describe(error)
                 )
                 payload["statusIssues"] = try AnyCodable(encoding: [issue])
             }
@@ -546,7 +546,7 @@ public struct ChannelGatewayHandlers: Sendable {
             )
         }
         if registered, health.status == .offline, health.consecutiveFailures > 0, let lastError = health.lastError {
-            issues.append(ChannelStatusIssue(channel: id, kind: .runtime, message: lastError))
+            issues.append(ChannelStatusIssue(channel: id, kind: .runtime, message: ChannelErrorText.redact(lastError)))
         }
         return issues
     }

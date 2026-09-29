@@ -125,6 +125,11 @@ private struct WhatsAppWebhookPayload: Decodable {
 }
 
 /// WhatsApp Cloud API channel adapter using Graph API transport.
+///
+/// Route webhook deliveries to ``handleWebhook(headers:body:)``, which verifies Meta's
+/// `X-Hub-Signature-256` with `channels.whatsappCloud.appSecret` before trusting the payload: the
+/// sender id (`from`) is the access-policy boundary (pairing, `allowFrom`), so an unsigned payload
+/// could impersonate an allowlisted number.
 public actor WhatsAppCloudChannelAdapter: InboundChannelAdapter, ChannelConfigurationReporting {
     /// Adapter channel identifier.
     public let id: ChannelID = .whatsapp
@@ -269,7 +274,7 @@ public actor WhatsAppCloudChannelAdapter: InboundChannelAdapter, ChannelConfigur
               let challenge,
               let configured = self.config.webhookVerifyToken,
               !configured.isEmpty,
-              configured == token
+              ChannelWebhookSignature.constantTimeEquals(configured, token)
         else {
             await self.emitDiagnostic(
                 name: "channel.whatsapp.webhook.verify.failed",
@@ -284,7 +289,57 @@ public actor WhatsAppCloudChannelAdapter: InboundChannelAdapter, ChannelConfigur
         return challenge
     }
 
-    /// Handles incoming WhatsApp webhook event payload.
+    /// Verifies and handles one webhook delivery (upstream Meta `X-Hub-Signature-256` check).
+    ///
+    /// With `appSecret` configured, the `X-Hub-Signature-256` header must equal
+    /// `sha256=hex(HMAC-SHA256(appSecret, body))` (constant-time compare), otherwise 401. Without
+    /// an app secret the delivery is rejected (401) unless `dmPolicy` is `open` for everyone
+    /// (no `allowFrom`, or `"*"`), where the sender id grants nothing. Accepted deliveries return
+    /// 200 even when they carry no messages.
+    /// - Parameters:
+    ///   - headers: Request headers (case-insensitive lookup).
+    ///   - body: Raw request body.
+    /// - Returns: HTTP status and body text.
+    public func handleWebhook(headers: [String: String], body: Data) async -> (status: Int, body: String) {
+        guard self.started else {
+            return (503, "WhatsApp Cloud channel is not started")
+        }
+        if let appSecret = self.config.appSecret?.channelTrimmedNonEmpty {
+            let provided = ChannelHTTP.header("X-Hub-Signature-256", in: headers)?.trimmingCharacters(in: .whitespaces) ?? ""
+            let expected = ChannelWebhookSignature.metaSignature(appSecret: appSecret, body: body)
+            guard provided.lowercased().hasPrefix("sha256="),
+                  ChannelWebhookSignature.constantTimeEquals(provided.lowercased(), expected)
+            else {
+                await self.emitDiagnostic(name: "channel.whatsapp.webhook.signature-invalid", metadata: ["channel": self.id.rawValue])
+                return (401, "invalid signature")
+            }
+        } else if !self.acceptsUnsignedWebhooks {
+            await self.emitDiagnostic(name: "channel.whatsapp.webhook.signature-unconfigured", metadata: ["channel": self.id.rawValue])
+            return (401, "channels.whatsappCloud.appSecret is required to verify webhook signatures")
+        }
+        do {
+            try await self.handleWebhookEvent(body)
+        } catch is DecodingError {
+            return (400, "invalid payload")
+        } catch {
+            return (500, "webhook handling failed")
+        }
+        return (200, "OK")
+    }
+
+    /// Unsigned deliveries are only acceptable when the sender id is not an access boundary.
+    private var acceptsUnsignedWebhooks: Bool {
+        let policy = self.config.effectivePolicy
+        guard policy.effectiveDMPolicy == .open else { return false }
+        guard let allowFrom = policy.allowFrom else { return true }
+        return allowFrom.contains { $0.trimmingCharacters(in: .whitespaces) == "*" }
+    }
+
+    /// Handles an already-authenticated WhatsApp webhook event payload.
+    ///
+    /// - Note: This entry point trusts `payload` (including the sender `from`). Use
+    ///   ``handleWebhook(headers:body:)`` for requests from the network, or verify Meta's
+    ///   `X-Hub-Signature-256` yourself before calling it.
     /// - Parameter payload: Raw webhook JSON payload.
     public func handleWebhookEvent(_ payload: Data) async throws {
         guard self.started else {

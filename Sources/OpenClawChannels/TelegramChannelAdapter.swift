@@ -599,7 +599,7 @@ public actor TelegramChannelAdapter: InboundChannelAdapter, ReceiptingChannelAda
                 if error is CancellationError || Task.isCancelled { return }
                 self.health = ChannelTransportHealth(
                     state: .degraded,
-                    lastError: "Telegram getUpdates failed: \((error as? LocalizedError)?.errorDescription ?? String(describing: error))"
+                    lastError: "Telegram getUpdates failed: \(ChannelErrorText.describe(error))"
                 )
                 await ChannelAsync.sleep(milliseconds: self.backoffMs(failures: failures))
             }
@@ -639,7 +639,7 @@ public actor TelegramChannelAdapter: InboundChannelAdapter, ReceiptingChannelAda
             response = try await self.transport.data(for: request)
         } catch {
             throw TelegramPollFailure.transient(
-                "Telegram getUpdates failed: \((error as? LocalizedError)?.errorDescription ?? String(describing: error))"
+                "Telegram getUpdates failed: \(ChannelErrorText.describe(error))"
             )
         }
         let parsed = try? JSONDecoder().decode(TelegramAPIResponse<[TelegramUpdate]>.self, from: response.body)
@@ -805,7 +805,7 @@ public actor TelegramChannelAdapter: InboundChannelAdapter, ReceiptingChannelAda
             self.webhookCleared = true
         } catch {
             // Upstream continues to polling so getUpdates can confirm the webhook state.
-            await self.emitDiagnostic("telegram.webhook.clear_failed", ["error": String(describing: error)])
+            await self.emitDiagnostic("telegram.webhook.clear_failed", ["error": ChannelErrorText.describe(error)])
         }
     }
 

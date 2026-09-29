@@ -639,6 +639,10 @@ public struct WhatsAppCloudChannelConfig: ChannelSectionConfig {
     public var businessAccountID: String?
     /// Webhook verify token (plaintext, env template or SecretRef).
     public var webhookVerifyTokenInput: SecretInput?
+    /// Meta app secret that signs webhook deliveries (`X-Hub-Signature-256`; plaintext, env
+    /// template or SecretRef). Required by `WhatsAppCloudChannelAdapter.handleWebhook(headers:body:)`
+    /// unless `dmPolicy` is `open` for everyone.
+    public var appSecretInput: SecretInput?
     /// Webhook path exposed by the host app.
     public var webhookPath: String
     /// Graph API base URL.
@@ -664,6 +668,12 @@ public struct WhatsAppCloudChannelConfig: ChannelSectionConfig {
     public var webhookVerifyToken: String? {
         get { self.webhookVerifyTokenInput?.stringValue }
         set { self.webhookVerifyTokenInput = newValue.map(SecretInput.string) }
+    }
+
+    /// Plaintext app secret (`nil` when unset or a SecretRef).
+    public var appSecret: String? {
+        get { self.appSecretInput?.stringValue }
+        set { self.appSecretInput = newValue.map(SecretInput.string) }
     }
 
     /// Creates WhatsApp Cloud API channel settings.
@@ -693,6 +703,7 @@ public struct WhatsAppCloudChannelConfig: ChannelSectionConfig {
         self.phoneNumberID = phoneNumberID
         self.businessAccountID = businessAccountID
         self.webhookVerifyTokenInput = webhookVerifyToken.map(SecretInput.string)
+        self.appSecretInput = nil
         self.webhookPath = webhookPath
         self.baseURL = baseURL
         self.apiVersion = apiVersion
@@ -709,7 +720,7 @@ public struct WhatsAppCloudChannelConfig: ChannelSectionConfig {
 
     private static let writtenKeys: Set<String> = [
         "enabled", "accessToken", "phoneNumberID", "phoneNumberId", "businessAccountID", "businessAccountId",
-        "webhookVerifyToken", "webhookPath", "baseURL", "baseUrl", "apiVersion",
+        "webhookVerifyToken", "appSecret", "webhookPath", "baseURL", "baseUrl", "apiVersion",
     ]
 
     /// Policy for WhatsApp Cloud messages.
@@ -727,6 +738,7 @@ public struct WhatsAppCloudChannelConfig: ChannelSectionConfig {
         self.phoneNumberID = reader.value(ChannelLooseStringEntry.self, "phoneNumberID", "phoneNumberId")?.value
         self.businessAccountID = reader.value(ChannelLooseStringEntry.self, "businessAccountID", "businessAccountId")?.value
         self.webhookVerifyTokenInput = reader.secret("webhookVerifyToken")
+        self.appSecretInput = reader.secret("appSecret")
         self.webhookPath = reader.value(String.self, "webhookPath") ?? "/webhooks/whatsapp"
         self.baseURL = reader.value(String.self, "baseURL", "baseUrl") ?? "https://graph.facebook.com"
         self.apiVersion = reader.value(String.self, "apiVersion") ?? "v20.0"
@@ -745,6 +757,7 @@ public struct WhatsAppCloudChannelConfig: ChannelSectionConfig {
         try writer.encodeIfPresent(self.phoneNumberID, "phoneNumberID")
         try writer.encodeIfPresent(self.businessAccountID, "businessAccountID")
         try writer.encodeIfPresent(self.webhookVerifyTokenInput, "webhookVerifyToken")
+        try writer.encodeIfPresent(self.appSecretInput, "appSecret")
         try writer.encode(self.webhookPath, "webhookPath")
         try writer.encode(self.baseURL, "baseURL")
         try writer.encode(self.apiVersion, "apiVersion")
@@ -1041,9 +1054,10 @@ public struct GoogleChatChannelConfig: ChannelSectionConfig {
     public var webhookPath: String
     /// Polling interval used for fallback polling paths.
     public var pollIntervalMs: Int
-    /// Audience type for inbound token verification.
+    /// Audience type for inbound token verification (upstream parity; the SDK adapter does not
+    /// verify the bearer JWT, so the host must enforce it).
     public var audienceType: GoogleChatAudienceType?
-    /// Audience value.
+    /// Audience value for inbound token verification (enforced by the host, see ``audienceType``).
     public var audience: String?
     /// App principal.
     public var appPrincipal: String?

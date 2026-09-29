@@ -176,6 +176,45 @@ struct ChannelAccessPolicyTests {
     }
 
     @Test
+    func skillCommandsInGroupsNeedAnAuthorizedSender() async {
+        let open = ChannelMessagingPolicyConfig(groupPolicy: .open)
+        let skills: Set<String> = ["/skill", "/deploy-now"]
+        let stranger = await self.evaluator.evaluateDetailed(
+            self.group(text: "/skill deploy --force", mentioned: false),
+            config: open,
+            store: nil,
+            additionalCommands: skills
+        )
+        #expect(stranger.reasonCode == .controlCommandUnauthorized)
+        let suffixed = await self.evaluator.evaluateDetailed(
+            self.group(text: "/Deploy_Now@openclaw_bot target", mentioned: false),
+            config: open,
+            store: nil,
+            additionalCommands: skills
+        )
+        #expect(suffixed.reasonCode == .controlCommandUnauthorized)
+        // Plain text from the same sender is admitted but not authorized to run commands.
+        let chatter = await self.evaluate(self.group(text: "what does deploy do?", mentioned: true), open)
+        #expect(chatter.decision == .allow)
+        #expect(chatter.commandAuthorized == false)
+
+        let allowlisted = ChannelMessagingPolicyConfig(groupPolicy: .open, groupAllowFrom: ["42"])
+        let command = await self.evaluator.evaluateDetailed(
+            self.group(text: "/deploy-now", mentioned: false),
+            config: allowlisted,
+            store: nil,
+            additionalCommands: skills
+        )
+        #expect(command.decision == .allow)
+        #expect(command.commandAuthorized)
+        let plain = await self.evaluate(self.group(text: "hello", mentioned: true), allowlisted)
+        #expect(plain.commandAuthorized)
+        #expect(ChannelAccessPolicyEvaluator.isControlCommand("/skill x", additionalCommands: skills))
+        #expect(ChannelAccessPolicyEvaluator.isControlCommand("/unknown", additionalCommands: skills) == false)
+        #expect(ChannelAccessPolicyEvaluator.isControlCommand("skill x", additionalCommands: skills) == false)
+    }
+
+    @Test
     func botSendersNeedAllowBots() async {
         var bot = self.dm()
         bot.isFromBot = true

@@ -242,6 +242,12 @@ public actor GoogleChatChannelAdapter: InboundChannelAdapter, ReceiptingChannelA
     }
 
     /// Handles inbound webhook event payload from Google Chat.
+    ///
+    /// - Note: The adapter checks only the legacy `verificationToken` (constant-time) when one is
+    ///   configured. It does not verify Google's `Authorization: Bearer` JWT (`audienceType` and
+    ///   `audience` are not enforced here): hosts must verify that token (issuer
+    ///   `chat@system.gserviceaccount.com`, audience = the configured project number or app URL)
+    ///   before calling this method, because the payload's sender is the access-policy boundary.
     /// - Parameter payload: Raw webhook JSON payload.
     public func handleWebhookEvent(_ payload: Data) async throws {
         guard self.started else {
@@ -252,7 +258,7 @@ public actor GoogleChatChannelAdapter: InboundChannelAdapter, ReceiptingChannelA
            !configuredToken.isEmpty
         {
             let inboundToken = event.token?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            guard inboundToken == configuredToken else {
+            guard ChannelWebhookSignature.constantTimeEquals(inboundToken, configuredToken) else {
                 return
             }
         }

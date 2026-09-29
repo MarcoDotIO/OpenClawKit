@@ -43,6 +43,7 @@ public extension ChannelsConfig {
         check(self.telegram.webhookSecretInput, "channels.telegram.webhookSecret")
         check(self.whatsappCloud.accessTokenInput, "channels.whatsappCloud.accessToken")
         check(self.whatsappCloud.webhookVerifyTokenInput, "channels.whatsappCloud.webhookVerifyToken")
+        check(self.whatsappCloud.appSecretInput, "channels.whatsappCloud.appSecret")
         check(self.slack.botTokenInput, "channels.slack.botToken")
         check(self.slack.appTokenInput, "channels.slack.appToken")
         check(self.slack.signingSecretInput, "channels.slack.signingSecret")

@@ -81,7 +81,8 @@ public actor A2AChannelAdapter: InboundChannelAdapter, ReceiptingChannelAdapter,
     ///   - agentIDs: Configured agent ids (filtered by `exposeAgents` in the Agent Card).
     ///   - instanceName: Agent Card name (default `OpenClaw`).
     ///   - version: Agent Card version.
-    ///   - transport: HTTP transport for outbound peer calls.
+    ///   - transport: HTTP transport for outbound peer calls (must not follow redirects; the default
+    ///     ``A2AClient/defaultTransport()`` refuses them).
     ///   - taskStore: Task store.
     ///   - now: Clock for rate limiting.
     public init(
@@ -90,7 +91,7 @@ public actor A2AChannelAdapter: InboundChannelAdapter, ReceiptingChannelAdapter,
         agentIDs: [String] = ["main"],
         instanceName: String? = nil,
         version: String = A2AAgentCard.defaultVersion,
-        transport: any ChannelHTTPTransport = HTTPClient(),
+        transport: any ChannelHTTPTransport = A2AClient.defaultTransport(),
         taskStore: A2ATaskStore = A2ATaskStore(),
         now: @escaping @Sendable () -> Date = { Date() }
     ) {

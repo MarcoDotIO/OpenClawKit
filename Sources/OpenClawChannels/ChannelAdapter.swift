@@ -462,7 +462,7 @@ public actor ChannelRegistry {
             await self.emitDiagnostic(name: "channel.started", metadata: ["channel": id.rawValue])
         } catch {
             state.running = false
-            state.lastError = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+            state.lastError = ChannelErrorText.describe(error)
             self.runtimeStates[id] = state
             await self.emitDiagnostic(name: "channel.start_failed", metadata: ["channel": id.rawValue])
             throw error
@@ -502,7 +502,7 @@ public actor ChannelRegistry {
             do {
                 try await self.start(id: id)
             } catch {
-                failures[id] = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+                failures[id] = ChannelErrorText.describe(error)
             }
         }
         return failures
@@ -524,7 +524,8 @@ public actor ChannelRegistry {
         guard let adapter = self.adapters[id] else {
             return ChannelProbeResult(ok: false, supported: false, detail: "no adapter registered")
         }
-        let result = await adapter.probe(timeoutMs: timeoutMs)
+        var result = await adapter.probe(timeoutMs: timeoutMs)
+        result.detail = result.detail.map(ChannelErrorText.redact)
         var state = self.runtimeStates[id] ?? ChannelRuntimeState()
         state.lastProbe = result
         self.runtimeStates[id] = state
@@ -628,11 +629,10 @@ public actor ChannelRegistry {
                         "attempt": String(attempt),
                         "nextAttempt": String(attempt + 1),
                         "backoffMs": String(delayMs),
-                        "error": String(describing: error),
+                        "error": ChannelErrorText.describe(error),
                     ]
                 )
-                let sleepNs = UInt64(max(1, delayMs)) * 1_000_000
-                try? await Task.sleep(nanoseconds: sleepNs)
+                await ChannelAsync.sleep(milliseconds: max(1, delayMs))
                 let grown = Int(Double(backoffMs) * self.sendRetryPolicy.backoffMultiplier)
                 backoffMs = min(self.sendRetryPolicy.maxBackoffMs, max(1, grown))
             }
@@ -810,7 +810,7 @@ public actor ChannelRegistry {
     private func recordSendFailure(channelID: ChannelID, error: Error, terminal: Bool) {
         let previous = self.healthSnapshots[channelID] ?? ChannelHealthSnapshot(channelID: channelID, status: .offline)
         let failureCount = previous.consecutiveFailures + 1
-        let errorDetail = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+        let errorDetail = ChannelErrorText.describe(error)
         self.healthSnapshots[channelID] = ChannelHealthSnapshot(
             channelID: channelID,
             status: terminal ? .offline : .degraded,
@@ -825,8 +825,7 @@ public actor ChannelRegistry {
     }
 
     private func mapDeliveryError(error: Error?) -> String {
-        let detail = (error as? LocalizedError)?.errorDescription ?? String(describing: error ?? OpenClawCoreError.unavailable("unknown"))
-        return detail
+        ChannelErrorText.describe(error ?? OpenClawCoreError.unavailable("unknown"))
     }
 
     private func emitDiagnostic(name: String, metadata: [String: String]) async {

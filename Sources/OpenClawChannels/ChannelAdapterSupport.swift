@@ -241,7 +241,7 @@ enum ChannelAsync {
         } catch {
             return ChannelProbeResult(
                 ok: false,
-                detail: (error as? LocalizedError)?.errorDescription ?? String(describing: error),
+                detail: ChannelErrorText.describe(error),
                 latencyMs: Int(Date().timeIntervalSince(started) * 1_000)
             )
         }
