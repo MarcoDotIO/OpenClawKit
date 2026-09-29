@@ -126,6 +126,10 @@ public actor PluginRegistry {
     private var embeddingProviders: [String: (pluginID: String, provider: any MemoryEmbeddingProvider)] = [:]
     private var skillRoots: [(pluginID: String, url: URL)] = []
     private var generation = 0
+    private var changeListeners: [UUID: ChangeListener] = [:]
+
+    /// Called after the plugin set changes (load, unload, enable/disable) with the new catalog generation.
+    public typealias ChangeListener = @Sendable (_ generation: Int) async -> Void
 
     /// Creates a plugin registry.
     /// - Parameters:
@@ -168,7 +172,7 @@ public actor PluginRegistry {
             self.records[id]?.error = error.localizedDescription
             throw error
         }
-        self.generation += 1
+        await self.bumpGeneration()
     }
 
     /// Unloads a plugin: removes its tools, hooks, gateway methods, services (stopped), MCP servers,
@@ -179,7 +183,7 @@ public actor PluginRegistry {
         self.records.removeValue(forKey: pluginID)
         self.order.removeAll { $0 == pluginID }
         self.legacyToolNames.removeValue(forKey: pluginID)
-        self.generation += 1
+        await self.bumpGeneration()
     }
 
     /// Enables or disables a plugin; disabling removes its registrations, enabling re-runs `register(api:)`.
@@ -213,7 +217,32 @@ public actor PluginRegistry {
             record.state = .disabled
             self.records[pluginID] = record
         }
+        await self.bumpGeneration()
+    }
+
+    /// Adds a listener called after every plugin set change (load, unload, enable/disable), for example
+    /// to broadcast `plugins.changed` (``attachPluginRegistry(_:to:)`` does this for a gateway server).
+    /// - Parameter listener: Listener receiving the new catalog generation.
+    /// - Returns: Token for ``removeChangeListener(_:)``.
+    @discardableResult
+    public func addChangeListener(_ listener: @escaping ChangeListener) -> UUID {
+        let id = UUID()
+        self.changeListeners[id] = listener
+        return id
+    }
+
+    /// Removes a listener added with ``addChangeListener(_:)``.
+    /// - Parameter id: Listener token.
+    public func removeChangeListener(_ id: UUID) {
+        self.changeListeners.removeValue(forKey: id)
+    }
+
+    private func bumpGeneration() async {
         self.generation += 1
+        let generation = self.generation
+        for listener in self.changeListeners.values {
+            await listener(generation)
+        }
     }
 
     /// Registers a plugin identifier without a plugin instance (legacy).
