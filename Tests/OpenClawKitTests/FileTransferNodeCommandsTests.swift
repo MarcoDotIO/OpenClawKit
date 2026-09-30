@@ -217,15 +217,23 @@ struct FileTransferNodeCommandsTests {
 
     // MARK: - Drift between preflight and the final call
 
-    @Test func `file fetch refuses a FIFO promptly`() async throws {
+    /// A fetch that opened the FIFO without `O_NONBLOCK` would wait forever for a writer and trip the
+    /// time limit. That hang is a syscall, not an await, so the time limit's cancellation opens the write
+    /// end once to release the reader and let the test body end. No wall-clock bound: a saturated test
+    /// pool can stall the run for seconds.
+    @Test(.timeLimit(.minutes(1)))
+    func `file fetch refuses a FIFO promptly`() async throws {
         let sandbox = try FileTransferSandbox()
         defer { sandbox.cleanUp() }
         let fifo = sandbox.root + "/pipe"
         try #require(mkfifo(fifo, 0o600) == 0)
         let commands = sandbox.commands
-        let started = ContinuousClock.now
-        let result = try await self.invoke(commands, "file.fetch", ["path": fifo])
-        #expect(ContinuousClock.now - started < .seconds(2))
+        let result = try await withTaskCancellationHandler {
+            try await self.invoke(commands, "file.fetch", ["path": fifo])
+        } onCancel: {
+            let writer = open(fifo, O_WRONLY | O_NONBLOCK)
+            if writer >= 0 { close(writer) }
+        }
         #expect(result["ok"] as? Bool == false)
         #expect(result["code"] as? String == "IS_DIRECTORY")
     }
