@@ -250,7 +250,9 @@ struct GatewayTransportE2ETests {
         #expect(counter.get() == baseline)
     }
 
-    @Test
+    /// No wall-clock bound on the reconnect wait: a saturated test pool can stall the run for seconds. The
+    /// time limit ends the wait if the client stops reconnecting.
+    @Test(.timeLimit(.minutes(1)))
     func reconnectFailureSchedulesAnotherAttempt() async throws {
         let counter = Counter()
         let client = GatewayClient(
@@ -272,9 +274,8 @@ struct GatewayTransportE2ETests {
         try await client.connect(to: GatewayEndpoint(url: URL(string: "ws://127.0.0.1:18789")!))
         // Wait for the third socket (stale tick -> reconnect -> connect failure -> another attempt)
         // instead of a fixed 220 ms, which slower CI runners can overrun.
-        let deadline = Date().addingTimeInterval(10)
-        while counter.get() <= 2, Date() < deadline {
-            try await Task.sleep(nanoseconds: 10_000_000)
+        while counter.get() <= 2, !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 10_000_000)
         }
         #expect(counter.get() > 2)
         await client.disconnect()
