@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-## 2026.3.1 - 2026-09-29
+## 2026.3.1 - 2026-09-30
 
 OpenClawKit 2026.3.1 adds [Sign in with ChatGPT](https://developers.openai.com/siwc)
 (SIWC): people sign in with their ChatGPT account and run eligible inference on
@@ -70,6 +70,29 @@ breaking changes, and the upstream parity target stays OpenClaw `2026.9.6`
   parent directory is created with `0700`.
 - The Responses stream parser records the error code of `response.failed` and
   `error` events.
+- `InteractiveAuthFlowCatalog.descriptors` lists a `chatgpt-plan` browser OAuth
+  descriptor ("Sign in with ChatGPT") between the upstream flows and the SDK
+  device-code flows, so code that iterates the catalog sees one more entry.
+
+### Tests
+
+- 3,752 macOS tests pass under `swift test` (Swift Testing: 3,150 in
+  `OpenClawKitTests`, 582 in `OpenClawLinuxRuntimeTests`, 20 E2E), and 571 Linux
+  tests (`OpenClawLinuxRuntimeTests`) pass in the Swift 6.2 Docker gate.
+- New offline suites `SignInWithChatGPTAuthorizationTests`,
+  `SignInWithChatGPTSessionTests` and `ChatGPTPlanModelProviderTests` run on
+  macOS and Linux against a scripted authorization server, fixed RS256 fixtures
+  and a real loopback round trip. `SignInWithChatGPTAppleTests` covers private
+  credential files, RFC 9278 host ids from a device identity and the SwiftUI
+  usage-limit routing.
+- Sign in with ChatGPT has no live suite: signing in needs a person in a
+  browser.
+- Release gates: all 13 required CI checks passed on the release tree
+  (SwiftLint, generator and fixture drift, the Linux Swift 6.2 validation, macOS
+  build and tests with Xcode 27, the Apple platform matrix on all five
+  platforms, the `ExperimentalAppleModelDelegation` trait build, the iOS and
+  tvOS example builds and the DocC site build), as did the non-required Xcode 26
+  compatibility build and CodeQL.
 
 ## 2026.3.0 - 2026-09-29
 
