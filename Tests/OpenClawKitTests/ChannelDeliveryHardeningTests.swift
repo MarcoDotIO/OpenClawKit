@@ -9,7 +9,7 @@ import Testing
 
 /// 2026.3.0 FX6 regressions: partial multi-part delivery, ambiguous 5xx, remote numeric input,
 /// iMessage post-write failures and media budgets.
-@Suite("Channel delivery hardening")
+@Suite("Channel delivery hardening", .timeLimit(.minutes(1)))
 struct ChannelDeliveryHardeningTests {
     actor OffsetStore: TelegramUpdateOffsetStore {
         func readLastUpdateID() async -> Int64? { nil }

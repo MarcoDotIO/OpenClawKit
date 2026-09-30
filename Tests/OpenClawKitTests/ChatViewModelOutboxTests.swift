@@ -832,7 +832,7 @@ actor ScriptedOutbox: OpenClawChatCommandOutbox {
 }
 
 // Serialized: every case opens a real SQLite outbox (see ChatTranscriptCacheStoreTests).
-@Suite(.serialized)
+@Suite(.serialized, .timeLimit(.minutes(1)))
 struct ChatViewModelOutboxTests {
     @Test func `offline send queues durably and renders queued row`() async throws {
         let (store, _, databaseDirectory) = try makeOutboxStore()
@@ -1714,7 +1714,7 @@ struct ChatViewModelOutboxTests {
             vm.messages.first { vm.outboxState(for: $0.id)?.isFailed == true }?.id
         })
         await MainActor.run { vm.retryOutboxMessage(failedMessageID) }
-        try await waitUntil("retried command drained", timeoutSeconds: 30) {
+        try await waitUntil("retried command drained") {
             await store.loadCommands().isEmpty
         }
         #expect(await transport.state.sentIdempotencyKeys.count == 1)
@@ -1856,7 +1856,7 @@ struct ChatViewModelOutboxTests {
 
         let messageID = try #require(await MainActor.run { vm.messages.last?.id })
         await MainActor.run { vm.retryOutboxMessage(messageID) }
-        try await waitUntil("explicit retry drained", timeoutSeconds: 10) {
+        try await waitUntil("explicit retry drained") {
             await store.loadCommands().isEmpty
         }
         #expect(await transport.state.sentIdempotencyKeys == [preserved.id])

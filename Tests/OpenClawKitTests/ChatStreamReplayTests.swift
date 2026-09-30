@@ -372,6 +372,7 @@ Closing paragraph with unicode — dashes, émojis 🦀🚀, and a trailing line
 /// Covers streaming accumulation, provisional-final reconciliation against durable
 /// `session.message` rows, duplicate delivery, out-of-order arrival, and reconnect
 /// convergence. Tracking: #100196.
+@Suite(.timeLimit(.minutes(1)))
 struct ChatStreamReplayTests {
     @Test func `live session message marker produces a visible transcript row`() async throws {
         let harness = try await StreamReplayHarness.bootstrapped()

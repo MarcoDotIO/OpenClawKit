@@ -511,6 +511,7 @@ private struct BatchTestError: LocalizedError {
 }
 
 @MainActor
+@Suite(.timeLimit(.minutes(1)))
 struct ChatViewModelSessionActionTests {
     @Test func `batch mutations continue after per-row failure with bounded fan-out`() async {
         let probe = BatchMutationProbe()
@@ -1402,81 +1403,38 @@ struct ChatViewModelSessionActionTests {
         #expect(await transport.forkedParentKeys() == ["main"])
     }
 
-    private func waitForForkStart(
-        _ gate: SessionActionCompletionGate,
-        timeout: Duration = .seconds(15)) async -> Bool
-    {
-        // The stream controls ordering; this deadline only bounds a broken fake or call path.
-        await withTaskGroup(of: Bool.self) { group in
-            group.addTask { await gate.waitUntilStarted() }
-            group.addTask {
-                try? await Task.sleep(for: timeout)
-                return false
-            }
-            let started = await group.next() ?? false
-            group.cancelAll()
-            return started
+    private func waitForForkStart(_ gate: SessionActionCompletionGate) async -> Bool {
+        // The stream controls ordering; the suite's time limit bounds a broken fake or call path,
+        // and its cancellation ends the stream wait with `false`.
+        await gate.waitUntilStarted()
+    }
+
+    private func waitForBranchSwitchActivityToClear(_ viewModel: OpenClawChatViewModel) async -> Bool {
+        await self.eventually { viewModel.hasBlockingRunActivity == false }
+    }
+
+    private func waitForOutboxRestore(_ viewModel: OpenClawChatViewModel) async -> Bool {
+        await self.eventually {
+            viewModel.hasRestoredOutboxMessages && viewModel.hasPendingOutboxCommandsForCurrentSession
         }
     }
 
-    private func waitForBranchSwitchActivityToClear(
-        _ viewModel: OpenClawChatViewModel,
-        timeout: Duration = .seconds(15)) async -> Bool
-    {
-        let clock = ContinuousClock()
-        let deadline = clock.now + timeout
-        while clock.now < deadline {
-            if viewModel.hasBlockingRunActivity == false {
-                return true
-            }
-            await Task.yield()
-        }
-        return false
-    }
-
-    private func waitForOutboxRestore(
-        _ viewModel: OpenClawChatViewModel,
-        timeout: Duration = .seconds(15)) async -> Bool
-    {
-        let clock = ContinuousClock()
-        let deadline = clock.now + timeout
-        while clock.now < deadline {
-            if viewModel.hasRestoredOutboxMessages,
-               viewModel.hasPendingOutboxCommandsForCurrentSession
-            {
-                return true
-            }
-            await Task.yield()
-        }
-        return false
-    }
-
-    private func waitForSend(
-        _ transport: SessionActionTransport,
-        timeout: Duration = .seconds(15)) async -> Bool
-    {
-        let clock = ContinuousClock()
-        let deadline = clock.now + timeout
-        while clock.now < deadline {
-            if await transport.sentSessionKeys().isEmpty == false {
-                return true
-            }
-            await Task.yield()
-        }
-        return false
+    private func waitForSend(_ transport: SessionActionTransport) async -> Bool {
+        await self.eventually { await transport.sentSessionKeys().isEmpty == false }
     }
 
     private func waitForBranchReload(
         _ viewModel: OpenClawChatViewModel,
-        branches: [OpenClawChatSessionBranch],
-        timeout: Duration = .seconds(15)) async -> Bool
+        branches: [OpenClawChatSessionBranch]) async -> Bool
     {
-        let clock = ContinuousClock()
-        let deadline = clock.now + timeout
-        while clock.now < deadline {
-            if viewModel.sessionBranches == branches, !viewModel.isLoading {
-                return true
-            }
+        await self.eventually { viewModel.sessionBranches == branches && !viewModel.isLoading }
+    }
+
+    /// Yields until `condition` holds. There is no wall-clock deadline, so a saturated test pool only
+    /// slows the wait down; the suite's time limit cancels a real hang, which ends the wait with `false`.
+    private func eventually(_ condition: () async -> Bool) async -> Bool {
+        while !Task.isCancelled {
+            if await condition() { return true }
             await Task.yield()
         }
         return false

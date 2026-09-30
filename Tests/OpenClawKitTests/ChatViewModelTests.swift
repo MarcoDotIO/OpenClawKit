@@ -1667,6 +1667,7 @@ private actor SwarmCapabilityScript {
     }
 }
 
+@Suite(.timeLimit(.minutes(1)))
 struct ChatViewModelTests {
     @Test func `legacy plan renders only when progress card store is unavailable`() async throws {
         let (_, vm) = await makeViewModel(
@@ -3853,7 +3854,7 @@ struct ChatViewModelTests {
             await historyCalls.current() >= 2
         }
         #expect(await MainActor.run { vm.pendingRunCount == 1 })
-        try await waitUntil("post-send fallback keeps known run ownership", timeoutSeconds: 7.0) {
+        try await waitUntil("post-send fallback keeps known run ownership") {
             let historyCount = await historyCalls.current()
             let pendingRunCount = await MainActor.run { vm.pendingRunCount }
             return historyCount >= 3 && pendingRunCount == 1
@@ -10833,7 +10834,7 @@ struct ChatViewModelTests {
             await staleFallbackReleasedCount.current() == 1
         }
 
-        try await waitUntil("later fallback still runs", timeoutSeconds: 7.0) {
+        try await waitUntil("later fallback still runs") {
             await mainHistoryCount.current() >= 5
         }
         try await waitUntil("later fallback applies assistant reply") {
@@ -14032,7 +14033,7 @@ struct ChatViewModelTests {
     }
 }
 
-@Suite(.serialized)
+@Suite(.serialized, .timeLimit(.minutes(1)))
 struct ChatViewModelSessionManagementTests {
     @Test @MainActor func `session list organizer orders pinned first with key tiebreak`() {
         let organized = OpenClawChatSessionListOrganizer.organize([

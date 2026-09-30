@@ -5,7 +5,7 @@ import FoundationNetworking
 import Testing
 @testable import OpenClawKit
 
-@Suite("Channel adapters E2E")
+@Suite("Channel adapters E2E", .timeLimit(.minutes(1)))
 struct ChannelAdaptersE2ETests {
     actor TelegramInboundCollector {
         private(set) var messages: [InboundMessage] = []
@@ -115,14 +115,26 @@ struct ChannelAdaptersE2ETests {
         #expect(sent.first?.text == "pong")
     }
 
-    /// Polls a condition instead of sleeping a fixed interval (fixed sleeps flaked under load).
-    static func waitFor(timeoutSeconds: Double = 15, _ condition: @escaping @Sendable () async -> Bool) async throws {
-        let deadline = Date().addingTimeInterval(timeoutSeconds)
-        while Date() < deadline {
-            if await condition() { return }
-            try await Task.sleep(nanoseconds: 10_000_000)
+    struct WaitTimeout: Error, CustomStringConvertible {
+        let label: String
+        var description: String {
+            "Timeout waiting for: \(self.label)"
         }
-        #expect(await condition(), "timed out waiting for condition")
+    }
+
+    /// Polls a condition instead of sleeping a fixed interval (fixed sleeps flaked under load).
+    ///
+    /// There is no wall-clock deadline either: a saturated test pool must only slow the wait down. The
+    /// suite's `.timeLimit` cancels a real hang, which ends the wait with ``WaitTimeout``.
+    static func waitFor(_ label: String, _ condition: @escaping @Sendable () async -> Bool) async throws {
+        while !Task.isCancelled {
+            if await condition() { return }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        // Swift Testing drops errors thrown after a time-limit cancellation, so record which wait hung.
+        let timeout = WaitTimeout(label: label)
+        Issue.record(timeout)
+        throw timeout
     }
 
     @Test
@@ -150,7 +162,7 @@ struct ChannelAdaptersE2ETests {
             await collector1.append(inbound)
         }
         try await adapter1.start()
-        try await Self.waitFor { await !collector1.snapshot().isEmpty }
+        try await Self.waitFor("first run delivered") { await !collector1.snapshot().isEmpty }
         await adapter1.stop()
 
         let collector2 = TelegramInboundCollector()
@@ -164,7 +176,7 @@ struct ChannelAdaptersE2ETests {
             await collector2.append(inbound)
         }
         try await adapter2.start()
-        try await Self.waitFor { await !collector2.snapshot().isEmpty }
+        try await Self.waitFor("second run delivered") { await !collector2.snapshot().isEmpty }
         await adapter2.stop()
 
         let firstRun = await collector1.snapshot()

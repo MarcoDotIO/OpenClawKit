@@ -5,7 +5,7 @@ import FoundationNetworking
 import Testing
 @testable import OpenClawKit
 
-@Suite("Signal channel adapter")
+@Suite("Signal channel adapter", .timeLimit(.minutes(1)))
 struct SignalChannelAdapterTests {
     /// Container WebSocket upgrades fail, so these tests exercise the GET /v1/receive fallback.
     struct NoWebSocketConnector: ChannelWebSocketConnecting {

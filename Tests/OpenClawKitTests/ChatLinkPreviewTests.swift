@@ -1,5 +1,6 @@
 import Foundation
 import ImageIO
+import OpenClawKit
 import Testing
 import UniformTypeIdentifiers
 @testable import OpenClawChatUI
@@ -212,9 +213,17 @@ struct ChatLinkPreviewNetworkTests {
             #expect(ChatLinkPreviewStubURLProtocol.lastAcceptHeader == "text/html")
         }
 
-        @Test func `total deadline can fire before the session starts`() async throws {
+        /// The protocol never answers and URLSession's own timeouts sit past the time limit, so only the
+        /// fetcher's zero-second deadline can end the fetch in time. A deadline lost before `start` could
+        /// leave the fetch unresumed even on cancellation, so it is awaited through a no-deadline
+        /// `AsyncTimeout` race, which the time limit's cancellation always ends. No wall-clock bound: a
+        /// saturated test pool can stall the run for seconds.
+        @Test(.timeLimit(.minutes(1)))
+        func `total deadline can fire before the session starts`() async throws {
             let configuration = URLSessionConfiguration.ephemeral
             configuration.protocolClasses = [ChatLinkPreviewHangingURLProtocol.self]
+            configuration.timeoutIntervalForRequest = 3600
+            configuration.timeoutIntervalForResource = 3600
             let fetcher = ChatLinkPreviewFetcher(
                 configuration: configuration,
                 timeout: 0,
@@ -222,11 +231,11 @@ struct ChatLinkPreviewNetworkTests {
                 resolutionPolicy: { _ in true },
                 connectionPolicy: { _ in true })
             let url = try #require(URL(string: "https://preview.test/slow"))
-            let clock = ContinuousClock()
-            let start = clock.now
 
-            #expect(await fetcher.fetch(url) == .failed)
-            #expect(start.duration(to: clock.now) < .seconds(1))
+            let result = try await AsyncTimeout.withTimeout(seconds: 0, onTimeout: { CancellationError() }) {
+                await fetcher.fetch(url)
+            }
+            #expect(result == .failed)
         }
 
         @Test func `image fetch accepts only images and enforces its body cap`() async throws {

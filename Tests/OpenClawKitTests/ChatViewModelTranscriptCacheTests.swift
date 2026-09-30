@@ -177,6 +177,7 @@ private func makeViewModel(
     return vm
 }
 
+@Suite(.timeLimit(.minutes(1)))
 struct ChatViewModelTranscriptCacheTests {
     @Test func `cold open paints cached transcript then live history replaces it`() async throws {
         let cache = TestTranscriptCache(

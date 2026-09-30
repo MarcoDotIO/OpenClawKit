@@ -64,7 +64,7 @@ struct RPCParams: @unchecked Sendable {
     }
 }
 
-@Suite("imsg JSON-RPC transport")
+@Suite("imsg JSON-RPC transport", .timeLimit(.minutes(1)))
 struct IMsgRPCTransportTests {
     static func standardResponder(_ method: String, _: [String: Any]) -> String? {
         switch method {
@@ -231,7 +231,7 @@ struct IMsgRPCTransportTests {
     }
 }
 
-@Suite("iMessage private-API actions and catch-up")
+@Suite("iMessage private-API actions and catch-up", .timeLimit(.minutes(1)))
 struct IMessagePrivateActionsTests {
     @Test
     func actionsUseChatGUIDFromInboundAndTypingDisablesAfterFailure() async throws {

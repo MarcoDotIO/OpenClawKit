@@ -35,8 +35,13 @@ private final class StateDatabaseWriteLock: @unchecked Sendable {
     }
 }
 
-@Suite("Gateway device auth off the channel actor", .serialized)
+@Suite("Gateway device auth off the channel actor", .serialized, .timeLimit(.minutes(1)))
 struct GatewayDeviceAuthOffActorTests {
+    /// Ordering, not elapsed time, proves the actor stayed responsive: the lock is released only after
+    /// the actor answers, so the token can reach disk only if the actor answered while the write was
+    /// still pending. A write on the actor would hold every call until SQLite's 30 s busy timeout fails
+    /// it; the token never lands and the final wait trips the time limit. The only timing left is that
+    /// the healthy write must see the release within the same 30 s busy timeout.
     @Test
     func issuedTokenPersistenceNeverBlocksTheChannelActor() async throws {
         let directory = try gatewayCoreTemporaryStateDirectory()
@@ -59,15 +64,17 @@ struct GatewayDeviceAuthOffActorTests {
                 token: "shared",
                 session: WebSocketSessionBox(session: session),
                 connectOptions: gatewayCoreOptions(includeDeviceIdentity: true))
+            let (persistenceStarts, persistenceStarted) = AsyncStream.makeStream(of: Void.self)
+            await channel._test_setDeviceTokenPersistenceStartedHandler { persistenceStarted.yield() }
             let connect = Task { try await channel.connect() }
-            try await gatewayCoreWaitUntil("write lock held") { writeLock.isHeld }
-            try await Task.sleep(for: .milliseconds(200))
+            // Wait until hello-ok's token is handed to the persistence hop, which shutdown cannot stop.
+            var starts = persistenceStarts.makeAsyncIterator()
+            guard await starts.next() != nil else { throw CancellationError() }
+            try #require(writeLock.isHeld)
 
-            // The token write waits on SQLite's 30 s busy timeout; the actor must stay responsive.
-            let started = ContinuousClock.now
+            // The write cannot finish while the lock is held; the actor must still answer.
             #expect(await channel.currentConnectionGeneration() == nil)
             await channel.shutdown()
-            #expect(ContinuousClock.now - started < .seconds(3))
 
             writeLock.release()
             _ = try? await connect.value

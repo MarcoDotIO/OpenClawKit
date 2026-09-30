@@ -7,7 +7,7 @@ import OpenClawCore
 import OpenClawProtocol
 import Testing
 
-@Suite("Signal adapter 2026.9.6 refresh")
+@Suite("Signal adapter 2026.9.6 refresh", .timeLimit(.minutes(1)))
 struct SignalAdapterRefreshTests {
     struct ScriptedLines: ChannelLineStreaming {
         let lines: [String]

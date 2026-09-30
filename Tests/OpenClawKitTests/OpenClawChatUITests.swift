@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import OpenClawChatUI
 
-@Suite("OpenClaw chat UI")
+@Suite("OpenClaw chat UI", .timeLimit(.minutes(1)))
 struct OpenClawChatUITests {
     @Test
     func chatPayloadDecodingSupportsLegacyStringContentAndUsageFallback() throws {
@@ -77,7 +77,7 @@ struct OpenClawChatUITests {
     }
 
     @Test
-    func chatViewModelBootstrapLoadsHistoryModelsAndSessions() async {
+    func chatViewModelBootstrapLoadsHistoryModelsAndSessions() async throws {
         let transport = MockChatTransport(
             historyBySession: [
                 "main": OpenClawChatHistoryPayload(
@@ -152,7 +152,7 @@ struct OpenClawChatUITests {
             viewModel.load()
         }
 
-        let loaded = await Self.waitUntil {
+        try await waitUntil("bootstrap loaded history, models and sessions") {
             await MainActor.run {
                 !viewModel.isLoading &&
                     viewModel.healthOK &&
@@ -161,7 +161,6 @@ struct OpenClawChatUITests {
             }
         }
 
-        #expect(loaded)
         await MainActor.run {
             #expect(viewModel.thinkingLevel == "high")
             #expect(viewModel.messages.first?.content.first?.text == "Please help.")
@@ -175,7 +174,7 @@ struct OpenClawChatUITests {
     }
 
     @Test
-    func chatViewModelAppliesAgentStreamAndPendingToolEvents() async {
+    func chatViewModelAppliesAgentStreamAndPendingToolEvents() async throws {
         let transport = MockChatTransport(
             historyBySession: [
                 "main": OpenClawChatHistoryPayload(
@@ -226,10 +225,9 @@ struct OpenClawChatUITests {
             viewModel.load()
         }
 
-        let bootstrapped = await Self.waitUntil {
+        try await waitUntil("bootstrap") {
             await MainActor.run { !viewModel.isLoading && viewModel.healthOK }
         }
-        #expect(bootstrapped)
 
         transport.emit(
             .agent(
@@ -243,10 +241,9 @@ struct OpenClawChatUITests {
             )
         )
 
-        let sawStreamingText = await Self.waitUntil {
+        try await waitUntil("streaming text applied") {
             await MainActor.run { viewModel.streamingAssistantText == "streaming reply" }
         }
-        #expect(sawStreamingText)
 
         transport.emit(
             .agent(
@@ -265,10 +262,9 @@ struct OpenClawChatUITests {
             )
         )
 
-        let sawPendingTool = await Self.waitUntil {
+        try await waitUntil("pending tool call applied") {
             await MainActor.run { viewModel.pendingToolCalls.count == 1 }
         }
-        #expect(sawPendingTool)
         await MainActor.run {
             #expect(viewModel.pendingToolCalls.first?.name == "browser")
             #expect(viewModel.pendingToolCalls.first?.args?.dictionaryValue?["url"] == AnyCodable("https://docs.openclaw.ai"))
@@ -290,24 +286,9 @@ struct OpenClawChatUITests {
             )
         )
 
-        let clearedTool = await Self.waitUntil {
+        try await waitUntil("pending tool call cleared") {
             await MainActor.run { viewModel.pendingToolCalls.isEmpty }
         }
-        #expect(clearedTool)
-    }
-
-    private static func waitUntil(
-        timeoutMs: Int = 1_000,
-        condition: @escaping @Sendable () async -> Bool
-    ) async -> Bool {
-        let deadline = Date().addingTimeInterval(Double(timeoutMs) / 1000)
-        while Date() < deadline {
-            if await condition() {
-                return true
-            }
-            try? await Task.sleep(nanoseconds: 10_000_000)
-        }
-        return await condition()
     }
 }
 

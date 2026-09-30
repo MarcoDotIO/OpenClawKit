@@ -5,7 +5,7 @@ import FoundationNetworking
 import Testing
 @testable import OpenClawKit
 
-@Suite("Slack channel adapter")
+@Suite("Slack channel adapter", .timeLimit(.minutes(1)))
 struct SlackChannelAdapterTests {
     actor InboundCollector {
         private(set) var messages: [InboundMessage] = []

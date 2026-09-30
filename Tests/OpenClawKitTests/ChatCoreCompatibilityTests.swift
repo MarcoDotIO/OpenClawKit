@@ -140,7 +140,7 @@ private func bootstrappedViewModel(_ transport: ScriptedEventTransport) async th
     return viewModel
 }
 
-@Suite("Chat core 2026.3.0 compatibility")
+@Suite("Chat core 2026.3.0 compatibility", .timeLimit(.minutes(1)))
 struct ChatCoreCompatibilityTests {
     // MARK: Legacy transport bridge
 

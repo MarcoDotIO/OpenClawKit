@@ -1,4 +1,4 @@
-import Foundation
+import Testing
 
 struct AsyncWaitTimeoutError: Error, CustomStringConvertible {
     let label: String
@@ -7,21 +7,22 @@ struct AsyncWaitTimeoutError: Error, CustomStringConvertible {
     }
 }
 
+/// Polls `condition` until it holds.
+///
+/// There is no wall-clock deadline: a saturated test pool must only slow the wait down. Every suite
+/// that calls this carries a `.timeLimit`, whose cancellation ends the wait with
+/// ``AsyncWaitTimeoutError``.
 func waitUntil(
     _ label: String,
-    // Polling returns as soon as the condition holds; the generous ceiling
-    // only matters under full-suite parallel load, where 3s flaked on CI.
-    timeoutSeconds: Double = 15.0,
     pollMs: UInt64 = 10,
-    now: @Sendable () -> Date = { Date() },
     _ condition: @escaping @Sendable () async -> Bool) async throws
 {
-    let deadline = now().addingTimeInterval(timeoutSeconds)
-    while now() < deadline {
+    while !Task.isCancelled {
         if await condition() { return }
-        try await Task.sleep(nanoseconds: pollMs * 1_000_000)
+        try? await Task.sleep(nanoseconds: pollMs * 1_000_000)
     }
-    // Completion can arrive during the final suspension, before this waiter resumes.
-    if await condition() { return }
-    throw AsyncWaitTimeoutError(label: label)
+    // Swift Testing drops errors thrown after a time-limit cancellation, so record which wait hung.
+    let timeout = AsyncWaitTimeoutError(label: label)
+    Issue.record(timeout)
+    throw timeout
 }

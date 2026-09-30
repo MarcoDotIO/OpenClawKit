@@ -5,7 +5,7 @@ import FoundationNetworking
 import Testing
 @testable import OpenClawKit
 
-@Suite("Discord channel adapter")
+@Suite("Discord channel adapter", .timeLimit(.minutes(1)))
 struct DiscordChannelAdapterTests {
     actor InboundCollector {
         private(set) var messages: [InboundMessage] = []

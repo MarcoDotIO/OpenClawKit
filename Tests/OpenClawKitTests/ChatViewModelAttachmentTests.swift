@@ -261,6 +261,7 @@ private func chatAttachmentDimensions(for data: Data) -> (width: Int, height: In
     return (width.intValue, height.intValue)
 }
 
+@Suite(.timeLimit(.minutes(1)))
 struct ChatViewModelAttachmentTests {
     @Test func imageAttachmentsAreProcessedBeforeStaging() async throws {
         let imageData = try makeChatAttachmentJPEG(width: 3000, height: 4000)

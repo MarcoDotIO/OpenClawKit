@@ -148,7 +148,7 @@ private func respondToSurfaceRefresh(
         reply: .ok(["surface": "canvas", "pluginSurfaceUrls": ["canvas": url]]))
 }
 
-@Suite("Gateway node session routes", .serialized)
+@Suite("Gateway node session routes", .serialized, .timeLimit(.minutes(1)))
 struct GatewayNodeSessionRouteTests {
     @Test
     func invokeMetadataReachesTheHandlerAndResultCarriesStructuredPayload() async throws {

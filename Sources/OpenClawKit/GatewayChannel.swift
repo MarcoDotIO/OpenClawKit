@@ -94,6 +94,7 @@ public actor GatewayChannelActor {
     var testConnectRunFinishedHandler: (@Sendable () -> Void)?
     var testConnectFailureBackoffWaitHandler: (@Sendable () async throws -> Void)?
     var testRequestResumedHandler: (@Sendable () async -> Void)?
+    var testDeviceTokenPersistenceStartedHandler: (@Sendable () -> Void)?
     #endif
     private let connectChallengeTimeoutSeconds: Double = 6.0
     // Some networks will silently drop idle TCP/TLS flows around ~30s. The gateway tick is server->client,
@@ -1349,6 +1350,9 @@ extension GatewayChannelActor {
         }
         var persistedRoles = Set<String>()
         if let identity, !writes.isEmpty {
+            #if DEBUG
+            self.testDeviceTokenPersistenceStartedHandler?()
+            #endif
             persistedRoles = await Self.persistDeviceTokens(
                 writes,
                 deviceId: identity.deviceId,

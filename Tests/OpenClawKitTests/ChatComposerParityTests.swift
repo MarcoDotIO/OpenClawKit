@@ -80,6 +80,7 @@ struct ChatReplyQuoteTests {
 }
 
 @MainActor
+@Suite(.timeLimit(.minutes(1)))
 struct ChatComposerStateTests {
     @Test func `model selection target describes only gateway owned values`() {
         let viewModel = OpenClawChatViewModel(sessionKey: "main", transport: ComposerParityTransport())

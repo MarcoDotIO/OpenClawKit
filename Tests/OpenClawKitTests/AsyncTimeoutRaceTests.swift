@@ -21,21 +21,56 @@ private final class RaceCounter: @unchecked Sendable {
     }
 }
 
+/// An operation that ignores cancellation entirely (the keepalive wedge): it parks on a checked
+/// continuation until the test itself calls `open()`.
+private final class RaceGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isOpen = false
+    private var waiter: CheckedContinuation<Void, Never>?
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            self.lock.lock()
+            guard !self.isOpen else {
+                self.lock.unlock()
+                continuation.resume()
+                return
+            }
+            self.waiter = continuation
+            self.lock.unlock()
+        }
+    }
+
+    func open() {
+        self.lock.lock()
+        self.isOpen = true
+        let waiter = self.waiter
+        self.waiter = nil
+        self.lock.unlock()
+        waiter?.resume()
+    }
+}
+
 @Suite("AsyncTimeout race")
 struct AsyncTimeoutRaceTests {
-    @Test
+    /// Only the 50 ms deadline can end the race: the operation stays parked until the test opens its
+    /// gate. A race that joined its loser would hang and trip the time limit, whose cancellation opens
+    /// the gate so the test body can end. No wall-clock bound: a saturated test pool can stall the run
+    /// for seconds.
+    @Test(.timeLimit(.minutes(1)))
     func operationThatIgnoresCancellationStillTimesOut() async {
-        let start = ContinuousClock.now
-        await #expect(throws: RaceTimeoutError.self) {
-            try await AsyncTimeout.withTimeout(
-                seconds: 0.05,
-                onTimeout: { RaceTimeoutError() },
-                operation: {
-                    // A never-resumed continuation ignores cancellation entirely (the keepalive wedge).
-                    await withCheckedContinuation { (_: CheckedContinuation<Void, Never>) in }
-                })
+        let gate = RaceGate()
+        defer { gate.open() }
+        await withTaskCancellationHandler {
+            await #expect(throws: RaceTimeoutError.self) {
+                try await AsyncTimeout.withTimeout(
+                    seconds: 0.05,
+                    onTimeout: { RaceTimeoutError() },
+                    operation: { await gate.wait() })
+            }
+        } onCancel: {
+            gate.open()
         }
-        #expect(ContinuousClock.now - start < .seconds(5))
     }
 
     @Test

@@ -7,7 +7,7 @@ import OpenClawCore
 import Testing
 
 /// Credential redaction for channel health, `channels.status`, diagnostics and delivery failures.
-@Suite("Channel error redaction")
+@Suite("Channel error redaction", .timeLimit(.minutes(1)))
 struct ChannelErrorRedactionTests {
     actor OffsetStore: TelegramUpdateOffsetStore {
         func readLastUpdateID() async -> Int64? { nil }

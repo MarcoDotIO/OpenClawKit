@@ -37,7 +37,7 @@ private let pinMismatch = GatewayTLSValidationFailure(
     systemTrustOk: true,
     port: 443)
 
-@Suite("Gateway connect recovery", .serialized)
+@Suite("Gateway connect recovery", .serialized, .timeLimit(.minutes(1)))
 struct GatewayConnectRecoveryTests {
     // MARK: TLS pin mismatch
 
@@ -232,7 +232,7 @@ struct GatewayConnectRecoveryTests {
             await channel.reconnectPauseReason() == .authFailure
         }
         #expect(session.makeCount == 2)
-        try await gatewayCoreWaitUntil("resumed after retryAfterMs", timeoutSeconds: 10) {
+        try await gatewayCoreWaitUntil("resumed after retryAfterMs") {
             guard session.makeCount == 3 else { return false }
             return await channel.currentConnectionGeneration() != nil
         }

@@ -7,7 +7,7 @@ import OpenClawCore
 import OpenClawProtocol
 import Testing
 
-@Suite("Discord gateway adapter")
+@Suite("Discord gateway adapter", .timeLimit(.minutes(1)))
 struct DiscordGatewayAdapterTests {
     static let hello = #"{"op":10,"d":{"heartbeat_interval":45000}}"#
     static let ready = #"{"op":0,"s":1,"t":"READY","d":{"session_id":"sess-1","resume_gateway_url":"wss://resume.example","user":{"id":"bot-id"}}}"#
@@ -175,7 +175,7 @@ struct DiscordGatewayAdapterTests {
         try await waitUntil("other channel delivered while the slow turn runs") {
             await collector.messages.contains { $0.peerID == "fast" }
         }
-        try await waitUntil("at least two heartbeats acknowledged", timeoutSeconds: 10) {
+        try await waitUntil("at least two heartbeats acknowledged") {
             await socket.sentFrames().filter { (jsonObject($0)["op"] as? Int) == 1 }.count >= 2
         }
         // Give a missed ACK time to trip the zombie check (next beat after the first).

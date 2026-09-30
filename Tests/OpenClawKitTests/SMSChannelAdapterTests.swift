@@ -7,7 +7,7 @@ import OpenClawCore
 import OpenClawProtocol
 import Testing
 
-@Suite("SMS (Twilio) channel adapter")
+@Suite("SMS (Twilio) channel adapter", .timeLimit(.minutes(1)))
 struct SMSChannelAdapterTests {
     actor DiagnosticsCollector {
         var events: [RuntimeDiagnosticEvent] = []

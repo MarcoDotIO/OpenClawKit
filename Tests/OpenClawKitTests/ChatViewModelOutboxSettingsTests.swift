@@ -16,6 +16,7 @@ private actor SettingsPatchCounter {
     }
 }
 
+@Suite(.timeLimit(.minutes(1)))
 struct ChatViewModelOutboxSettingsTests {
     @Test func `background replay uses its command owned session settings`() async throws {
         let (store, _, databaseDirectory) = try makeOutboxStore()
