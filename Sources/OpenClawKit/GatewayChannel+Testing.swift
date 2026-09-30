@@ -22,6 +22,11 @@ extension GatewayChannelActor {
     func _test_setRequestResumedHandler(_ handler: (@Sendable () async -> Void)?) {
         self.testRequestResumedHandler = handler
     }
+
+    /// Called on the actor just before hello-ok's issued tokens are handed to the persistence hop.
+    func _test_setDeviceTokenPersistenceStartedHandler(_ handler: (@Sendable () -> Void)?) {
+        self.testDeviceTokenPersistenceStartedHandler = handler
+    }
     #endif
 
     func _test_pendingRequestCount() -> Int {
