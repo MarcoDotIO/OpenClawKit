@@ -454,7 +454,7 @@ struct RealtimeTalkRelaySessionTests {
         #expect(audioCapture.stopCount == 1)
     }
 
-    @Test("closed relay does not wait for startup ready")
+    @Test("closed relay does not wait for startup ready", .timeLimit(.minutes(1)))
     func closedRelayDoesNotWaitForReady() async {
         let session = RealtimeTalkRelaySession(
             transport: unusedRealtimeRelayTransport(),
@@ -466,7 +466,7 @@ struct RealtimeTalkRelaySessionTests {
 
         session.stop()
 
-        #expect(await session._test_waitForStartupCancelled(timeoutSeconds: 1))
+        #expect(await session._test_waitForStartupCancelled())
     }
 
     @Test("stop during event subscription prevents relay creation")

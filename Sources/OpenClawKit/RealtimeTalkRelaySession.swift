@@ -1812,10 +1812,12 @@ extension RealtimeTalkRelaySession {
         await self.handleEventStreamEnded(lifecycleGeneration: self.lifecycleGeneration)
     }
 
-    // Package tests observe startup cancellation without waiting out the timeout.
-    func _test_waitForStartupCancelled(timeoutSeconds: Int) async -> Bool {
+    // Package tests observe startup cancellation. A closed session answers before any timer is
+    // armed; the zero timeout makes one that is not closed report `.failed` at once rather than
+    // after a wall-clock wait.
+    func _test_waitForStartupCancelled() async -> Bool {
         if case .cancelled = await self.waitForStartupResult(
-            timeoutSeconds: timeoutSeconds,
+            timeoutSeconds: 0,
             lifecycleGeneration: self.lifecycleGeneration)
         {
             return true

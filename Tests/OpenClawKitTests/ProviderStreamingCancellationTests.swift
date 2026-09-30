@@ -40,23 +40,15 @@ private final class HangingHeadURLProtocol: URLProtocol, @unchecked Sendable {
 
 /// Cancelling a streaming consumer before the response head arrives must cancel the HTTP request
 /// promptly, not after the request timeout.
-@Suite("Provider streaming cancellation", .serialized)
+@Suite("Provider streaming cancellation", .serialized, .timeLimit(.minutes(1)))
 struct ProviderStreamingCancellationTests {
-    private static func waitUntil(seconds: Double, _ condition: () -> Bool) async throws -> Bool {
-        let deadline = Date().addingTimeInterval(seconds)
-        while Date() < deadline {
-            if condition() {
-                return true
-            }
-            try await Task.sleep(nanoseconds: 20_000_000)
-        }
-        return condition()
-    }
-
     @Test
     func cancellingBeforeResponseHeadCancelsTheRequest() async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [HangingHeadURLProtocol.self]
+        // This timeout and the policy's below are past the suite's time limit, so a cancellation that
+        // never reaches the request fails as a hang instead of passing once the request times out.
+        configuration.timeoutIntervalForRequest = 3_600
         let session = URLSession(configuration: configuration)
         let provider = ProviderServiceOpenAIModelProvider(
             id: "hanging",
@@ -66,14 +58,14 @@ struct ProviderStreamingCancellationTests {
         let startedBefore = HangingHeadURLProtocol.started
         let stoppedBefore = HangingHeadURLProtocol.stopped
         let stream = await provider.generateStream(
-            ModelGenerationRequest(sessionKey: "s", prompt: "hi", policy: ModelGenerationPolicy(requestTimeoutMs: 60_000))
+            ModelGenerationRequest(sessionKey: "s", prompt: "hi", policy: ModelGenerationPolicy(requestTimeoutMs: 3_600_000))
         )
         let consumer = Task {
             for try await _ in stream {}
         }
-        #expect(try await Self.waitUntil(seconds: 5) { HangingHeadURLProtocol.started > startedBefore })
+        try await waitUntil("request started") { HangingHeadURLProtocol.started > startedBefore }
         consumer.cancel()
-        #expect(try await Self.waitUntil(seconds: 5) { HangingHeadURLProtocol.stopped > stoppedBefore })
+        try await waitUntil("request stopped after cancellation") { HangingHeadURLProtocol.stopped > stoppedBefore }
         session.invalidateAndCancel()
     }
 }
