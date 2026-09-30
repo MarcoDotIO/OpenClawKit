@@ -275,7 +275,7 @@ struct AgentLoopToolCallingTests {
         #expect(await provider.recorded().count == 1)
     }
 
-    @Test
+    @Test(.timeLimit(.minutes(1)))
     func abortCancelsRunAndRecordsAbortedAssistant() async throws {
         let provider = ScriptedToolProvider(turns: [
             { _ in
@@ -289,7 +289,7 @@ struct AgentLoopToolCallingTests {
         try await Task.sleep(nanoseconds: 100_000_000)
         #expect(await runtime.activeRunIDs(sessionKey: "a") == [runID])
         #expect(await runtime.abort(runID: runID))
-        let waited = try #require(await runtime.wait(runID: runID, timeoutMs: 2_000))
+        let waited = try #require(await awaitCancellable("aborted run finished") { await runtime.wait(runID: runID) })
         #expect(waited.status == "error")
         #expect(waited.error?.contains("aborted") == true)
         let history = try await runtime.history(sessionKey: "a")

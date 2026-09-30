@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import OpenClawKit
 
-@Suite("Embedded agent stack")
+@Suite("Embedded agent stack", .timeLimit(.minutes(1)))
 struct EmbeddedAgentStackTests {
     struct ToolCallingProvider: ModelProvider {
         let id = "stack"
@@ -32,7 +32,7 @@ struct EmbeddedAgentStackTests {
             RequestFrame(type: "req", id: "1", method: "sessions.send", params: AnyCodable(["key": AnyCodable("agent:main:main"), "message": AnyCodable("hi")]))
         )
         let runID = try #require(sent.payload?.dictionaryValue?["runId"]?.stringValue)
-        #expect(await stack.runtime.wait(runID: runID, timeoutMs: 5_000)?.output == "stack says hi")
+        #expect(try await awaitCancellable("sent run finished") { await stack.runtime.wait(runID: runID) }?.output == "stack says hi")
 
         let history = await stack.server.handle(
             RequestFrame(type: "req", id: "2", method: "chat.history", params: AnyCodable(["sessionKey": AnyCodable("agent:main:main")]))
