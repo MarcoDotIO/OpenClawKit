@@ -26,85 +26,27 @@ extension OpenClawConfig {
     ///   - base: SDK-native values used where the document has no equivalent.
     ///   - issues: Receives values that could not be mapped.
     public init(document: OpenClawConfigDocument, base: OpenClawConfig = OpenClawConfig(), issues: ConfigDecodeIssueCollector? = nil) {
+        // Each section imports in its own helper, so this frame stays small while the channel import
+        // (the deepest decode) runs below it. With the sections inline it was about 170 KB in debug builds.
         var config = base
         func record(_ path: String, _ message: String) {
             issues?.record(ConfigDecodeIssue(path: path, message: message, kind: .invalidValue))
         }
-        func decodeSection<T: Decodable>(_ type: T.Type, _ path: String, _ object: [String: AnyCodable]?) -> T? {
-            guard let object else { return nil }
-            do {
-                return try ConfigTreeCoding.decode(type, from: AnyCodable(.object(object)), issues: issues)
-            } catch {
-                record(path, "The \(path) section could not be imported; kept the base value: \(error)")
-                return nil
-            }
-        }
 
         // Secrets (resolution stays SDK-local).
-        if let secrets = decodeSection(SecretsConfig.self, "secrets", document.secrets?.jsonObject) {
-            config.secrets = SecretsConfig(
-                providers: secrets.providers,
-                defaults: secrets.defaults,
-                resolution: base.secrets.resolution,
-                egressProxy: secrets.egressProxy
-            )
-        }
+        config.secrets = Self.importSecrets(document.secrets?.jsonObject, base: base.secrets, issues: issues, record: record)
 
         // Gateway (host, health interval and handshake timeout stay SDK-local).
-        if let gatewayObject = document.gateway?.jsonObject, var gateway = decodeSection(GatewayConfig.self, "gateway", gatewayObject) {
-            gateway.host = base.gateway.host
-            gateway.channelHealthCheckMinutes = base.gateway.channelHealthCheckMinutes
-            gateway.handshakeTimeoutMs = base.gateway.handshakeTimeoutMs
-            if gatewayObject["bind"] == nil {
-                gateway.bind = base.gateway.bind
-            }
-            if var remote = gateway.remote {
-                remote.enabled = remote.enabled ?? base.gateway.remote?.enabled
-                gateway.remote = remote
-            }
-            config.gateway = gateway
-        }
+        config.gateway = Self.importGateway(document.gateway?.jsonObject, base: base.gateway, issues: issues, record: record)
 
         // Auth metadata (cooldowns stay SDK-local).
         if let auth = document.auth {
-            var profiles: [String: AuthProfileConfig] = [:]
-            for (id, profile) in auth.profiles ?? [:] {
-                guard let provider = ConfigValueSupport.nonEmpty(profile.provider),
-                      let rawMode = ConfigValueSupport.nonEmpty(profile.mode?.rawValue)
-                else {
-                    record("auth.profiles.\(id)", "Auth profile needs a provider and a mode; skipped.")
-                    continue
-                }
-                let imported = AuthProfileConfig(provider: provider, rawMode: rawMode, email: profile.email, displayName: profile.displayName)
-                if let unknown = imported.unrecognizedMode {
-                    record("auth.profiles.\(id)", "Unknown auth profile mode \"\(unknown)\" is kept but the profile is never selected.")
-                }
-                profiles[id] = imported
-            }
-            config.auth = AuthConfig(profiles: profiles, order: auth.order ?? base.auth.order, cooldowns: base.auth.cooldowns)
+            config.auth = Self.importAuth(auth, base: base.auth, record: record)
         }
 
         // Models (SDK provider sections stay as they are).
         if let models = document.models {
-            if let mode = models.mode.flatMap(ModelsConfigMode.init(rawValue:)) {
-                config.models.mode = mode
-            }
-            if models.catalogRefresh != nil {
-                if let refresh = models.catalogRefreshConfig {
-                    config.models.catalogRefresh = refresh
-                } else {
-                    record("models.catalogRefresh", "catalogRefresh could not be represented as ModelCatalogRefreshConfig; kept the base value.")
-                }
-            }
-            if let providers = models.providers {
-                var imported: [String: ModelProviderConfig] = [:]
-                for (id, provider) in providers {
-                    if let converted = Self.importProvider(provider, id: id, record: record) {
-                        imported[id] = converted
-                    }
-                }
-                config.models.providers = imported
-            }
+            config.models = Self.importModels(models, base: base.models, record: record)
         }
 
         config.agents = Self.importAgents(document: document, base: base.agents, record: record)
@@ -207,6 +149,111 @@ extension OpenClawConfig {
     }
 
     // MARK: Import helpers
+
+    private static func decodeSection<T: Decodable>(
+        _ type: T.Type,
+        _ path: String,
+        _ object: [String: AnyCodable]?,
+        issues: ConfigDecodeIssueCollector?,
+        record: (String, String) -> Void
+    ) -> T? {
+        guard let object else { return nil }
+        do {
+            return try ConfigTreeCoding.decode(type, from: AnyCodable(.object(object)), issues: issues)
+        } catch {
+            record(path, "The \(path) section could not be imported; kept the base value: \(error)")
+            return nil
+        }
+    }
+
+    private static func importSecrets(
+        _ object: [String: AnyCodable]?,
+        base: SecretsConfig,
+        issues: ConfigDecodeIssueCollector?,
+        record: (String, String) -> Void
+    ) -> SecretsConfig {
+        guard let secrets = Self.decodeSection(SecretsConfig.self, "secrets", object, issues: issues, record: record) else {
+            return base
+        }
+        return SecretsConfig(
+            providers: secrets.providers,
+            defaults: secrets.defaults,
+            resolution: base.resolution,
+            egressProxy: secrets.egressProxy
+        )
+    }
+
+    private static func importGateway(
+        _ object: [String: AnyCodable]?,
+        base: GatewayConfig,
+        issues: ConfigDecodeIssueCollector?,
+        record: (String, String) -> Void
+    ) -> GatewayConfig {
+        guard let object, var gateway = Self.decodeSection(GatewayConfig.self, "gateway", object, issues: issues, record: record) else {
+            return base
+        }
+        gateway.host = base.host
+        gateway.channelHealthCheckMinutes = base.channelHealthCheckMinutes
+        gateway.handshakeTimeoutMs = base.handshakeTimeoutMs
+        if object["bind"] == nil {
+            gateway.bind = base.bind
+        }
+        if var remote = gateway.remote {
+            remote.enabled = remote.enabled ?? base.remote?.enabled
+            gateway.remote = remote
+        }
+        return gateway
+    }
+
+    private static func importAuth(
+        _ auth: OpenClawConfigDocument.Auth,
+        base: AuthConfig,
+        record: (String, String) -> Void
+    ) -> AuthConfig {
+        var profiles: [String: AuthProfileConfig] = [:]
+        for (id, profile) in auth.profiles ?? [:] {
+            guard let provider = ConfigValueSupport.nonEmpty(profile.provider),
+                  let rawMode = ConfigValueSupport.nonEmpty(profile.mode?.rawValue)
+            else {
+                record("auth.profiles.\(id)", "Auth profile needs a provider and a mode; skipped.")
+                continue
+            }
+            let imported = AuthProfileConfig(provider: provider, rawMode: rawMode, email: profile.email, displayName: profile.displayName)
+            if let unknown = imported.unrecognizedMode {
+                record("auth.profiles.\(id)", "Unknown auth profile mode \"\(unknown)\" is kept but the profile is never selected.")
+            }
+            profiles[id] = imported
+        }
+        return AuthConfig(profiles: profiles, order: auth.order ?? base.order, cooldowns: base.cooldowns)
+    }
+
+    private static func importModels(
+        _ models: OpenClawConfigDocument.Models,
+        base: ModelsConfig,
+        record: (String, String) -> Void
+    ) -> ModelsConfig {
+        var result = base
+        if let mode = models.mode.flatMap(ModelsConfigMode.init(rawValue:)) {
+            result.mode = mode
+        }
+        if models.catalogRefresh != nil {
+            if let refresh = models.catalogRefreshConfig {
+                result.catalogRefresh = refresh
+            } else {
+                record("models.catalogRefresh", "catalogRefresh could not be represented as ModelCatalogRefreshConfig; kept the base value.")
+            }
+        }
+        if let providers = models.providers {
+            var imported: [String: ModelProviderConfig] = [:]
+            for (id, provider) in providers {
+                if let converted = Self.importProvider(provider, id: id, record: record) {
+                    imported[id] = converted
+                }
+            }
+            result.providers = imported
+        }
+        return result
+    }
 
     private static let sdkOnlyProviderKeys = [
         "enabled", "chatCompletionsPath", "messagesPath", "apiVersion", "organizationID", "profile", "tenantID", "scope", "metadata",

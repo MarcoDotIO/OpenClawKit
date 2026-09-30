@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Added
+
+- `ConfigBoxed`, the non-optional counterpart of `ConfigIndirect`: a property
+  wrapper that keeps a large config value on the heap with value semantics.
+
+### Fixed
+
+- Decoding and importing channel config uses much less stack, so it no longer
+  risks overflowing a 512 KB cooperative thread (the OpenClawLinuxRuntimeTests
+  bundle crashed with SIGBUS this way in debug builds). `ChannelsConfig` stores
+  its ten typed channel sections with `@ConfigBoxed` (about 6 KB → 170 bytes;
+  `OpenClawConfig` 8.5 KB → 2.3 KB), each section decodes in its own frame, and
+  `OpenClawConfig(document:)` imports secrets, gateway, auth and models in
+  separate helpers. Peak stack for `OpenClawConfig(document:)` dropped from
+  about 390 KB to 104 KB in debug builds (224 KB to 81 KB in release), and for
+  a full `ChannelsConfig` decode from 110 KB to 38 KB. The public properties
+  are unchanged.
+
 ## 2026.3.1 - 2026-09-30
 
 OpenClawKit 2026.3.1 adds [Sign in with ChatGPT](https://developers.openai.com/siwc)
