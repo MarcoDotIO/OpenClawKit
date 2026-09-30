@@ -87,19 +87,28 @@ private final class NetworkConnectionLoopbackGateway: @unchecked Sendable {
         listener.newConnectionHandler = { [weak gateway] connection in
             gateway?.accept(connection)
         }
+        // Wait on the listener's own state updates rather than polling against a wall-clock deadline,
+        // which a saturated test pool can overrun even though the listener is long ready. The suite's
+        // time limit bounds a real hang: cancellation ends the stream iteration below.
+        let (states, stateContinuation) = AsyncStream.makeStream(of: NWListener.State.self)
+        defer { stateContinuation.finish() }
+        listener.stateUpdateHandler = { stateContinuation.yield($0) }
         listener.start(queue: gateway.queue)
-        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
-        while ContinuousClock.now < deadline {
-            if case .ready = listener.state, let port = listener.port, port.rawValue != 0 {
+        for await state in states {
+            switch state {
+            case .ready:
                 return gateway
-            }
-            if case let .failed(error) = listener.state {
+            case let .failed(error):
+                listener.cancel()
                 throw error
+            case .cancelled:
+                throw CancellationError()
+            default:
+                continue
             }
-            try await Task.sleep(for: .milliseconds(10))
         }
         listener.cancel()
-        throw URLError(.timedOut)
+        throw CancellationError()
     }
 
     var url: URL {
@@ -177,7 +186,7 @@ private final class NetworkConnectionLoopbackGateway: @unchecked Sendable {
     }
 }
 
-@Suite("Network.framework gateway transport", .serialized, .gatewayTLSStoreIsolated)
+@Suite("Network.framework gateway transport", .serialized, .gatewayTLSStoreIsolated, .timeLimit(.minutes(1)))
 struct GatewayNetworkConnectionTransportTests {
     @Test
     func handshakeAndRequestsRunOverNetworkConnection() async throws {

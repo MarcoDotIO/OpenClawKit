@@ -496,15 +496,15 @@ struct GatewayChannelLifecycleTests {
         await channel.shutdown()
     }
 
-    @Test
+    /// The socket never pongs, so only the ping deadline can end the wait (with `URLError`); an unbounded
+    /// ping trips the time limit. No wall-clock bound: a saturated test pool can stall the run for seconds.
+    @Test(.timeLimit(.minutes(1)))
     func keepalivePingIsBoundedWhenNoPongArrives() async throws {
         let socket = GatewayCoreFakeSocket(script: GatewayCoreSocketScript(pingBehavior: .never))
         let box = WebSocketTaskBox(task: socket)
-        let start = ContinuousClock.now
         await #expect(throws: URLError.self) {
             try await box.sendPing(timeout: .milliseconds(50))
         }
-        #expect(ContinuousClock.now - start < .seconds(5))
 
         let duplicate = WebSocketTaskBox(task: GatewayCoreFakeSocket(script: GatewayCoreSocketScript(
             pingBehavior: .duplicateSuccess)))
@@ -545,14 +545,17 @@ struct GatewayChannelLifecycleTests {
             == .drop(.missingRecipientProfile))
     }
 
-    @Test
+    /// The gateway never answers `connect`. Only the 100 ms option can time the handshake out within the
+    /// time limit: the fallback budget is an hour, so a channel that ignored the option would trip it. No
+    /// wall-clock bound: a saturated test pool can stall the run for seconds.
+    @Test(.timeLimit(.minutes(1)))
     func handshakeTimeoutOptionBoundsTheWholeHandshake() async throws {
         let session = GatewayCoreFakeSession(fixedScript: GatewayCoreSocketScript(
             connectReply: { _ in .none }))
         var options = gatewayCoreOptions()
         options.handshakeTimeoutMs = 100
         let channel = try makeChannel(session: session, options: options)
-        let start = ContinuousClock.now
+        await channel._test_setConnectTimeoutSeconds(3600)
         do {
             try await channel.connect()
             Issue.record("expected a handshake timeout")
@@ -560,7 +563,6 @@ struct GatewayChannelLifecycleTests {
             #expect((error as NSError).domain == NSURLErrorDomain)
             #expect((error as NSError).code == URLError.timedOut.rawValue)
         }
-        #expect(ContinuousClock.now - start < .seconds(5))
         #expect(await channel.currentHandshakePhase() == .connectSent)
         #expect(session.latestSocket?.state != .running)
         await channel.shutdown()
