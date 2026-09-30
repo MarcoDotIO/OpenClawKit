@@ -1,5 +1,6 @@
 import Foundation
 import OpenClawProtocol
+import Testing
 @testable import OpenClawKit
 
 // In-memory WebSocket transport for gateway channel and node session tests. It scripts
@@ -392,18 +393,23 @@ struct GatewayCoreWaitTimeout: Error, CustomStringConvertible {
     }
 }
 
+/// Polls `condition` until it holds.
+///
+/// There is no wall-clock deadline: a saturated test pool must only slow the wait down. Every suite
+/// that calls this carries a `.timeLimit`, whose cancellation ends the wait with
+/// ``GatewayCoreWaitTimeout``.
 func gatewayCoreWaitUntil(
     _ label: String,
-    timeoutSeconds: Double = 10,
     _ condition: @escaping @Sendable () async -> Bool) async throws
 {
-    let deadline = ContinuousClock.now.advanced(by: .milliseconds(Int64(timeoutSeconds * 1000)))
-    while ContinuousClock.now < deadline {
+    while !Task.isCancelled {
         if await condition() { return }
-        try await Task.sleep(for: .milliseconds(5))
+        try? await Task.sleep(for: .milliseconds(5))
     }
-    if await condition() { return }
-    throw GatewayCoreWaitTimeout(label: label)
+    // Swift Testing drops errors thrown after a time-limit cancellation, so record which wait hung.
+    let timeout = GatewayCoreWaitTimeout(label: label)
+    Issue.record(timeout)
+    throw timeout
 }
 
 func gatewayCoreTemporaryStateDirectory() throws -> URL {

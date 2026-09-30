@@ -10,7 +10,7 @@ private func budgetChannel(session: GatewayCoreFakeSession) throws -> GatewayCha
         connectOptions: gatewayCoreOptions())
 }
 
-@Suite("Gateway request budget", .serialized)
+@Suite("Gateway request budget", .serialized, .timeLimit(.minutes(1)))
 struct GatewayRequestBudgetTests {
     @Test
     func slowConnectDoesNotConsumeTheRequestBudget() async throws {

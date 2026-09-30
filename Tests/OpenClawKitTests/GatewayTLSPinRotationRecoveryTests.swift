@@ -16,7 +16,7 @@ private func mismatch(storeKey: String) -> GatewayTLSValidationFailure {
         port: 443)
 }
 
-@Suite("Gateway TLS pin rotation recovery", .serialized, .gatewayTLSStoreIsolated)
+@Suite("Gateway TLS pin rotation recovery", .serialized, .gatewayTLSStoreIsolated, .timeLimit(.minutes(1)))
 struct GatewayTLSPinRotationRecoveryTests {
     @Test
     func pinningSessionAcceptsAReviewedRotationInPlace() throws {

@@ -37,7 +37,7 @@ private func makeChannel(
         extraHeadersProvider: extraHeadersProvider)
 }
 
-@Suite("Gateway channel lifecycle")
+@Suite("Gateway channel lifecycle", .timeLimit(.minutes(1)))
 struct GatewayChannelLifecycleTests {
     @Test
     func operatorConnectOffersProtocolFourWithPlatformDefaults() async throws {

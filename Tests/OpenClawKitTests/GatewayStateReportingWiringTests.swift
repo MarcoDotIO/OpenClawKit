@@ -21,7 +21,7 @@ private func gatewayLabels(_ reporter: RecordingStateReporter) -> [String?] {
     reporter.transitions.filter { $0.domain == .gateway }.map(\.label)
 }
 
-@Suite("Gateway state reporting wiring", .serialized)
+@Suite("Gateway state reporting wiring", .serialized, .timeLimit(.minutes(1)))
 struct GatewayStateReportingWiringTests {
     @Test
     func connectReportsTheHandshakeLifecycleWithStableContext() async throws {

@@ -62,7 +62,7 @@ private func sentParams(_ socket: GatewayCoreFakeSocket, method: String) -> [[St
     socket.sentFrames(method: method).compactMap { $0["params"] as? [String: Any] }
 }
 
-@Suite("Gateway session chat transport", .serialized)
+@Suite("Gateway session chat transport", .serialized, .timeLimit(.minutes(1)))
 struct ChatGatewaySessionTransportTests {
     @Test func `init normalizes the agent and keeps exact gateway id bytes`() {
         let transport = OpenClawGatewaySessionChatTransport(
@@ -384,7 +384,7 @@ struct ChatGatewaySessionTransportTests {
 
         // Same connection context, new socket: seqGap plus a fresh per-socket subscription.
         socket.emitReceiveFailure()
-        try await gatewayCoreWaitUntil("reconnect seqGap", timeoutSeconds: 15) {
+        try await gatewayCoreWaitUntil("reconnect seqGap") {
             recorder.values.contains("seqGap")
         }
         let reconnected = try #require(session.latestSocket)
@@ -396,7 +396,7 @@ struct ChatGatewaySessionTransportTests {
         // A different endpoint is a different connection context: routeChanged.
         let replacement = transportTestSession(capabilities: [])
         try await gateway.connectForChatTransportTest("ws://replacement.example.invalid", session: replacement)
-        try await gatewayCoreWaitUntil("route change reported", timeoutSeconds: 15) {
+        try await gatewayCoreWaitUntil("route change reported") {
             recorder.values.contains("routeChanged")
         }
         let replacementSocket = try #require(replacement.latestSocket)
