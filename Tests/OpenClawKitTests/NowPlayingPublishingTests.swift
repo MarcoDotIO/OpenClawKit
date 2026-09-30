@@ -162,6 +162,8 @@ struct NowPlayingPublishingTests {
     #endif
 }
 
+// Each test makes its own synthesizer. Suites run in parallel, so configuring `shared` here would
+// leak Now Playing and state reports into (and from) other suites' tests.
 @Suite("Talk system speech synthesizer", .serialized)
 @MainActor
 struct TalkSystemSpeechSynthesizerTests {
@@ -197,10 +199,9 @@ struct TalkSystemSpeechSynthesizerTests {
 
     @Test("a pre-cancelled caller throws without touching the synthesizer")
     func preCancelledCallerThrows() async {
-        let speaker = TalkSystemSpeechSynthesizer.shared
+        let speaker = TalkSystemSpeechSynthesizer._test_make()
         let recorder = RecordingNowPlayingPublisher()
         speaker.nowPlayingPublisher = recorder
-        defer { speaker.nowPlayingPublisher = nil }
         let attempt = Task { @MainActor in
             try await speaker.speak(text: "Cancelled successor speech.", language: "en-US")
         }
@@ -213,17 +214,12 @@ struct TalkSystemSpeechSynthesizerTests {
 
     @Test("speech publishes live Talk metadata on start and clears on finish")
     func speechPublishesNowPlayingLifecycle() {
-        let speaker = TalkSystemSpeechSynthesizer.shared
+        let speaker = TalkSystemSpeechSynthesizer._test_make()
         let recorder = RecordingNowPlayingPublisher()
         var speaking: [Bool] = []
         speaker.nowPlayingPublisher = recorder
         speaker.nowPlayingTitle = "Molty"
         speaker.onSpeakingChanged = { speaking.append($0) }
-        defer {
-            speaker.nowPlayingPublisher = nil
-            speaker.nowPlayingTitle = nil
-            speaker.onSpeakingChanged = nil
-        }
 
         speaker._test_simulateStart()
         speaker._test_simulateFinish()
@@ -246,10 +242,9 @@ struct TalkSystemSpeechSynthesizerTests {
 
     @Test("remote pause stops speech and clears Now Playing")
     func remotePauseStopsSpeech() {
-        let speaker = TalkSystemSpeechSynthesizer.shared
+        let speaker = TalkSystemSpeechSynthesizer._test_make()
         let recorder = RecordingNowPlayingPublisher()
         speaker.nowPlayingPublisher = recorder
-        defer { speaker.nowPlayingPublisher = nil }
 
         speaker._test_simulateStart()
         recorder.send(.pause)
@@ -260,13 +255,9 @@ struct TalkSystemSpeechSynthesizerTests {
 
     @Test("an audio-session interruption publishes the interrupted state")
     func interruptionPublishesInterruptedState() {
-        let speaker = TalkSystemSpeechSynthesizer.shared
+        let speaker = TalkSystemSpeechSynthesizer._test_make()
         let recorder = RecordingNowPlayingPublisher()
         speaker.nowPlayingPublisher = recorder
-        defer {
-            speaker.nowPlayingPublisher = nil
-            speaker.stop()
-        }
 
         speaker._test_simulateStart()
         speaker.interruptForAudioSession()
@@ -281,15 +272,11 @@ struct TalkSystemSpeechSynthesizerTests {
 
     @Test("the audio session controller interrupts the synthesizer through the protocol requirement")
     func controllerInterruptsSynthesizerThroughProtocol() {
-        let speaker = TalkSystemSpeechSynthesizer.shared
+        let speaker = TalkSystemSpeechSynthesizer._test_make()
         let recorder = RecordingNowPlayingPublisher()
         speaker.nowPlayingPublisher = recorder
         let controller = TalkAudioSessionController(session: nil, observeSystemEvents: false)
         controller.speech = speaker
-        defer {
-            speaker.nowPlayingPublisher = nil
-            speaker.stop()
-        }
 
         speaker._test_simulateStart()
         controller.handle(.interrupted)
@@ -304,10 +291,9 @@ struct TalkSystemSpeechSynthesizerTests {
 
     @Test("an interruption with nothing playing publishes nothing")
     func idleInterruptionPublishesNothing() {
-        let speaker = TalkSystemSpeechSynthesizer.shared
+        let speaker = TalkSystemSpeechSynthesizer._test_make()
         let recorder = RecordingNowPlayingPublisher()
         speaker.nowPlayingPublisher = recorder
-        defer { speaker.nowPlayingPublisher = nil }
 
         speaker.interruptForAudioSession()
 

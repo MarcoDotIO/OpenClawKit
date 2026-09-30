@@ -120,10 +120,8 @@ struct GatewayStateReportingWiringTests {
     @Test
     func systemSpeechReportsSpeakingThenIdle() {
         let reporter = RecordingStateReporter()
-        let synthesizer = TalkSystemSpeechSynthesizer.shared
-        let previous = synthesizer.stateReporter
+        let synthesizer = TalkSystemSpeechSynthesizer._test_make()
         synthesizer.stateReporter = reporter
-        defer { synthesizer.stateReporter = previous }
         synthesizer._test_simulateStart()
         synthesizer._test_simulateFinish()
         let talk = reporter.transitions.filter { $0.domain == .talk }
