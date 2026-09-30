@@ -282,6 +282,12 @@ extension TalkSystemSpeechSynthesizer: AVSpeechSynthesizerDelegate {
 
 #if DEBUG
 extension TalkSystemSpeechSynthesizer {
+    // Package tests use their own synthesizer: suites run in parallel, so tests that configure
+    // `shared` would see each other's Now Playing and state reports.
+    static func _test_make() -> TalkSystemSpeechSynthesizer {
+        TalkSystemSpeechSynthesizer()
+    }
+
     // Package tests drive the Now Playing lifecycle without native speech services.
     func _test_simulateStart() {
         let utterance = AVSpeechUtterance(string: "test")
