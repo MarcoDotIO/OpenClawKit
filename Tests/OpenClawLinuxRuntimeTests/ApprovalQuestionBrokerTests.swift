@@ -5,7 +5,7 @@ import OpenClawModels
 import OpenClawProtocol
 @testable import OpenClawAgents
 
-@Suite("Approval and question brokers")
+@Suite("Approval and question brokers", .timeLimit(.minutes(1)))
 struct ApprovalQuestionBrokerTests {
     // MARK: - Approvals
 
@@ -56,7 +56,7 @@ struct ApprovalQuestionBrokerTests {
     func expiryFailsClosed() async throws {
         let broker = ApprovalBroker()
         let pending = await broker.request(presentation: .exec(commandText: "rm -rf build"), timeoutMs: 30)
-        let result = try await broker.waitDecision(id: pending.id, timeoutMs: 2_000)
+        let result = try await awaitCancellable("approval expired") { try await broker.waitDecision(id: pending.id) }
         #expect(result.state == .expired)
         #expect(result.reason == .timeout)
         #expect(result.isAllowed == false)
@@ -76,13 +76,8 @@ struct ApprovalQuestionBrokerTests {
         let waiter = Task {
             await broker.requestAndWait(presentation: .exec(commandText: "git status"), agentID: "main", grantKey: key)
         }
-        var pendingID: String?
-        for _ in 0..<50 {
-            pendingID = await broker.pending().first?.id
-            if pendingID != nil { break }
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
-        let id = try #require(pendingID)
+        try await waitUntil("grant approval pending") { await !broker.pending().isEmpty }
+        let id = try #require(await broker.pending().first?.id)
         _ = try await broker.resolve(id: id, decision: .allowAlways, grantExpiresInDays: 7)
         #expect(await waiter.value.isAllowed)
 
@@ -135,13 +130,11 @@ struct ApprovalQuestionBrokerTests {
             hooks: AgentLoopHooks(beforeToolCall: { _ in .requireApproval(AgentToolApprovalRequest(title: "Echo", description: "Allow?")) })
         )
         let runID = await runtime.start(AgentRunRequest(runID: "wait-approval", sessionKey: "w", prompt: "go"), streaming: false)
-        for _ in 0..<100 where await runtime.approvals.pending().isEmpty {
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
+        try await waitUntil("tool approval pending") { await !runtime.approvals.pending().isEmpty }
         let pending = try #require(await runtime.approvals.pending().first)
         #expect(pending.runID == runID)
         await runtime.abort(runID: runID)
-        let result = try #require(await runtime.wait(runID: runID, timeoutMs: 2_000))
+        let result = try #require(await awaitCancellable("aborted run finished") { await runtime.wait(runID: runID) })
         #expect(result.status == "error")
         #expect(await runtime.approvals.get(id: pending.id)?.state == .cancelled)
     }
@@ -208,13 +201,8 @@ struct ApprovalQuestionBrokerTests {
         let asking = Task {
             try await tool.invoke(AgentToolInvocation(arguments: arguments, context: AgentToolInvocationContext(runID: "r", sessionKey: "chat")), update: nil)
         }
-        var questionID: String?
-        for _ in 0..<100 {
-            questionID = await broker.pendingQuestion(sessionKey: "chat")?.id
-            if questionID != nil { break }
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
-        let id = try #require(questionID)
+        try await waitUntil("question pending") { await broker.pendingQuestion(sessionKey: "chat") != nil }
+        let id = try #require(await broker.pendingQuestion(sessionKey: "chat")?.id)
 
         // One pending question per session.
         let second = try await tool.invoke(AgentToolInvocation(arguments: arguments, context: AgentToolInvocationContext(sessionKey: "chat")), update: nil)
@@ -243,7 +231,7 @@ struct ApprovalQuestionBrokerTests {
             options: [AgentQuestionOption(label: "Yes"), AgentQuestionOption(label: "No")]
         )
         let expiring = try await broker.request(questions: [prompt], timeoutMs: 30)
-        #expect(try await broker.waitAnswer(id: expiring.id, timeoutMs: 2_000) == .expired)
+        #expect(try await awaitCancellable("question expired") { try await broker.waitAnswer(id: expiring.id) } == .expired)
 
         let cancelled = try await broker.request(questions: [prompt], runID: "run-9")
         #expect(try await broker.waitAnswer(id: cancelled.id, timeoutMs: 20) == .pending)

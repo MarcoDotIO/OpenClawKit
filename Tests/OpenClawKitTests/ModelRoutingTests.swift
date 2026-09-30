@@ -332,9 +332,11 @@ struct ModelRoutingTests {
                 StaticProvider(id: "primary", text: "primary-output"),
                 StaticProvider(id: "secondary", text: "secondary-output"),
             ],
+            // An hour-long window: the second request is inside it however slow the runner is, and a
+            // drop never waits for the window to pass.
             throttlePolicy: ModelProviderThrottlePolicy(
                 maxRequestsPerWindow: 1,
-                windowMs: 1_000,
+                windowMs: 3_600_000,
                 strategy: .drop
             ),
             diagnosticsSink: await pipeline.sink()
@@ -355,9 +357,9 @@ struct ModelRoutingTests {
         #expect(events.contains(where: { $0.name == "model.request.retry" }))
     }
 
-    @Test
+    @Test(.timeLimit(.minutes(1)))
     func routerThrottleDelayAppliesCooldownAndEmitsDiagnostics() async throws {
-        let pipeline = RuntimeDiagnosticsPipeline(eventLimit: 50)
+        let request = ModelGenerationRequest(sessionKey: "main", prompt: "hello", providerID: "primary")
         let router = ModelRouter(
             defaultProviderID: "primary",
             providers: [StaticProvider(id: "primary", text: "primary-output")],
@@ -365,22 +367,39 @@ struct ModelRoutingTests {
                 maxRequestsPerWindow: 1,
                 windowMs: 70,
                 strategy: .delay
+            )
+        )
+
+        // The second request proceeds once the window has passed. A lower bound: a slow runner only
+        // adds to it (and may let the window pass before the second request arrives).
+        let startedAt = Date()
+        _ = try await router.generate(request)
+        _ = try await router.generate(request)
+        #expect(Date().timeIntervalSince(startedAt) >= 0.06)
+
+        // With an hour-long window the second request always lands inside it and waits.
+        let pipeline = RuntimeDiagnosticsPipeline(eventLimit: 50)
+        let slowRouter = ModelRouter(
+            defaultProviderID: "primary",
+            providers: [StaticProvider(id: "primary", text: "primary-output")],
+            throttlePolicy: ModelProviderThrottlePolicy(
+                maxRequestsPerWindow: 1,
+                windowMs: 3_600_000,
+                strategy: .delay
             ),
             diagnosticsSink: await pipeline.sink()
         )
-
-        let startedAt = Date()
-        _ = try await router.generate(
-            ModelGenerationRequest(sessionKey: "main", prompt: "hello", providerID: "primary")
-        )
-        _ = try await router.generate(
-            ModelGenerationRequest(sessionKey: "main", prompt: "hello", providerID: "primary")
-        )
-        let elapsed = Date().timeIntervalSince(startedAt)
-
-        #expect(elapsed >= 0.06)
-        let events = await pipeline.recentEvents(limit: 50)
-        #expect(events.contains(where: { $0.name == "model.throttle.delay" }))
+        _ = try await slowRouter.generate(request)
+        let delayed = Task { try await slowRouter.generate(request) }
+        try await waitUntil("model.throttle.delay emitted") {
+            await pipeline.recentEvents(limit: 50).contains { $0.name == "model.throttle.delay" }
+        }
+        let delay = try #require(await pipeline.recentEvents(limit: 50).first { $0.name == "model.throttle.delay" })
+        #expect((Int(delay.metadata["delayMs"] ?? "") ?? 0) > 3_000_000)
+        delayed.cancel()
+        await #expect(throws: CancellationError.self) {
+            _ = try await delayed.value
+        }
     }
 
     @Test

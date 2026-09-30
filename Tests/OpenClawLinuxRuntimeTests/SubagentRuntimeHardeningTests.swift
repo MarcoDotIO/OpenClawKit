@@ -108,7 +108,7 @@ struct SubagentRuntimeHardeningTests {
         )
         let manager = SubagentManager(runtime: runtime)
         let child = try await manager.spawn(SubagentSpawnParams(task: "run rm -rf build and write X"), parentSessionKey: parent)
-        #expect(await runtime.wait(runID: child.runID, timeoutMs: 10_000)?.status == "ok")
+        #expect(try await awaitCancellable("child run finished") { await runtime.wait(runID: child.runID) }?.status == "ok")
 
         let childRecord = try #require(await store.recordForKey(child.childSessionKey))
         #expect(childRecord.permissionMode == .readOnly)
@@ -143,11 +143,11 @@ struct SubagentRuntimeHardeningTests {
         await manager.registerTools()
         let result = try await runtime.run(
             AgentRunRequest(sessionKey: "agent:main:main", prompt: "delegate", toolPolicy: ToolPolicy(deny: ["exec"])),
-            timeoutMs: 10_000
+            timeoutMs: 3_600_000
         )
         #expect(result.output == "parent done")
         let child = try #require(await manager.children(of: "agent:main:main").first)
-        #expect(await runtime.wait(runID: child.runID, timeoutMs: 10_000)?.status == "ok")
+        #expect(try await awaitCancellable("child run finished") { await runtime.wait(runID: child.runID) }?.status == "ok")
         #expect(await log.count("exec") == 0)
         let results = toolResults(try await runtime.history(sessionKey: child.childSessionKey))
         #expect(results.first?.text == "Tool exec is not allowed by the current tool policy")
@@ -190,20 +190,28 @@ struct SubagentRuntimeHardeningTests {
         await runtime.start(AgentRunRequest(runID: "dup", sessionKey: "two", prompt: "b"), streaming: false)
         #expect(await runtime.activeRunIDs() == ["dup"])
         await provider.release()
-        #expect(await runtime.wait(runID: "dup", timeoutMs: 10_000)?.output == "first")
+        #expect(try await awaitCancellable("joined run finished") { await runtime.wait(runID: "dup") }?.output == "first")
         #expect(await provider.count() == 1)
     }
 
     @Test(.timeLimit(.minutes(1)))
     func aStaleTimerNeverCancelsANewRunWithTheSameID() async throws {
-        let provider = GatedTextProvider(replies: ["old", "new"])
-        await provider.release()
-        let runtime = EmbeddedAgentRuntime(
-            toolRegistry: AgentToolRegistry(),
-            modelRouter: ModelRouter(defaultProviderID: provider.id, providers: [provider])
-        )
-        await runtime.start(AgentRunRequest(runID: "reuse", sessionKey: "s", prompt: "a"), timeoutMs: 200, streaming: false)
-        #expect(await runtime.wait(runID: "reuse", timeoutMs: 10_000)?.output == "old")
+        // The first run has to finish before its 200 ms timer so the timer is stale during the second
+        // run. A stalled pool can let the timer win, so start over until the first run finishes first.
+        var provider: GatedTextProvider
+        var runtime: EmbeddedAgentRuntime
+        var first: AgentRunWaitResult?
+        repeat {
+            provider = GatedTextProvider(replies: ["old", "new"])
+            await provider.release()
+            runtime = EmbeddedAgentRuntime(
+                toolRegistry: AgentToolRegistry(),
+                modelRouter: ModelRouter(defaultProviderID: provider.id, providers: [provider])
+            )
+            await runtime.start(AgentRunRequest(runID: "reuse", sessionKey: "s", prompt: "a"), timeoutMs: 200, streaming: false)
+            first = try await awaitCancellable("first run finished") { [runtime] in await runtime.wait(runID: "reuse") }
+        } while first?.status == "timeout"
+        #expect(first?.output == "old")
 
         await provider.block()
         await runtime.start(AgentRunRequest(runID: "reuse", sessionKey: "s", prompt: "b"), streaming: false)
@@ -213,7 +221,8 @@ struct SubagentRuntimeHardeningTests {
         #expect(await runtime.activeRunIDs() == ["reuse"])
         await provider.release()
         // The waiter sees the new run, not the previous run's retained result.
-        #expect(await runtime.wait(runID: "reuse", timeoutMs: 10_000)?.output == "new")
+        let second = try await awaitCancellable("second run finished") { [runtime] in await runtime.wait(runID: "reuse") }
+        #expect(second?.output == "new")
         _ = await runtime.approvals.cancel(id: approval.id)
     }
 

@@ -359,10 +359,9 @@ struct VoiceNoteRecorderTests {
         #expect(started)
         #expect(recorder.level == 0)
 
-        for _ in 0..<200 where recorder.level == 0 {
-            try await Task.sleep(nanoseconds: 3_000_000)
+        try await waitUntil("capture level published") {
+            await MainActor.run { recorder.level > 0 }
         }
-        #expect(recorder.level > 0)
 
         _ = try #require(recorder.finish())
         #expect(recorder.level == 0)

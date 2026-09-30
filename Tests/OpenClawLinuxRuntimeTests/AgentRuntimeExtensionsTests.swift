@@ -38,7 +38,7 @@ actor SessionRoutingProvider: ModelProvider {
     }
 }
 
-@Suite("Agent runtime extensions")
+@Suite("Agent runtime extensions", .timeLimit(.minutes(1)))
 struct AgentRuntimeExtensionsTests {
     // MARK: - Exec gate
 
@@ -92,13 +92,8 @@ struct AgentRuntimeExtensionsTests {
         #expect(await broker.pending().isEmpty)
         // The fourth command escalates to a human.
         let escalated = Task { await gate.evaluate(command: "danger 4", permissionMode: .workspace, sessionKey: "w") }
-        var pending: [AgentApproval] = []
-        for _ in 0..<100 {
-            pending = await broker.pending()
-            if !pending.isEmpty { break }
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
-        let approval = try #require(pending.first)
+        try await waitUntil("escalated approval pending") { await !broker.pending().isEmpty }
+        let approval = try #require(await broker.pending().first)
         #expect(approval.presentation.warningText?.contains("Escalated") == true)
         _ = try await broker.resolve(id: approval.id, decision: .allowOnce)
         #expect(await escalated.value == .allow(source: .human))
@@ -108,9 +103,7 @@ struct AgentRuntimeExtensionsTests {
             throw ReviewDown()
         })
         let asking = Task { await failing.evaluate(command: "anything", permissionMode: .workspace, sessionKey: "f") }
-        for _ in 0..<100 where await broker.pending().isEmpty {
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
+        try await waitUntil("failed-review approval pending") { await !broker.pending().isEmpty }
         let failed = try #require(await broker.pending().first)
         #expect(failed.presentation.warningText?.contains("Automatic review failed") == true)
         await broker.cancel(runID: "none")
@@ -132,8 +125,7 @@ struct AgentRuntimeExtensionsTests {
 
     // MARK: - Sub-agents and ledger
 
-    // Bounded so a lost wake-up fails fast instead of hanging the suite.
-    @Test(.timeLimit(.minutes(1)))
+    @Test
     func spawnAnnouncesCompletionAndWakesTheYieldedParent() async throws {
         let provider = SessionRoutingProvider()
         let store = SessionStore(fileURL: FileManager.default.temporaryDirectory.appendingPathComponent("sub-\(UUID().uuidString)/sessions.json"))
@@ -148,7 +140,8 @@ struct AgentRuntimeExtensionsTests {
         let manager = SubagentManager(runtime: runtime, ledger: ledger)
         await manager.registerTools()
 
-        let result = try await runtime.run(AgentRunRequest(sessionKey: "agent:main:main", prompt: "delegate"), timeoutMs: 10_000)
+        // The run ends on cancellation, so the hour-long timeout leaves the time limit as the only bound.
+        let result = try await runtime.run(AgentRunRequest(sessionKey: "agent:main:main", prompt: "delegate"), timeoutMs: 3_600_000)
         #expect(result.toolResults.map(\.name) == ["sessions_spawn", "sessions_yield"])
         let spawnDetails = try #require(result.toolResults.first?.output.details?.dictionaryValue)
         #expect(spawnDetails["status"] == AnyCodable("accepted"))
@@ -157,20 +150,15 @@ struct AgentRuntimeExtensionsTests {
         #expect(await store.recordForKey(childKey)?.spawnedBy == "agent:main:main")
         #expect(await store.recordForKey(childKey)?.spawnDepth == 1)
 
-        var prompts: [String] = []
-        for _ in 0..<300 {
-            prompts = await provider.prompts()
-            if prompts.contains(where: { $0.contains("child result") }) { break }
-            try await Task.sleep(nanoseconds: 10_000_000)
+        try await waitUntil("parent woke with the child result") {
+            await provider.prompts().contains { $0.contains("child result") }
         }
-        #expect(prompts.contains { $0.contains("[Subagent completion]") && $0.contains("child result") })
+        #expect(await provider.prompts().contains { $0.contains("[Subagent completion]") && $0.contains("child result") })
 
         let tasks = await ledger.list().tasks
         #expect(tasks.count == 1)
         #expect(tasks.first?.kind == .subagent)
-        for _ in 0..<100 where await ledger.list().tasks.first?.status.isTerminal != true {
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
+        try await waitUntil("sub-agent task terminal") { await ledger.list().tasks.first?.status.isTerminal == true }
         #expect(await ledger.list().tasks.first?.status == .completed)
         #expect(await ledger.list(statuses: [.running]).tasks.isEmpty)
         let children = await manager.children(of: "agent:main:main")
@@ -185,7 +173,7 @@ struct AgentRuntimeExtensionsTests {
         }
     }
 
-    @Test(.timeLimit(.minutes(1)))
+    @Test
     func spawnParamsRejectUnsupportedOptionsAndKillWorks() async throws {
         #expect(throws: SubagentError.self) { try SubagentSpawnParams.parse(["task": AnyCodable("x"), "runtime": AnyCodable("acp")]) }
         #expect(throws: SubagentError.self) { try SubagentSpawnParams.parse(["task": AnyCodable("x"), "visible": AnyCodable(true)]) }
@@ -212,7 +200,7 @@ struct AgentRuntimeExtensionsTests {
         #expect(await manager.resolve(target: "1", parentSessionKey: "p").count == 1)
         let killed = try await manager.kill(target: "last", parentSessionKey: "p")
         #expect(killed.map(\.status) == ["killed"])
-        #expect(await runtime.wait(runID: record.runID, timeoutMs: 2_000)?.status == "error")
+        #expect(try await awaitCancellable("killed run finished") { await runtime.wait(runID: record.runID) }?.status == "error")
     }
 
     @Test
@@ -344,7 +332,7 @@ struct AgentRuntimeExtensionsTests {
             )
         )
         let runID = try #require(refresh.payload?.dictionaryValue?["runId"]?.stringValue)
-        #expect(await runtime.wait(runID: runID, timeoutMs: 5_000)?.status == "ok")
+        #expect(try await awaitCancellable("refresh run finished") { await runtime.wait(runID: runID) }?.status == "ok")
         // The refresh instruction is hidden from chat history.
         #expect(try await runtime.history(sessionKey: "pc").map(\.role) == ["assistant"])
     }

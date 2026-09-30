@@ -392,7 +392,8 @@ struct SignInWithChatGPTSessionTests {
         let server = SIWCFakeServer()
         let session = SIWCTest.makeSession(server: server, clock: SIWCTestClock(), callbackPort: 0)
         let browser = LoopbackCallingBrowser()
-        let result = try await session.signIn(using: browser, reauthenticating: nil, consent: .automatic, timeout: 20, secrets: SIWCTest.secrets)
+        // Sign-in ends on cancellation, so an hour-long timeout leaves the suite's time limit as the bound.
+        let result = try await session.signIn(using: browser, reauthenticating: nil, consent: .automatic, timeout: 3_600, secrets: SIWCTest.secrets)
         #expect(result.account.subject == "user-abc")
         #expect(browser.presentedURL.map { SIWCTest.queryItems($0)["client_id"] } == "dynamic_agent_client")
         #expect(browser.dismissCount >= 1)
@@ -408,7 +409,7 @@ struct SignInWithChatGPTSessionTests {
         let server = SIWCFakeServer()
         let session = SIWCTest.makeSession(server: server, clock: SIWCTestClock(), callbackPort: 0)
         let browser = LoopbackCallingBrowser(closesAfterCallback: true)
-        let result = try await session.signIn(using: browser, reauthenticating: nil, consent: .automatic, timeout: 20, secrets: SIWCTest.secrets)
+        let result = try await session.signIn(using: browser, reauthenticating: nil, consent: .automatic, timeout: 3_600, secrets: SIWCTest.secrets)
         #expect(result.account.subject == "user-abc")
     }
 
@@ -417,13 +418,13 @@ struct SignInWithChatGPTSessionTests {
         let server = SIWCFakeServer()
         let session = SIWCTest.makeSession(server: server, clock: SIWCTestClock(), callbackPort: 0)
         await #expect(throws: SignInWithChatGPTError.cancelled) {
-            try await session.signIn(using: CancellingBrowser(), timeout: 20)
+            try await session.signIn(using: CancellingBrowser(), timeout: 3_600)
         }
         await #expect(throws: SignInWithChatGPTError.timedOut) {
             try await session.signIn(using: SignInWithChatGPTExternalBrowser { _ in true }, timeout: 1)
         }
         await #expect(throws: OpenClawCoreError.self) {
-            try await session.signIn(using: SignInWithChatGPTExternalBrowser { _ in false }, timeout: 20)
+            try await session.signIn(using: SignInWithChatGPTExternalBrowser { _ in false }, timeout: 3_600)
         }
         #expect(try await session.accounts().isEmpty)
     }
