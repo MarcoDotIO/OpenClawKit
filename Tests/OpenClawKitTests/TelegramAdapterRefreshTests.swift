@@ -7,7 +7,7 @@ import OpenClawCore
 import OpenClawProtocol
 import Testing
 
-@Suite("Telegram adapter 2026.9.6 refresh")
+@Suite("Telegram adapter 2026.9.6 refresh", .timeLimit(.minutes(1)))
 struct TelegramAdapterRefreshTests {
     actor MemoryOffsetStore: TelegramUpdateOffsetStore {
         var value: Int64?

@@ -122,7 +122,7 @@ actor FakeIMAPServer: IMAPTransport {
     }
 }
 
-@Suite("IMAP mailbox watcher")
+@Suite("IMAP mailbox watcher", .timeLimit(.minutes(1)))
 struct IMAPMailboxWatcherTests {
     actor Turns {
         private(set) var turns: [IMAPHookTurn] = []

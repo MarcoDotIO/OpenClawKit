@@ -264,6 +264,7 @@ struct ChatPrivateCloudQuotaNoticeTests {
 }
 
 @MainActor
+@Suite(.timeLimit(.minutes(1)))
 struct ChatSessionPagingTests {
     @Test func `paging status summarizes truncated lists only`() {
         #expect(ChatSessionPagingStatus(loadedCount: 10, totalCount: 10, isTruncated: false) == nil)

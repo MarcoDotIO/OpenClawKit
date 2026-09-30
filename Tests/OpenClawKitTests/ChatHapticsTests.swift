@@ -92,6 +92,7 @@ private func sendHapticsTestMessage(_ viewModel: OpenClawChatViewModel) async {
     }
 }
 
+@Suite(.timeLimit(.minutes(1)))
 struct ChatHapticsTests {
     @Test func `send acceptance fires message sent exactly once`() async throws {
         let (_, viewModel, recorder) = await makeHapticsViewModel(status: "started")

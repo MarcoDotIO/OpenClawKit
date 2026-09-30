@@ -54,6 +54,7 @@ private final class DeleteSessionTestTransport: @unchecked Sendable, OpenClawCha
 }
 
 @MainActor
+@Suite(.timeLimit(.minutes(1)))
 struct ChatViewModelSessionDeletionTests {
     @Test func `deleting the active main session re-bootstraps in place`() async throws {
         let transport = DeleteSessionTestTransport()

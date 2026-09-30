@@ -6,7 +6,7 @@ import FoundationNetworking
 import OpenClawCore
 import Testing
 
-@Suite("Slack adapter 2026.9.6 refresh")
+@Suite("Slack adapter 2026.9.6 refresh", .timeLimit(.minutes(1)))
 struct SlackAdapterRefreshTests {
     static let auth = #"{"ok":true,"user_id":"UBOT","bot_id":"B1","user":"claw","team":"acme"}"#
 

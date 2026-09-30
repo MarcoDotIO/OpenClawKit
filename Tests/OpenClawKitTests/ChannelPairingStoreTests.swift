@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import OpenClawChannels
 
-@Suite("Channel DM pairing store")
+@Suite("Channel DM pairing store", .timeLimit(.minutes(1)))
 struct ChannelPairingStoreTests {
     final class Clock: @unchecked Sendable {
         private let lock = NSLock()

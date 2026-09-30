@@ -48,6 +48,7 @@ private final class FakeVoiceNoteAudioCapture: VoiceNoteAudioCapture {
     }
 }
 
+@Suite(.timeLimit(.minutes(1)))
 struct VoiceNoteRecorderTests {
     @MainActor
     @Test func startAndFinishProduceRecordingWithDuration() async throws {

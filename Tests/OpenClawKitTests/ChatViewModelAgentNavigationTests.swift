@@ -250,6 +250,7 @@ private final class AgentNavigationFixture {
 }
 
 @MainActor
+@Suite(.timeLimit(.minutes(1)))
 struct ChatViewModelAgentNavigationTests {
     private func globalSession(owner: String) -> OpenClawChatSessionEntry {
         var entry = OpenClawChatSessionEntry.placeholder(key: "global")

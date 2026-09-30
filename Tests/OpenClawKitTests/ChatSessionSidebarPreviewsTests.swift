@@ -63,6 +63,7 @@ private actor SidebarPreviewCache: OpenClawChatTranscriptCache {
 }
 
 @MainActor
+@Suite(.timeLimit(.minutes(1)))
 struct ChatSessionSidebarPreviewsTests {
     @Test(arguments: [false, true])
     func `changing Gateway owners never reuses an identical session preview`(oldLoadPending: Bool) async throws {

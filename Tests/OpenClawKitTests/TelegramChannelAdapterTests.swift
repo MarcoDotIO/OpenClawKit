@@ -5,7 +5,7 @@ import FoundationNetworking
 import Testing
 @testable import OpenClawKit
 
-@Suite("Telegram channel adapter")
+@Suite("Telegram channel adapter", .timeLimit(.minutes(1)))
 struct TelegramChannelAdapterTests {
     actor InboundCollector {
         private(set) var messages: [InboundMessage] = []
