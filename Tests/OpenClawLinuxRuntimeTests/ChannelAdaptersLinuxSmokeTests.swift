@@ -8,7 +8,7 @@ import OpenClawProtocol
 import Testing
 
 /// Cross-platform smoke tests for the 2026.3.0 native adapters (run on Linux CI with swift-crypto).
-@Suite("Channel adapters (Linux smoke)")
+@Suite("Channel adapters (Linux smoke)", .timeLimit(.minutes(1)))
 struct ChannelAdaptersLinuxSmokeTests {
     actor StubHTTP: ChannelHTTPTransport {
         private(set) var bodies: [String] = []
@@ -32,15 +32,6 @@ struct ChannelAdaptersLinuxSmokeTests {
         func append(_ message: InboundMessage) {
             self.messages.append(message)
         }
-    }
-
-    private func poll(_ condition: @escaping @Sendable () async -> Bool) async throws {
-        let deadline = Date().addingTimeInterval(15)
-        while Date() < deadline {
-            if await condition() { return }
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
-        #expect(await condition(), "timed out")
     }
 
     @Test
@@ -71,7 +62,7 @@ struct ChannelAdaptersLinuxSmokeTests {
             body: body
         )
         #expect(response.status == 200)
-        try await self.poll { await inbox.messages.count == 1 }
+        try await waitUntil("SMS webhook delivered to the inbox") { await inbox.messages.count == 1 }
         #expect(await inbox.messages.first?.peerID == "+15550002222")
         await adapter.stop()
     }

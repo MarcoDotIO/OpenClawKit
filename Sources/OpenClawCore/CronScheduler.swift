@@ -241,6 +241,8 @@ public actor CronScheduler {
     private var changeHandlers: [@Sendable (CronChangedHookEvent) async -> Void] = []
     private var loop: Task<Void, Never>?
     private var sleeper: Task<Void, Never>?
+    /// Longest sleep between checks when no job is due sooner.
+    private var maximumSleepSeconds: Double = 60
     private var running: Set<String> = []
 
     /// Creates an empty in-memory scheduler.
@@ -556,7 +558,7 @@ public actor CronScheduler {
     // MARK: - Internals
 
     private func secondsUntilNextWake() -> Double {
-        guard let next = self.nextWakeDate else { return 60 }
+        guard let next = self.nextWakeDate else { return self.maximumSleepSeconds }
         return next.timeIntervalSince(self.now())
     }
 
@@ -564,7 +566,7 @@ public actor CronScheduler {
     /// wake the loop early. The delay is computed and the sleeper installed in one actor turn, so a job
     /// change that lands in between can never be missed.
     private func sleepUntilNextWake() async {
-        let nanoseconds = UInt64(max(0.05, min(60, self.secondsUntilNextWake())) * 1_000_000_000)
+        let nanoseconds = UInt64(max(0.05, min(self.maximumSleepSeconds, self.secondsUntilNextWake())) * 1_000_000_000)
         let sleeper = Task<Void, Never> { try? await Task.sleep(nanoseconds: nanoseconds) }
         self.sleeper = sleeper
         await sleeper.value
@@ -704,3 +706,13 @@ public actor CronScheduler {
         }
     }
 }
+
+#if DEBUG
+extension CronScheduler {
+    // Package tests push the idle cap past their time limit, so a job change that fails to wake the
+    // sleeping loop shows up as a hang instead of a run one cap later.
+    func _test_setMaximumSleepSeconds(_ seconds: Double) {
+        self.maximumSleepSeconds = seconds
+    }
+}
+#endif

@@ -8,7 +8,7 @@ import OpenClawProtocol
 
 /// Per-request scope policy of dynamic methods, unclassified methods, node pairing approval and
 /// connection-bound event delivery (2026.3.0 FX1 review fixes).
-@Suite("Gateway scope authorization")
+@Suite("Gateway scope authorization", .timeLimit(.minutes(1)))
 struct GatewayScopeAuthorizationTests {
     typealias Harness = GatewayServerTestHarness
 
@@ -212,7 +212,7 @@ struct GatewayScopeAuthorizationTests {
 
         func received(_ id: String) async throws -> [String] {
             let stream = try #require(streams[id])
-            return await Harness.collect(stream) { frames in frames.contains { $0.event == "tick" } }.map(\.event)
+            return try await Harness.collect(stream, "tick on \(id)") { frames in frames.contains { $0.event == "tick" } }.map(\.event)
         }
         let nodeEvents = try await received("ev-node")
         let pairerEvents = try await received("ev-pairer")
@@ -226,7 +226,7 @@ struct GatewayScopeAuthorizationTests {
         #expect(adminEvents.filter { $0 != "presence" } == [
             "chat", "agent", "exec.approval.requested", "node.pair.resolved", "sessions.changed", "sdk.custom", "plugin.demo", "tick",
         ])
-        #expect(await Harness.collect(unregistered, timeoutMs: 200) { _ in false }.isEmpty)
+        #expect(await Harness.frames(unregistered, arrivingWithinMs: 200).isEmpty)
 
         #expect(GatewayEventFilter.hasEventScope(GatewayConnectionContext(scopes: ["operator.write"]), event: "plugin.demo"))
         #expect(GatewayEventFilter.hasEventScope(GatewayConnectionContext(scopes: ["operator.approvals"]), event: "openclaw.approval.requested"))

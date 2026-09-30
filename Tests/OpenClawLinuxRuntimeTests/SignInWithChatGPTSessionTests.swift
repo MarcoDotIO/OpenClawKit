@@ -195,7 +195,7 @@ final class SIWCCounter: @unchecked Sendable {
     }
 }
 
-@Suite("Sign in with ChatGPT session")
+@Suite("Sign in with ChatGPT session", .timeLimit(.minutes(1)))
 struct SignInWithChatGPTSessionTests {
     @Test("A first sign-in registers the account and persists the host id first")
     func registration() async throws {
@@ -396,10 +396,7 @@ struct SignInWithChatGPTSessionTests {
         #expect(result.account.subject == "user-abc")
         #expect(browser.presentedURL.map { SIWCTest.queryItems($0)["client_id"] } == "dynamic_agent_client")
         #expect(browser.dismissCount >= 1)
-        let deadline = Date().addingTimeInterval(10)
-        while browser.responseBody == nil, Date() < deadline {
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
+        try await waitUntil("loopback success page returned to the browser") { browser.responseBody != nil }
         #expect(browser.responseStatuses == [400, 200])
         let page = try #require(browser.responseBody)
         #expect(page.contains("Signed in with ChatGPT"))

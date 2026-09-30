@@ -156,14 +156,6 @@ actor ScriptedStreamProvider: ModelProvider {
     }
 }
 
-func waitUntil(_ condition: @Sendable () async -> Bool) async throws {
-    for _ in 0..<500 {
-        if await condition() { return }
-        try await Task.sleep(nanoseconds: 10_000_000)
-    }
-    Issue.record("condition not met in time")
-}
-
 func temporarySessionStore(_ label: String) -> SessionStore {
     SessionStore(fileURL: FileManager.default.temporaryDirectory.appendingPathComponent("\(label)-\(UUID().uuidString)/sessions.json"))
 }
@@ -203,7 +195,7 @@ struct AgentLoopHardeningTests {
             transcriptStore: InMemorySessionTranscriptStore()
         )
         let runID = await runtime.start(AgentRunRequest(runID: "pair-1", sessionKey: "pair", prompt: "go"), streaming: false)
-        try await waitUntil { await log.contains("slow-started") }
+        try await waitUntil("slow tool started") { await log.contains("slow-started") }
         #expect(await runtime.abort(runID: runID))
         #expect(await runtime.wait(runID: runID)?.status == "error")
 
@@ -315,7 +307,7 @@ struct AgentLoopHardeningTests {
             transcriptStore: InMemorySessionTranscriptStore()
         )
         let runID = await runtime.start(AgentRunRequest(sessionKey: "stream-abort", prompt: "look"), streaming: true)
-        try await waitUntil { await log.contains("slow-started") }
+        try await waitUntil("slow tool started") { await log.contains("slow-started") }
         await runtime.abort(runID: runID)
         _ = await runtime.wait(runID: runID)
         let history = try await runtime.history(sessionKey: "stream-abort")

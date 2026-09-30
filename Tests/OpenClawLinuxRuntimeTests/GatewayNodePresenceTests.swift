@@ -6,7 +6,7 @@ import OpenClawProtocol
 
 /// Presence (`system-presence`, `presence` events), node pairing (`node.pair.*`, `node.list`,
 /// `node.rename`) and `mcp.authLogin` on the in-process server.
-@Suite("Gateway node pairing and presence")
+@Suite("Gateway node pairing and presence", .timeLimit(.minutes(1)))
 struct GatewayNodePresenceTests {
     private typealias Harness = GatewayServerTestHarness
 
@@ -37,7 +37,7 @@ struct GatewayNodePresenceTests {
         #expect(entry["onlineSince"]?.int64Value != nil)
 
         await client.disconnect()
-        let frames = await Harness.collect(events) { $0.count >= 2 }
+        let frames = try await Harness.collect(events, "two presence frames") { $0.count >= 2 }
         #expect(frames.first?.payload?.dictionaryValue?["presence"]?.arrayValue?.count == 1)
         #expect(frames.last?.payload?.dictionaryValue?["presence"]?.arrayValue?.isEmpty == true)
         #expect(await server.presenceEntries().isEmpty)
@@ -72,7 +72,7 @@ struct GatewayNodePresenceTests {
         #expect(rejected["nodeId"] == AnyCodable("node-2"))
         #expect(await Harness.call(server, "node.pair.approve", ["requestId": AnyCodable("missing")]).error?.message == "unknown requestId")
 
-        let frames = await Harness.collect(events) { $0.count >= 3 }
+        let frames = try await Harness.collect(events, "three pairing frames") { $0.count >= 3 }
         #expect(frames.compactMap { $0.payload?.dictionaryValue?["decision"]?.stringValue } == ["approved", "removed", "rejected"])
 
         // Pairing scope is enforced before dispatch.

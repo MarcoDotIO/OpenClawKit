@@ -7,7 +7,7 @@ import OpenClawProtocol
 
 /// Session organization over the in-process server: pin/archive/rename/unread/color through
 /// `sessions.patch`, `sessions.groups.*`, agent-scoped listing.
-@Suite("Gateway session organization")
+@Suite("Gateway session organization", .timeLimit(.minutes(1)))
 struct GatewaySessionOrganizationTests {
     private typealias Harness = GatewayServerTestHarness
 
@@ -114,7 +114,7 @@ struct GatewaySessionOrganizationTests {
         let events = await stack.server.events(filter: .only(.sessionsChanged))
         _ = await Harness.call(stack.server, "sessions.patch", ["key": AnyCodable("agent:main:x"), "category": AnyCodable("Research")])
         #expect(await stack.server.sessionGroups.contains("Research"))
-        let frames = await Harness.collect(events) { !$0.isEmpty }
+        let frames = try await Harness.collect(events, "sessions.changed after patch") { !$0.isEmpty }
         let payload = try #require(frames.first?.payload?.dictionaryValue)
         #expect(payload["reason"] == AnyCodable("create"))
         #expect(payload["session"]?.dictionaryValue?["category"] == AnyCodable("Research"))

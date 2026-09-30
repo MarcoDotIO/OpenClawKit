@@ -7,7 +7,7 @@ import OpenClawProtocol
 
 /// Legacy + upstream wire shapes of the in-process gateway (agent/agent.wait, session rows,
 /// session mutations, chat events) and the built-in session lifecycle handlers.
-@Suite("Gateway wire shapes")
+@Suite("Gateway wire shapes", .timeLimit(.minutes(1)))
 struct GatewayWireShapeTests {
     private typealias Harness = GatewayServerTestHarness
 
@@ -320,7 +320,7 @@ struct GatewayWireShapeTests {
         #expect(deleted["archived"] == AnyCodable([AnyCodable]()))
         #expect(await store.recordForKey("agent:main:work") == nil)
 
-        let frames = await Harness.collect(events) { $0.count >= 3 }
+        let frames = try await Harness.collect(events, "three sessions.changed frames") { $0.count >= 3 }
         let reasons = frames.compactMap { $0.payload?.dictionaryValue?["reason"]?.stringValue }
         #expect(reasons == ["create", "reset", "delete"])
         #expect(frames.first?.payload?.dictionaryValue?["session"]?.dictionaryValue?["pinned"] == AnyCodable(true))

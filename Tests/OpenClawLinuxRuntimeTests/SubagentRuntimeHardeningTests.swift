@@ -186,7 +186,7 @@ struct SubagentRuntimeHardeningTests {
             modelRouter: ModelRouter(defaultProviderID: provider.id, providers: [provider])
         )
         await runtime.start(AgentRunRequest(runID: "dup", sessionKey: "one", prompt: "a"), streaming: false)
-        try await waitUntil { await provider.count() == 1 }
+        try await waitUntil("first run reached the provider") { await provider.count() == 1 }
         await runtime.start(AgentRunRequest(runID: "dup", sessionKey: "two", prompt: "b"), streaming: false)
         #expect(await runtime.activeRunIDs() == ["dup"])
         await provider.release()

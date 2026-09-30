@@ -426,8 +426,10 @@ struct MCPHardeningTests {
                 return FakeMCPHTTP.Reply(status: 202, headers: [:], chunks: [])
             }
         }
+        // The request timeout is past the suite's time limit, so a call or refresh that stalls behind
+        // another request fails as a hang instead of recovering when that request times out.
         let config = MCPConfig(servers: [
-            (name: "tracker", config: MCPServerConfig(url: "https://mcp.example.com/mcp", transport: "streamable-http", requestTimeoutMs: 500)),
+            (name: "tracker", config: MCPServerConfig(url: "https://mcp.example.com/mcp", transport: "streamable-http", requestTimeoutMs: 3_600_000)),
         ])
         let manager = MCPClientManager(config: config, transportFactory: { _, server, _ in
             MCPStreamableHTTPTransport(url: URL(string: server.url!)!, http: http)
@@ -435,10 +437,7 @@ struct MCPHardeningTests {
         #expect(await manager.tools().map(\.name) == ["tracker__create_issue"])
 
         // The GET stream opens after the 202 to notifications/initialized.
-        let deadline = Date().addingTimeInterval(3)
-        while !http.requests.contains(where: { $0.httpMethod == "GET" }), Date() < deadline {
-            try await Task.sleep(nanoseconds: 20_000_000)
-        }
+        try await waitUntil("server stream GET opened") { http.requests.contains { $0.httpMethod == "GET" } }
         let get = try #require(http.requests.first { $0.httpMethod == "GET" })
         #expect(get.value(forHTTPHeaderField: "Accept") == "text/event-stream")
         #expect(get.value(forHTTPHeaderField: "Mcp-Session-Id") == "s-1")
@@ -446,16 +445,10 @@ struct MCPHardeningTests {
 
         _ = changed.insert("yes")
         serverFeed.yield(Data("event: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}\n\n".utf8))
-        let started = Date()
         // A call right after the notification must not stall behind the refresh.
         _ = try await manager.call(server: "tracker", tool: "create_issue", arguments: [:])
-        var names = await manager.tools().map(\.name)
-        while names.count < 2, Date() < deadline.addingTimeInterval(2) {
-            try await Task.sleep(nanoseconds: 20_000_000)
-            names = await manager.tools().map(\.name)
-        }
-        #expect(names == ["tracker__create_issue", "tracker__close_issue"])
-        #expect(Date().timeIntervalSince(started) < 0.5 * 3, "no request-timeout stall")
+        try await waitUntil("catalog refreshed after list_changed") { await manager.tools().count >= 2 }
+        #expect(await manager.tools().map(\.name) == ["tracker__create_issue", "tracker__close_issue"])
         serverFeed.finish()
         await manager.shutdown()
     }
