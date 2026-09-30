@@ -5,14 +5,20 @@ import OpenClawKit
 
 /// Gateway transport whose `chat.send` stays pending until the test acknowledges it.
 private actor HeldChatSendRequester: OpenClawIntentGatewayRequesting {
-    private(set) var sendParams: [String: AnyCodable]?
+    /// Params of each `chat.send`, yielded the moment the request arrives.
+    nonisolated let sends: AsyncStream<[String: AnyCodable]>
+    private let sendsContinuation: AsyncStream<[String: AnyCodable]>.Continuation
     private(set) var abortParams: [[String: AnyCodable]] = []
     private var pendingSend: CheckedContinuation<Data, any Error>?
+
+    init() {
+        (self.sends, self.sendsContinuation) = AsyncStream.makeStream()
+    }
 
     func request(method: String, params: [String: AnyCodable]?, timeoutMs: Double?) async throws -> Data {
         switch method {
         case "chat.send":
-            self.sendParams = params ?? [:]
+            self.sendsContinuation.yield(params ?? [:])
             return try await withCheckedThrowingContinuation { self.pendingSend = $0 }
         case "chat.abort":
             self.abortParams.append(params ?? [:])
@@ -26,26 +32,25 @@ private actor HeldChatSendRequester: OpenClawIntentGatewayRequesting {
         self.pendingSend?.resume(returning: Data(json.utf8))
         self.pendingSend = nil
     }
-
-    var idempotencyKey: String? {
-        self.sendParams?["idempotencyKey"]?.stringValue
-    }
 }
 
 private func chatEvent(_ fields: [String: String]) -> EventFrame {
     EventFrame(type: "event", event: "chat", payload: AnyCodable(fields.mapValues { AnyCodable($0) }))
 }
 
+/// Returns the idempotency key of the first `chat.send` once it reaches the requester.
+///
+/// Event-driven rather than deadline-polled: under a saturated test pool the send can take
+/// seconds to arrive, which must only slow the test down. The suite's time limit bounds a real hang.
 private func waitForSend(_ requester: HeldChatSendRequester) async throws -> String {
-    let deadline = ContinuousClock.now.advanced(by: .seconds(5))
-    while ContinuousClock.now < deadline {
-        if let key = await requester.idempotencyKey { return key }
-        try await Task.sleep(for: .milliseconds(5))
+    for await params in requester.sends {
+        return try #require(params["idempotencyKey"]?.stringValue)
     }
+    // The stream is never finished, so iteration only ends when the time limit cancels the test.
     throw CancellationError()
 }
 
-@Suite("App Intents run matching")
+@Suite("App Intents run matching", .timeLimit(.minutes(1)))
 struct OpenClawAppIntentsRunMatchingTests {
     @Test
     func anotherAgentsRunBeforeTheAckNeverHijacksTheIntent() async throws {

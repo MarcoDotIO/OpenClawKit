@@ -196,7 +196,7 @@ private final class InMemoryWatchNodeConfigurationStore: OpenClawWatchNodeConfig
     }
 }
 
-@Suite(.serialized)
+@Suite(.serialized, .timeLimit(.minutes(1)))
 struct WatchNodeClientTests {
     private static let nowMs = Int64(1_800_000_000_000)
 
@@ -223,12 +223,10 @@ struct WatchNodeClientTests {
             sentAtMs: sentAtMs)
     }
 
-    private static func eventually(
-        timeout: Duration = .seconds(5),
-        _ condition: @Sendable () async -> Bool) async -> Bool
-    {
-        let deadline = ContinuousClock.now + timeout
-        while ContinuousClock.now < deadline {
+    /// Polls until `condition` holds. There is no wall-clock deadline, so a saturated test pool only
+    /// slows the wait down; the suite's time limit cancels a real hang, which ends the wait with `false`.
+    private static func eventually(_ condition: @Sendable () async -> Bool) async -> Bool {
+        while !Task.isCancelled {
             if await condition() { return true }
             try? await Task.sleep(for: .milliseconds(5))
         }
