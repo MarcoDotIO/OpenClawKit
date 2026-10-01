@@ -672,6 +672,22 @@ private actor AsyncCounter {
     }
 }
 
+/// The view model credits a reply to a send only when the reply is stamped at or
+/// after the local send. Stamping canned replies at test start plus a fixed offset
+/// breaks once a starved pool delays the send past the offset, so stamp them when
+/// the fake first serves them after the send.
+private actor ReplyClock {
+    private var baseMs: Double?
+
+    /// Captured on the first call and reused, so repeated responses keep one order.
+    func base() -> Double {
+        if let baseMs { return baseMs }
+        let now = Date().timeIntervalSince1970 * 1000
+        self.baseMs = now
+        return now
+    }
+}
+
 private actor AsyncStringRecorder {
     private var values: [String] = []
 
@@ -5531,13 +5547,14 @@ struct ChatViewModelTests {
     func `superseded pending refresh preserves an in-flight run`(refreshIndex: Int) async throws {
         let historyGate = AsyncGate()
         let historyStarted = AsyncCounter()
-        let now = Date().timeIntervalSince1970 * 1000 + 10000
+        let replyClock = ReplyClock()
         let (transport, vm) = await makeViewModel(
             historyResponses: [historyPayload(), historyPayload()],
             historyResponseHook: { _, index, runIds in
                 guard index >= refreshIndex, let runId = runIds.last else { return nil }
                 _ = await historyStarted.increment()
                 await historyGate.wait()
+                let now = await replyClock.base()
                 return historyPayload(
                     messages: [
                         chatTextMessage(
@@ -5634,19 +5651,23 @@ struct ChatViewModelTests {
 
     @Test func `completion wait refreshes history and clears pending run`() async throws {
         let sessionId = "sess-main"
-        let now = (Date().timeIntervalSince1970 * 1000) + 10000
+        let replyClock = ReplyClock()
         let history1 = historyPayload(sessionId: sessionId)
         let history2 = historyPayload(sessionId: sessionId, messages: [])
-        let history3 = historyPayload(
-            sessionId: sessionId,
-            messages: [
-                chatTextMessage(
-                    role: "assistant",
-                    text: "completed after wait",
-                    timestamp: now + 60000),
-            ])
         let (transport, vm) = await makeViewModel(
-            historyResponses: [history1, history2, history3],
+            historyResponses: [history1, history2],
+            historyResponseHook: { _, index, _ in
+                guard index >= 2 else { return nil }
+                let now = await replyClock.base()
+                return historyPayload(
+                    sessionId: sessionId,
+                    messages: [
+                        chatTextMessage(
+                            role: "assistant",
+                            text: "completed after wait",
+                            timestamp: now),
+                    ])
+            },
             sendMessageStatus: "pending",
             waitForRunCompletionHook: { _, _ in .terminal(.completed) })
         try await loadAndWaitBootstrap(vm: vm, sessionId: sessionId)
@@ -5673,23 +5694,27 @@ struct ChatViewModelTests {
         let historyCalls = AsyncCounter()
         let waitCalls = AsyncCounter()
         let sessionId = "sess-main"
-        let now = (Date().timeIntervalSince1970 * 1000) + 10000
+        let replyClock = ReplyClock()
         let empty = historyPayload(sessionId: sessionId)
-        let completed = historyPayload(
-            sessionId: sessionId,
-            messages: [
-                chatTextMessage(
-                    role: "assistant",
-                    text: "recovered after history failure",
-                    timestamp: now + 1),
-            ])
         let (transport, vm) = await makeViewModel(
-            historyResponses: [empty, empty, empty, completed],
+            historyResponses: [empty, empty, empty],
             requestHistoryHook: { _ in
                 let count = await historyCalls.increment()
                 if count == 3 {
                     throw NSError(domain: "ChatViewModelTests", code: 1)
                 }
+            },
+            historyResponseHook: { _, index, _ in
+                guard index >= 3 else { return nil }
+                let now = await replyClock.base()
+                return historyPayload(
+                    sessionId: sessionId,
+                    messages: [
+                        chatTextMessage(
+                            role: "assistant",
+                            text: "recovered after history failure",
+                            timestamp: now),
+                    ])
             },
             sendMessageStatus: "pending",
             waitForRunCompletionHook: { _, _ in
@@ -5782,19 +5807,23 @@ struct ChatViewModelTests {
 
     @Test func `agent lifecycle end refreshes history and clears pending run`() async throws {
         let sessionId = "sess-main"
-        let now = (Date().timeIntervalSince1970 * 1000) + 10000
+        let replyClock = ReplyClock()
         let history1 = historyPayload(sessionId: sessionId)
         let history2 = historyPayload(sessionId: sessionId, messages: [])
-        let history3 = historyPayload(
-            sessionId: sessionId,
-            messages: [
-                chatTextMessage(
-                    role: "assistant",
-                    text: "completed from lifecycle",
-                    timestamp: now + 60000),
-            ])
         let (transport, vm) = await makeViewModel(
-            historyResponses: [history1, history2, history3],
+            historyResponses: [history1, history2],
+            historyResponseHook: { _, index, _ in
+                guard index >= 2 else { return nil }
+                let now = await replyClock.base()
+                return historyPayload(
+                    sessionId: sessionId,
+                    messages: [
+                        chatTextMessage(
+                            role: "assistant",
+                            text: "completed from lifecycle",
+                            timestamp: now),
+                    ])
+            },
             sendMessageStatus: "pending")
         try await loadAndWaitBootstrap(vm: vm, sessionId: sessionId)
 
@@ -6962,20 +6991,16 @@ struct ChatViewModelTests {
         let staleRefreshGate = SessionSubscribeGate()
         let historyCount = AsyncCounter()
         let staleRefreshReleasedCount = AsyncCounter()
-        let now = (Date().timeIntervalSince1970 * 1000) + 10000
+        let replyClock = ReplyClock()
+        let now = Date().timeIntervalSince1970 * 1000
         let firstTurn = [
-            chatTextMessage(role: "user", text: "retry", timestamp: now),
-            chatTextMessage(role: "assistant", text: "first answer", timestamp: now + 1),
-        ]
-        let latestBoundedTurn = [
-            chatTextMessage(role: "user", text: "retry", timestamp: now + 2),
-            chatTextMessage(role: "assistant", text: "second answer", timestamp: now + 3),
+            chatTextMessage(role: "user", text: "retry", timestamp: now - 2),
+            chatTextMessage(role: "assistant", text: "first answer", timestamp: now - 1),
         ]
         let (transport, vm) = await makeViewModel(
             historyResponses: [
                 historyPayload(sessionId: sessionId, messages: firstTurn),
                 historyPayload(sessionId: sessionId, messages: firstTurn),
-                historyPayload(sessionId: sessionId, messages: latestBoundedTurn),
             ],
             requestHistoryHook: { sessionKey in
                 guard sessionKey == "main" else { return }
@@ -6984,6 +7009,16 @@ struct ChatViewModelTests {
                     await staleRefreshGate.wait()
                     _ = await staleRefreshReleasedCount.increment()
                 }
+            },
+            historyResponseHook: { _, index, _ in
+                guard index >= 2 else { return nil }
+                let now = await replyClock.base()
+                return historyPayload(
+                    sessionId: sessionId,
+                    messages: [
+                        chatTextMessage(role: "user", text: "retry", timestamp: now),
+                        chatTextMessage(role: "assistant", text: "second answer", timestamp: now + 1),
+                    ])
             })
         try await loadAndWaitBootstrap(vm: vm, sessionId: sessionId)
 
@@ -10778,7 +10813,7 @@ struct ChatViewModelTests {
         let staleFallbackGate = SessionSubscribeGate()
         let mainHistoryCount = AsyncCounter()
         let staleFallbackReleasedCount = AsyncCounter()
-        let now = (Date().timeIntervalSince1970 * 1000) + 10000
+        let replyClock = ReplyClock()
         let (transport, vm) = await makeViewModel(
             historyResponses: [historyPayload(sessionKey: "main", sessionId: "sess-main")],
             requestHistoryHook: { sessionKey in
@@ -10791,6 +10826,7 @@ struct ChatViewModelTests {
             },
             historyResponseHook: { _, index, sentRunIds in
                 guard let runId = sentRunIds.last else { return nil }
+                let now = await replyClock.base()
                 if (1...3).contains(index) {
                     let sessionId = switch index {
                     case 1: "sess-main-send-refresh"
@@ -10849,16 +10885,20 @@ struct ChatViewModelTests {
 
     @Test @MainActor func `session activity without chat snapshot does not retain completed pending run`() async throws {
         let historyCalls = AsyncCounter()
-        let now = (Date().timeIntervalSince1970 * 1000) + 10000
-        let completedHistory = historyPayload(
-            messages: [
-                chatTextMessage(role: "user", text: "hello", timestamp: now),
-                chatTextMessage(role: "assistant", text: "done", timestamp: now + 1),
-            ],
-            hasActiveRun: true)
+        let replyClock = ReplyClock()
         let (transport, vm) = await makeViewModel(
-            historyResponses: [historyPayload(), completedHistory],
+            historyResponses: [historyPayload()],
             requestHistoryHook: { _ in _ = await historyCalls.increment() },
+            historyResponseHook: { _, index, _ in
+                guard index >= 1 else { return nil }
+                let now = await replyClock.base()
+                return historyPayload(
+                    messages: [
+                        chatTextMessage(role: "user", text: "hello", timestamp: now),
+                        chatTextMessage(role: "assistant", text: "done", timestamp: now + 1),
+                    ],
+                    hasActiveRun: true)
+            },
             sendMessageStatus: "pending")
 
         try await loadAndWaitBootstrap(vm: vm)
