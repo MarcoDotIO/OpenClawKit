@@ -8,7 +8,7 @@ import OpenClawProtocol
 
 /// Server event emission: runtime → `agent`/`chat`/`session.*`/`sessions.changed`, per-connection
 /// session subscriptions, filters, and startup gating.
-@Suite("Gateway event stream")
+@Suite("Gateway event stream", .timeLimit(.minutes(1)))
 struct GatewayEventStreamTests {
     private typealias Harness = GatewayServerTestHarness
 
@@ -31,7 +31,7 @@ struct GatewayEventStreamTests {
         #expect(sent["runId"] == AnyCodable("client-run-1"))
         #expect(sent["status"] == AnyCodable("in_flight"))
 
-        let frames = await Harness.collect(events) { frames in
+        let frames = try await Harness.collect(events, "final chat and lifecycle end") { frames in
             frames.contains { $0.event == "chat" && ["final", "error", "aborted"].contains($0.payload?.dictionaryValue?["state"]?.stringValue ?? "") }
                 && frames.contains { $0.event == "sessions.changed" && $0.payload?.dictionaryValue?["phase"] == AnyCodable("end") }
         }
@@ -104,7 +104,7 @@ struct GatewayEventStreamTests {
         let sent = try await subscribed.send(method: "sessions.send", params: ["key": AnyCodable("agent:main:main"), "message": AnyCodable("hello")])
         let runID = try #require(sent.payload?.dictionaryValue?["runId"]?.stringValue)
 
-        let received = await subscribedRecorder.waitFor { frames in
+        let received = try await subscribedRecorder.waitFor("subscribed final chat and four session messages") { frames in
             frames.contains { $0.event == "chat" && $0.payload?.dictionaryValue?["state"] == AnyCodable("final") }
                 && frames.filter { $0.event == "session.message" }.count >= 4
         }
@@ -114,7 +114,7 @@ struct GatewayEventStreamTests {
         #expect(messages.allSatisfy { $0["messageId"]?.stringValue != nil })
         #expect(received.contains { $0.event == "session.tool" && $0.payload?.dictionaryValue?["runId"] == AnyCodable(runID) })
 
-        let otherFrames = await otherRecorder.waitFor { frames in
+        let otherFrames = try await otherRecorder.waitFor("other connection final chat") { frames in
             frames.contains { $0.event == "chat" && $0.payload?.dictionaryValue?["state"] == AnyCodable("final") }
         }
         #expect(otherFrames.contains { $0.event == "chat" })
@@ -138,7 +138,7 @@ struct GatewayEventStreamTests {
         _ = try Harness.payload(await Harness.call(stack.server, "sessions.send", [
             "key": AnyCodable("agent:main:main"), "message": AnyCodable("one"),
         ]))
-        _ = await Harness.collect(chat) { frames in frames.contains { $0.payload?.dictionaryValue?["state"] == AnyCodable("final") } }
+        _ = try await Harness.collect(chat, "first run final") { frames in frames.contains { $0.payload?.dictionaryValue?["state"] == AnyCodable("final") } }
         // Keep the second run's start strictly after the first run's rows (millisecond timestamps).
         try await Task.sleep(nanoseconds: 20_000_000)
 
@@ -152,7 +152,7 @@ struct GatewayEventStreamTests {
         _ = try Harness.payload(await Harness.call(
             stack.server, "sessions.send", ["key": AnyCodable("agent:main:main"), "message": AnyCodable("two")], connection: connection
         ))
-        let frames = await Harness.collect(bound) { frames in
+        let frames = try await Harness.collect(bound, "second run messages and final") { frames in
             frames.filter { $0.event == "session.message" }.count >= 2
                 && frames.contains { $0.event == "chat" && $0.payload?.dictionaryValue?["state"] == AnyCodable("final") }
         }
@@ -183,7 +183,9 @@ struct GatewayEventStreamTests {
         #expect(aborted["aborted"] == AnyCodable(true))
         #expect(aborted["runIds"] == AnyCodable([AnyCodable("abort-me")]))
 
-        let frames = await Harness.collect(chatOnly) { $0.contains { $0.payload?.dictionaryValue?["state"] == AnyCodable("aborted") } }
+        let frames = try await Harness.collect(chatOnly, "aborted chat event") { frames in
+            frames.contains { $0.payload?.dictionaryValue?["state"] == AnyCodable("aborted") }
+        }
         #expect(frames.allSatisfy { $0.event == "chat" })
         guard case .aborted(let event)? = Harness.chatFrames(frames, runID: "abort-me").last else {
             Issue.record("expected an aborted chat event")
@@ -206,9 +208,9 @@ struct GatewayEventStreamTests {
         let observer = await server.events(filter: .only(.sessionMessage))
         #expect(await server.wantsSessionEvents(sessionKey: "s") == true)
         await server.broadcast(event: "session.message", payload: AnyCodable(["sessionKey": AnyCodable("s")]))
-        let observed = await Harness.collect(observer) { !$0.isEmpty }
+        let observed = try await Harness.collect(observer, "observed session.message") { !$0.isEmpty }
         #expect(observed.first?.event == "session.message")
-        let seen = await Harness.collect(all) { $0.count >= 2 }
+        let seen = try await Harness.collect(all, "note and session.message") { $0.count >= 2 }
         #expect(seen.map(\.event) == ["sdk.note", "session.message"])
     }
 

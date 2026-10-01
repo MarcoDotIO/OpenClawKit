@@ -96,7 +96,7 @@ private actor DiagnosticRecorder {
     }
 }
 
-@Suite("Model router streaming fallback and cancellation")
+@Suite("Model router streaming fallback and cancellation", .timeLimit(.minutes(1)))
 struct ModelRouterStreamingFallbackTests {
     private static func collect(_ stream: AsyncThrowingStream<ModelStreamChunk, Error>) async throws -> [ModelStreamChunk] {
         var chunks: [ModelStreamChunk] = []
@@ -246,9 +246,7 @@ struct ModelRouterStreamingFallbackTests {
                 )
             )
         }
-        while await primary.generateCalls == 0 {
-            try await Task.sleep(nanoseconds: 5_000_000)
-        }
+        try await waitUntil("primary generate started") { await primary.generateCalls > 0 }
         task.cancel()
         await #expect(throws: CancellationError.self) {
             _ = try await task.value
@@ -285,15 +283,10 @@ struct ModelRouterStreamingFallbackTests {
         let consumer = Task {
             for try await _ in stream {}
         }
-        while await primary.streamCalls == 0 {
-            try await Task.sleep(nanoseconds: 5_000_000)
-        }
+        try await waitUntil("primary stream started") { await primary.streamCalls > 0 }
         consumer.cancel()
         _ = await consumer.result
-        let deadline = Date().addingTimeInterval(5)
-        while await primary.streamTerminations == 0, Date() < deadline {
-            try await Task.sleep(nanoseconds: 5_000_000)
-        }
+        try await waitUntil("primary stream terminated") { await primary.streamTerminations > 0 }
         #expect(await primary.streamTerminations == 1)
         #expect(await fallback.streamCalls == 0)
         #expect(await store.snapshot().usageStats["primary:a"]?.cooldownUntil == nil)

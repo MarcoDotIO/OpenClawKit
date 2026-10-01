@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 import OpenClawAgents
-import OpenClawCore
+@testable import OpenClawCore
 import OpenClawProtocol
 
 @Suite("Automation scheduler and hook gate hardening", .timeLimit(.minutes(1)))
@@ -30,12 +30,8 @@ struct AutomationHardeningTests {
         let at = ISO8601DateFormatter().string(from: Date())
         let job = try await scheduler.addJob(AutomationJob(name: "check-in", schedule: .at(at), payload: Self.event))
         await scheduler.start()
-        let deadline = Date().addingTimeInterval(10)
-        var records = await scheduler.runs(jobID: job.id)
-        while records.isEmpty, Date() < deadline {
-            try await Task.sleep(nanoseconds: 20_000_000)
-            records = await scheduler.runs(jobID: job.id)
-        }
+        try await waitUntil("check-in run recorded") { await !scheduler.runs(jobID: job.id).isEmpty }
+        let records = await scheduler.runs(jobID: job.id)
         await scheduler.stop()
         #expect(records.count == 1)
         #expect(records.first?.status == .ok, "the in-flight run was not cancelled: \(records.first?.error ?? "")")
@@ -47,19 +43,18 @@ struct AutomationHardeningTests {
     func addingAJobWakesTheSleepingLoop() async throws {
         let scheduler = CronScheduler()
         await scheduler.setExecutor { _ in AutomationRunOutcome(status: .ok) }
-        // No jobs: the loop sleeps for its one-minute cap until a job change wakes it.
+        // No jobs: the loop sleeps for its idle cap until a job change wakes it. The cap is past the
+        // suite's time limit, so a loop that is not woken fails as a hang instead of running the job
+        // late.
+        await scheduler._test_setMaximumSleepSeconds(3_600)
         await scheduler.start()
         try await Task.sleep(nanoseconds: 100_000_000)
         let at = ISO8601DateFormatter().string(from: Date().addingTimeInterval(1))
         let job = try await scheduler.addJob(AutomationJob(name: "soon", schedule: .at(at), payload: Self.event))
-        let deadline = Date().addingTimeInterval(10)
-        var records = await scheduler.runs(jobID: job.id)
-        while records.isEmpty, Date() < deadline {
-            try await Task.sleep(nanoseconds: 20_000_000)
-            records = await scheduler.runs(jobID: job.id)
-        }
+        try await waitUntil("job run after the wake") { await !scheduler.runs(jobID: job.id).isEmpty }
+        let records = await scheduler.runs(jobID: job.id)
         await scheduler.stop()
-        #expect(records.first?.status == .ok, "the job ran well before the loop's one-minute cap")
+        #expect(records.first?.status == .ok)
     }
 
     @Test

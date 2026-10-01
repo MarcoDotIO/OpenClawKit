@@ -84,31 +84,41 @@ enum GatewayServerTestHarness {
         try #require(try GatewayPayloadCodec.encode(value).dictionaryValue)
     }
 
-    /// Collects frames until `predicate` holds for the collected list or `timeoutMs` elapses.
+    /// Collects frames until `predicate` holds for the collected list, or the stream ends.
+    ///
+    /// There is no wall-clock deadline: every suite that calls this carries a `.timeLimit`, whose
+    /// cancellation ends the stream and the wait with ``AsyncWaitTimeoutError``.
     static func collect(
         _ stream: AsyncStream<EventFrame>,
-        timeoutMs: UInt64 = 5_000,
-        until predicate: @escaping @Sendable ([EventFrame]) -> Bool
-    ) async -> [EventFrame] {
-        await withTaskGroup(of: [EventFrame]?.self) { group in
-            group.addTask {
-                var frames: [EventFrame] = []
-                for await frame in stream {
-                    frames.append(frame)
-                    if predicate(frames) {
-                        return frames
-                    }
-                }
+        _ label: String,
+        until predicate: @Sendable ([EventFrame]) -> Bool
+    ) async throws -> [EventFrame] {
+        var frames: [EventFrame] = []
+        for await frame in stream {
+            frames.append(frame)
+            if predicate(frames) {
                 return frames
             }
-            group.addTask {
-                try? await Task.sleep(nanoseconds: timeoutMs * 1_000_000)
-                return nil
-            }
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first ?? []
         }
+        if Task.isCancelled {
+            throw recordedWaitTimeout(label)
+        }
+        return frames
+    }
+
+    /// Frames that arrive within `milliseconds`, for asserting that nothing arrives. The window is
+    /// deliberately wall-clock: a slow pool can only hide a stray frame, never invent one.
+    static func frames(_ stream: AsyncStream<EventFrame>, arrivingWithinMs milliseconds: UInt64) async -> [EventFrame] {
+        let consumer = Task {
+            var frames: [EventFrame] = []
+            for await frame in stream {
+                frames.append(frame)
+            }
+            return frames
+        }
+        try? await Task.sleep(nanoseconds: milliseconds * 1_000_000)
+        consumer.cancel()
+        return await consumer.value
     }
 
     /// Chat frames of a run, decoded through ``ChatEventFrame``.
@@ -124,13 +134,14 @@ enum GatewayServerTestHarness {
             self.frames.append(frame)
         }
 
-        func waitFor(timeoutMs: UInt64 = 5_000, _ predicate: @Sendable ([EventFrame]) -> Bool) async -> [EventFrame] {
-            let deadline = Date().addingTimeInterval(Double(timeoutMs) / 1000)
-            while Date() < deadline {
+        /// Polls the recorded frames until `predicate` holds, with no wall-clock deadline (see
+        /// ``GatewayServerTestHarness/collect(_:_:until:)``).
+        func waitFor(_ label: String, _ predicate: @Sendable ([EventFrame]) -> Bool) async throws -> [EventFrame] {
+            while !Task.isCancelled {
                 if predicate(self.frames) { return self.frames }
                 try? await Task.sleep(nanoseconds: 10_000_000)
             }
-            return self.frames
+            throw recordedWaitTimeout(label)
         }
     }
 }

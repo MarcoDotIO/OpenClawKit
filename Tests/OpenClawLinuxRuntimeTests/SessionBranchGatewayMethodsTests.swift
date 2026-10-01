@@ -7,7 +7,7 @@ import OpenClawProtocol
 @testable import OpenClawAgents
 
 /// `sessions.rewind`, `sessions.fork`, `sessions.branches.list|switch` and `sessions.search`.
-@Suite("Session branch gateway methods")
+@Suite("Session branch gateway methods", .timeLimit(.minutes(1)))
 struct SessionBranchGatewayMethodsTests {
     private typealias Harness = GatewayServerTestHarness
     private static let key = "agent:main:main"
@@ -85,7 +85,7 @@ struct SessionBranchGatewayMethodsTests {
 
         // Lifecycle changes of the earlier runs may still be in flight; keep the DAG reasons only.
         let dagReasons: Set<String> = ["rewind", "branch-switch"]
-        let frames = await Harness.collect(events) { frames in
+        let frames = try await Harness.collect(events, "rewind and branch-switch frames") { frames in
             frames.filter { dagReasons.contains($0.payload?.dictionaryValue?["reason"]?.stringValue ?? "") }.count >= 2
         }
         let reasons = frames.compactMap { $0.payload?.dictionaryValue?["reason"]?.stringValue }.filter(dagReasons.contains)

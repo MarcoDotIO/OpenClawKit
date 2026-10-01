@@ -7,7 +7,7 @@ import OpenClawProtocol
 @testable import OpenClawAgents
 
 /// Approval event wire shapes and ordering (2026.3.0 FX1 review fix).
-@Suite("Gateway approval event shapes")
+@Suite("Gateway approval event shapes", .timeLimit(.minutes(1)))
 struct GatewayApprovalEventShapeTests {
     typealias Harness = GatewayServerTestHarness
 
@@ -26,7 +26,7 @@ struct GatewayApprovalEventShapeTests {
         _ = await Harness.call(stack.server, "exec.approval.resolve", [
             "id": AnyCodable(id), "decision": AnyCodable("allow-once"), "reviewer": AnyCodable(["channel": AnyCodable("slack"), "senderId": AnyCodable("u1")]),
         ])
-        let frames = await Harness.collect(events) { frames in frames.contains { $0.event == "exec.approval.resolved" } }
+        let frames = try await Harness.collect(events, "exec.approval.resolved") { frames in frames.contains { $0.event == "exec.approval.resolved" } }
         #expect(frames.map(\.event) == ["exec.approval.requested", "exec.approval.resolved"])
 
         let requestedEvent = try #require(frames.first { $0.event == "exec.approval.requested" }?.payload?.dictionaryValue)
