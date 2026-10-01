@@ -379,6 +379,42 @@ public struct ConfigIndirect<Wrapped: Sendable & Equatable>: Sendable, Equatable
     }
 }
 
+/// Heap-backed storage for a large non-optional config value (see ``ConfigIndirect``).
+///
+/// ``ChannelsConfig`` holds ten channel sections of 500–800 bytes each. Stored inline they made it
+/// about 6 KB and ``OpenClawConfig`` about 8.5 KB, and debug builds give every temporary copy its
+/// own stack slot, so importing a config document took about 390 KB of a 512 KB cooperative-thread
+/// stack. Like ``ConfigIndirect``, every write stores a new immutable box.
+@propertyWrapper
+public struct ConfigBoxed<Wrapped: Sendable & Equatable>: Sendable, Equatable {
+    private final class Storage: Sendable {
+        let value: Wrapped
+
+        init(_ value: Wrapped) {
+            self.value = value
+        }
+    }
+
+    private var storage: Storage
+
+    /// Creates storage holding `wrappedValue`.
+    /// - Parameter wrappedValue: Initial value.
+    public init(wrappedValue: Wrapped) {
+        self.storage = Storage(wrappedValue)
+    }
+
+    /// The stored value.
+    public var wrappedValue: Wrapped {
+        get { self.storage.value }
+        set { self.storage = Storage(newValue) }
+    }
+
+    /// Compares the stored values.
+    public static func == (lhs: ConfigBoxed, rhs: ConfigBoxed) -> Bool {
+        lhs.storage === rhs.storage || lhs.wrappedValue == rhs.wrappedValue
+    }
+}
+
 /// Stored hint that never affects equality (for example the authored order of map keys).
 public struct ConfigOrderHint: Sendable, Equatable, Hashable {
     /// Keys in authored order.

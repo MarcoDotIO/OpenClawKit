@@ -17,25 +17,25 @@ import OpenClawProtocol
 ///   `enabled: false`); memberwise initializers keep defaulting to disabled.
 public struct ChannelsConfig: Codable, Sendable, Equatable {
     /// Discord settings.
-    public var discord: DiscordChannelConfig
+    @ConfigBoxed public var discord: DiscordChannelConfig
     /// Telegram settings.
-    public var telegram: TelegramChannelConfig
+    @ConfigBoxed public var telegram: TelegramChannelConfig
     /// WhatsApp Cloud API settings (SDK-only; upstream `whatsapp` is WhatsApp Web).
-    public var whatsappCloud: WhatsAppCloudChannelConfig
+    @ConfigBoxed public var whatsappCloud: WhatsAppCloudChannelConfig
     /// Slack settings.
-    public var slack: SlackChannelConfig
+    @ConfigBoxed public var slack: SlackChannelConfig
     /// Google Chat settings (encoded as `googlechat`).
-    public var googleChat: GoogleChatChannelConfig
+    @ConfigBoxed public var googleChat: GoogleChatChannelConfig
     /// Signal settings.
-    public var signal: SignalChannelConfig
+    @ConfigBoxed public var signal: SignalChannelConfig
     /// BlueBubbles settings. Removed upstream; migrate with ``migrateBlueBubblesToIMessage()``.
-    public var bluebubbles: LegacyBlueBubblesChannelConfig
+    @ConfigBoxed public var bluebubbles: LegacyBlueBubblesChannelConfig
     /// iMessage settings.
-    public var imessage: IMessageChannelConfig
+    @ConfigBoxed public var imessage: IMessageChannelConfig
     /// Microsoft Teams settings.
-    public var msteams: MicrosoftTeamsChannelConfig
+    @ConfigBoxed public var msteams: MicrosoftTeamsChannelConfig
     /// SDK WebChat settings (upstream retired `channels.webchat`; never emitted upstream).
-    public var webchat: WebChatChannelConfig
+    @ConfigBoxed public var webchat: WebChatChannelConfig
     /// Legacy SDK wrapper for plugin-only channels (kept for back-compat).
     public var pluginChannels: [String: PluginChannelConfig]
     /// Shared channel defaults (upstream `channels.defaults`).
@@ -108,16 +108,17 @@ public struct ChannelsConfig: Codable, Sendable, Equatable {
     /// - Parameter decoder: Source decoder.
     public init(from decoder: Decoder) throws {
         var reader = try ChannelConfigReader(decoder: decoder)
-        self.discord = reader.value(DiscordChannelConfig.self, "discord") ?? DiscordChannelConfig()
-        self.telegram = reader.value(TelegramChannelConfig.self, "telegram") ?? TelegramChannelConfig()
-        self.whatsappCloud = reader.value(WhatsAppCloudChannelConfig.self, "whatsappCloud") ?? WhatsAppCloudChannelConfig()
-        self.slack = reader.value(SlackChannelConfig.self, "slack") ?? SlackChannelConfig()
-        self.googleChat = reader.value(GoogleChatChannelConfig.self, "googlechat", "googleChat") ?? GoogleChatChannelConfig()
-        self.signal = reader.value(SignalChannelConfig.self, "signal") ?? SignalChannelConfig()
-        self.bluebubbles = reader.value(LegacyBlueBubblesChannelConfig.self, "bluebubbles") ?? LegacyBlueBubblesChannelConfig()
-        self.imessage = reader.value(IMessageChannelConfig.self, "imessage") ?? IMessageChannelConfig()
-        self.msteams = reader.value(MicrosoftTeamsChannelConfig.self, "msteams") ?? MicrosoftTeamsChannelConfig()
-        self.webchat = reader.value(WebChatChannelConfig.self, "webchat") ?? WebChatChannelConfig()
+        // Each section decodes straight into its box in its own frame (see `ChannelConfigReader.section`).
+        self._discord = reader.section("discord", fallback: DiscordChannelConfig())
+        self._telegram = reader.section("telegram", fallback: TelegramChannelConfig())
+        self._whatsappCloud = reader.section("whatsappCloud", fallback: WhatsAppCloudChannelConfig())
+        self._slack = reader.section("slack", fallback: SlackChannelConfig())
+        self._googleChat = reader.section("googlechat", "googleChat", fallback: GoogleChatChannelConfig())
+        self._signal = reader.section("signal", fallback: SignalChannelConfig())
+        self._bluebubbles = reader.section("bluebubbles", fallback: LegacyBlueBubblesChannelConfig())
+        self._imessage = reader.section("imessage", fallback: IMessageChannelConfig())
+        self._msteams = reader.section("msteams", fallback: MicrosoftTeamsChannelConfig())
+        self._webchat = reader.section("webchat", fallback: WebChatChannelConfig())
         self.pluginChannels = reader.container.decodeLossyDictionaryIfPresent(
             PluginChannelConfig.self,
             forKey: ChannelConfigKey("pluginChannels")

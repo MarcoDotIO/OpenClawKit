@@ -88,6 +88,15 @@ struct ChannelConfigReader {
         return nil
     }
 
+    /// Decodes a typed channel section into heap storage; absent or invalid sections use `fallback`.
+    ///
+    /// Out of line on purpose: a section's temporaries live in this frame only while that section
+    /// decodes, instead of every section's temporaries sharing the caller's frame.
+    @inline(never)
+    mutating func section<T: ChannelSectionConfig>(_ keys: String..., fallback: @autoclosure () -> T) -> ConfigBoxed<T> {
+        ConfigBoxed(wrappedValue: self.value(T.self, keys: keys) ?? fallback())
+    }
+
     /// Decodes a string list that may contain numbers (upstream `Array<string | number>`).
     mutating func stringList(_ keys: String...) -> [String]? {
         self.consume(keys)
