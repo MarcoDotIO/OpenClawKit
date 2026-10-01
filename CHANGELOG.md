@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 2026.3.2 - 2026-10-01
+
+OpenClawKit 2026.3.2 is a patch release. Decoding and importing channel config
+now uses a fraction of the stack it did; before, it could overflow a 512 KB
+cooperative thread in debug builds. The test suites also stop failing on loaded
+CI runners. There are no breaking changes, and the upstream parity target stays
+OpenClaw `2026.9.6`.
+
 ### Added
 
 - `ConfigBoxed`, the non-optional counterpart of `ConfigIndirect`: a property
@@ -19,6 +27,34 @@
   about 390 KB to 104 KB in debug builds (224 KB to 81 KB in release), and for
   a full `ChannelsConfig` decode from 110 KB to 38 KB. The public properties
   are unchanged.
+
+### Tests
+
+- Test waits no longer give up at a wall-clock deadline (#22, #25, #26, #29,
+  #30). The macOS CI job runs about 3,150 tests in parallel and can stall the
+  cooperative pool for 5–8 s, which failed waits whose condition was about to
+  hold.
+  - Waits now await an event, or poll until the test is cancelled, and every
+    suite or test that waits has `.timeLimit(.minutes(1))`.
+  - A wait that hangs records which wait it was (`AsyncWaitTimeoutError`).
+  - Product waits that ignore cancellation, such as `agent.wait`,
+    `EmbeddedAgentRuntime.wait(runID:)` and the approval and question brokers,
+    go through `awaitCancellable`, so the time limit can end them.
+  - Elapsed-time assertions became time limits or ordering checks.
+  - Product timeouts on passing paths are now past the time limit, so a
+    regression fails as a hang instead of passing when the timeout fires.
+- Each speech-synthesizer test uses its own `TalkSystemSpeechSynthesizer`, so
+  parallel suites no longer share its state (#23).
+- Chat view-model tests stamp canned replies after the send instead of at test
+  start plus a fixed offset. A stalled send no longer makes the reply look
+  older than the message it answers (#27).
+- `ConfigDecodeStackDepthTests` measures the peak stack of the channel-config
+  decode and the document import on a thread whose stack the test maps itself,
+  and bounds both (#28).
+- 3,755 macOS tests pass under `swift test` (Swift Testing: 3,150 in
+  `OpenClawKitTests`, 585 in `OpenClawLinuxRuntimeTests`, 20 E2E), and the
+  `OpenClawLinuxRuntimeTests` bundle no longer crashes with SIGBUS.
+- Release gates: all 13 required CI checks passed on the release tree.
 
 ## 2026.3.1 - 2026-09-30
 
