@@ -24,7 +24,7 @@ struct SessionBranchGatewayMethodsTests {
                 "key": AnyCodable(Self.key), "message": AnyCodable(message), "idempotencyKey": AnyCodable("turn-\(index)"),
             ]))
             let runID = try #require(sent["runId"]?.stringValue)
-            #expect(await stack.runtime.wait(runID: runID, timeoutMs: 5_000)?.status == "ok")
+            #expect(try await awaitCancellable("turn \(index) finished") { await stack.runtime.wait(runID: runID) }?.status == "ok")
         }
         return stack
     }
@@ -124,7 +124,7 @@ struct SessionBranchGatewayMethodsTests {
             "key": AnyCodable(result.sessionkey), "message": AnyCodable("fork follow-up"),
         ]))
         let runID = try #require(sent["runId"]?.stringValue)
-        #expect(await stack.runtime.wait(runID: runID, timeoutMs: 5_000)?.status == "ok")
+        #expect(try await awaitCancellable("fork run finished") { await stack.runtime.wait(runID: runID) }?.status == "ok")
         #expect(try await self.activeEntries(stack, key: result.sessionkey).count == 4)
     }
 
@@ -161,7 +161,8 @@ struct SessionBranchGatewayMethodsTests {
             },
         ])
         let first = try Harness.payload(await Harness.call(stack.server, "sessions.send", ["key": AnyCodable(Self.key), "message": AnyCodable("one")]))
-        _ = await stack.runtime.wait(runID: try #require(first["runId"]?.stringValue), timeoutMs: 5_000)
+        let firstRunID = try #require(first["runId"]?.stringValue)
+        _ = try await awaitCancellable("first run finished") { await stack.runtime.wait(runID: firstRunID) }
         let entries = try await self.activeEntries(stack)
         let userID = try self.userEntryID(entries, text: "one")
         _ = await Harness.call(stack.server, "sessions.send", ["key": AnyCodable(Self.key), "message": AnyCodable("two")])

@@ -191,16 +191,17 @@ struct SystemStateReportingTests {
         #expect(recorder.reports.last == .volatile(.gateway, ["backoffMs": 4000]))
     }
 
-    @Test
+    @Test(.timeLimit(.minutes(1)))
     func coalescingReporterSchedulesTrailingFlush() async throws {
         let recorder = RecordingStateReporter()
-        let reporter = CoalescingSystemStateReporter(wrapping: recorder, minimumInterval: 0.05)
+        // The clock stands still, so the second update always lands inside the interval; only the
+        // trailing flush can forward it.
+        let clock = TestClock()
+        let reporter = CoalescingSystemStateReporter(wrapping: recorder, minimumInterval: 0.05, now: { clock.now })
         reporter.reportVolatileUpdate(.talk, ["level": 1])
         reporter.reportVolatileUpdate(.talk, ["level": 2])
         #expect(recorder.reports == [.volatile(.talk, ["level": 1])])
-        for _ in 0..<50 where recorder.reports.count < 2 {
-            try await Task.sleep(nanoseconds: 20_000_000)
-        }
+        try await waitUntil("trailing flush forwarded the held update") { recorder.reports.count >= 2 }
         #expect(recorder.reports == [.volatile(.talk, ["level": 1]), .volatile(.talk, ["level": 2])])
     }
 

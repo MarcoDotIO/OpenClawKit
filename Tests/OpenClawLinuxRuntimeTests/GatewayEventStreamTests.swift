@@ -192,7 +192,9 @@ struct GatewayEventStreamTests {
             return
         }
         #expect(event.stopreason == "aborted")
-        let waited = try Harness.payload(await Harness.call(stack.server, "agent.wait", ["runId": AnyCodable("abort-me"), "timeoutMs": AnyCodable(2_000)]))
+        let waited = try Harness.payload(try await awaitCancellable("aborted run reported") {
+            await Harness.call(stack.server, "agent.wait", ["runId": AnyCodable("abort-me")])
+        })
         #expect(waited["status"] == AnyCodable("error"))
         #expect(waited["endedAt"]?.int64Value != nil)
     }

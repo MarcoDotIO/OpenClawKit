@@ -5,15 +5,10 @@ import OpenClawProtocol
 @testable import OpenClawAgents
 
 /// Exec approval gate and grant-key hardening (allow-always scope, raw allowlist text, closure rules).
-@Suite("Exec approval hardening")
+@Suite("Exec approval hardening", .timeLimit(.minutes(1)))
 struct ExecApprovalHardeningTests {
     private func firstPending(_ broker: ApprovalBroker) async throws -> AgentApproval {
-        for _ in 0..<300 {
-            if let approval = await broker.pending().first {
-                return approval
-            }
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
+        try await waitUntil("exec approval pending") { await !broker.pending().isEmpty }
         return try #require(await broker.pending().first)
     }
 

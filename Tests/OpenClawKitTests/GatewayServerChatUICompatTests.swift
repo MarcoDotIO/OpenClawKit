@@ -5,7 +5,7 @@ import Testing
 
 /// The in-process server's session rows, `sessions.changed`, `session.message` and protocol-v4
 /// `chat` payloads decode through the ChatUI transport models.
-@Suite("Gateway server ChatUI compatibility")
+@Suite("Gateway server ChatUI compatibility", .timeLimit(.minutes(1)))
 struct GatewayServerChatUICompatTests {
     private func makeStack(_ name: String, turns: [String]) async throws -> (GatewayServer, EmbeddedAgentRuntime, URL) {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("\(name)-\(UUID().uuidString)")
@@ -43,11 +43,8 @@ struct GatewayServerChatUICompatTests {
         private(set) var frames: [EventFrame] = []
         func record(_ frame: EventFrame) { self.frames.append(frame) }
 
-        func wait(_ predicate: @Sendable ([EventFrame]) -> Bool) async -> [EventFrame] {
-            for _ in 0..<500 {
-                if predicate(self.frames) { return self.frames }
-                try? await Task.sleep(nanoseconds: 10_000_000)
-            }
+        func wait(_ label: String, _ predicate: @escaping @Sendable ([EventFrame]) -> Bool) async throws -> [EventFrame] {
+            try await waitUntil(label) { predicate(await self.frames) }
             return self.frames
         }
     }
@@ -101,7 +98,7 @@ struct GatewayServerChatUICompatTests {
         let send = try GatewayPayloadCodec.decode(OpenClawChatSendResponse.self, from: ack.payload)
         #expect(send.runId == "ui-run-1")
 
-        let frames = await recorder.wait { frames in
+        let frames = try await recorder.wait("final chat, both session messages and the end change") { frames in
             frames.contains { $0.event == "chat" && $0.payload?.dictionaryValue?["state"] == AnyCodable("final") }
                 && frames.filter { $0.event == "session.message" }.count >= 2
                 && frames.contains { $0.event == "sessions.changed" && $0.payload?.dictionaryValue?["phase"] == AnyCodable("end") }

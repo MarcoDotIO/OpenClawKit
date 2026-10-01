@@ -8,7 +8,7 @@ import OpenClawProtocol
 
 /// Built-in run tracking, client timeouts, pagination cursors, run-id collisions and
 /// `progressCard.put` validation (2026.3.0 FX1 review fixes).
-@Suite("Gateway run lifecycle")
+@Suite("Gateway run lifecycle", .timeLimit(.minutes(1)))
 struct GatewayRunLifecycleTests {
     typealias Harness = GatewayServerTestHarness
 
@@ -33,22 +33,24 @@ struct GatewayRunLifecycleTests {
 
     @Test
     func builtinAgentWaitTimesOutWithoutWaitingForTheRun() async throws {
+        // The run only ends when aborted, so a wait that ignored its timeout would hang until the time limit.
         let server = Self.bareServer("lifecycle-wait-timeout") { request in
-            try await Task.sleep(nanoseconds: 10_000_000_000)
+            try await Task.sleep(nanoseconds: 3_600_000_000_000)
             return Self.ok(request)
         }
         let accepted = try Harness.payload(await Harness.call(server, "agent", ["message": AnyCodable("slow"), "idempotencyKey": AnyCodable("slow-1")]))
         #expect(accepted["runId"] == AnyCodable("slow-1"))
-        let started = Date()
-        let waited = try Harness.payload(await Harness.call(server, "agent.wait", ["runId": AnyCodable("slow-1"), "timeoutMs": AnyCodable(50)]))
+        let waited = try Harness.payload(try await awaitCancellable("timed-out agent.wait returned") {
+            await Harness.call(server, "agent.wait", ["runId": AnyCodable("slow-1"), "timeoutMs": AnyCodable(50)])
+        })
         #expect(waited["status"] == AnyCodable("timeout"))
-        // Well before the 10 s run ends (generous margin for loaded CI machines).
-        #expect(Date().timeIntervalSince(started) < 5)
         // The run keeps being tracked after a timed-out wait.
         #expect(await server.trackedRuns["slow-1"] != nil)
         let aborted = try Harness.payload(await Harness.call(server, "sessions.abort", ["runId": AnyCodable("slow-1")]))
         #expect(aborted["status"] == AnyCodable("aborted"))
-        let final = try Harness.payload(await Harness.call(server, "agent.wait", ["runId": AnyCodable("slow-1"), "timeoutMs": AnyCodable(5_000)]))
+        let final = try Harness.payload(try await awaitCancellable("aborted run reported") {
+            await Harness.call(server, "agent.wait", ["runId": AnyCodable("slow-1")])
+        })
         #expect(final["status"] == AnyCodable("error"))
         #expect(final["error"] == AnyCodable("aborted"))
     }
@@ -62,7 +64,9 @@ struct GatewayRunLifecycleTests {
             return Self.ok(request)
         }
         _ = await Harness.call(server, "agent", ["message": AnyCodable("explode"), "idempotencyKey": AnyCodable("boom-1")])
-        let failed = try Harness.payload(await Harness.call(server, "agent.wait", ["runId": AnyCodable("boom-1"), "timeoutMs": AnyCodable(5_000)]))
+        let failed = try Harness.payload(try await awaitCancellable("failed run reported") {
+            await Harness.call(server, "agent.wait", ["runId": AnyCodable("boom-1")])
+        })
         #expect(failed["status"] == AnyCodable("error"))
         #expect(failed["error"] == AnyCodable("exploded"))
         #expect(failed["endedAt"] != nil)
@@ -71,9 +75,7 @@ struct GatewayRunLifecycleTests {
         _ = await Harness.call(server, "sessions.send", [
             "key": AnyCodable("agent:main:quick"), "message": AnyCodable("quick"), "idempotencyKey": AnyCodable("quick-1"),
         ])
-        for _ in 0..<200 where await server.completedRuns["quick-1"] == nil {
-            try await Task.sleep(nanoseconds: 5_000_000)
-        }
+        try await waitUntil("unwatched run completed") { await server.completedRuns["quick-1"] != nil }
         #expect(await server.agentRuns.isEmpty)
         #expect(await server.trackedRuns.isEmpty)
         let abortByKey = try Harness.payload(await Harness.call(server, "sessions.abort", ["key": AnyCodable("agent:main:quick")]))
@@ -169,7 +171,9 @@ struct GatewayRunLifecycleTests {
             "key": AnyCodable("agent:main:main"), "message": AnyCodable("hi"),
         ]))
         let runID = try #require(sent["runId"]?.stringValue)
-        _ = await Harness.call(stack.server, "agent.wait", ["runId": AnyCodable(runID), "timeoutMs": AnyCodable(5_000)])
+        _ = try await awaitCancellable("sessions.send run finished") {
+            await Harness.call(stack.server, "agent.wait", ["runId": AnyCodable(runID)])
+        }
         let task = await ledger.create(kind: .tool, sessionKey: "agent:main:main")
 
         for method in ["tasks.list", "approval.history"] {
@@ -205,9 +209,11 @@ struct GatewayRunLifecycleTests {
 
     @Test
     func reusedIdempotencyKeysDoNotStartASecondRunUnderTheSameID() async throws {
+        // The first run stays in flight until the duplicate sends are refused.
+        let inFlight = AsyncGate()
         let stack = await Harness.runtimeStack("lifecycle-run-ids", turns: [
             { _ in
-                try await Task.sleep(nanoseconds: 3_000_000_000)
+                await inFlight.wait()
                 return ModelGenerationResponse(text: "first", providerID: "scripted")
             },
         ], fallback: ScriptedToolProvider.text("later"))
@@ -225,7 +231,10 @@ struct GatewayRunLifecycleTests {
         ]))
         #expect(agent["status"] == AnyCodable("in_flight"))
         #expect(await stack.runtime.activeRunIDs() == ["msg-1"])
-        let waited = try Harness.payload(await Harness.call(stack.server, "agent.wait", ["runId": AnyCodable("msg-1"), "timeoutMs": AnyCodable(5_000)]))
+        await inFlight.open()
+        let waited = try Harness.payload(try await awaitCancellable("first run finished") {
+            await Harness.call(stack.server, "agent.wait", ["runId": AnyCodable("msg-1")])
+        })
         #expect(waited["output"] == AnyCodable("first"))
     }
 

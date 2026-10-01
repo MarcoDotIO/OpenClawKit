@@ -31,3 +31,27 @@ func recordedWaitTimeout(_ label: String) -> AsyncWaitTimeoutError {
     Issue.record(timeout)
     return timeout
 }
+
+/// Awaits `operation` in its own task, so a time-limit cancellation ends the wait even when the
+/// operation ignores cancellation.
+///
+/// Product waits such as `EmbeddedAgentRuntime.wait(runID:)`, the gateway's `agent.wait` and the
+/// approval and question brokers park on a continuation that only their own timer or the awaited
+/// event resumes. Wrapping them here lets a test wait without a timeout: a regression shows up as a
+/// hang, and the time limit turns it into an ``AsyncWaitTimeoutError`` naming `label`.
+func awaitCancellable<T: Sendable>(_ label: String, _ operation: @escaping @Sendable () async throws -> T) async throws -> T {
+    let (results, continuation) = AsyncStream<Result<T, any Error>>.makeStream(bufferingPolicy: .bufferingNewest(1))
+    let task = Task {
+        do {
+            continuation.yield(.success(try await operation()))
+        } catch {
+            continuation.yield(.failure(error))
+        }
+        continuation.finish()
+    }
+    defer { task.cancel() }
+    for await result in results {
+        return try result.get()
+    }
+    throw recordedWaitTimeout(label)
+}

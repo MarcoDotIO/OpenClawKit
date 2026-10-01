@@ -252,7 +252,9 @@ struct GatewayWireShapeTests {
         #expect(params.cwd == "/tmp")
         #expect(params.idempotencyKey == "idem-1")
 
-        let waited = try Harness.payload(await Harness.call(server, "agent.wait", ["runId": AnyCodable(runID), "timeoutMs": AnyCodable(2_000)]))
+        let waited = try Harness.payload(try await awaitCancellable("accepted run finished") {
+            await Harness.call(server, "agent.wait", ["runId": AnyCodable(runID)])
+        })
         #expect(waited["status"] == AnyCodable("ok"))
         #expect(waited["output"] == AnyCodable("hello"))
         #expect(waited["startedAt"]?.int64Value != nil)
@@ -277,7 +279,9 @@ struct GatewayWireShapeTests {
         #expect(timedOut["status"] == AnyCodable("timeout"))
         #expect(timedOut["startedAt"]?.int64Value != nil)
         #expect(timedOut["endedAt"] == nil)
-        let done = try Harness.payload(await Harness.call(server, "agent.wait", ["runID": AnyCodable("slow-run"), "timeoutMs": AnyCodable(2_000)]))
+        let done = try Harness.payload(try await awaitCancellable("slow run finished") {
+            await Harness.call(server, "agent.wait", ["runID": AnyCodable("slow-run")])
+        })
         #expect(done["status"] == AnyCodable("ok"))
         #expect(done["output"] == AnyCodable("late"))
     }

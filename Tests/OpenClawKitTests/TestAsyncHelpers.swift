@@ -21,8 +21,37 @@ func waitUntil(
         if await condition() { return }
         try? await Task.sleep(nanoseconds: pollMs * 1_000_000)
     }
-    // Swift Testing drops errors thrown after a time-limit cancellation, so record which wait hung.
+    throw recordedWaitTimeout(label)
+}
+
+/// Records which wait hung and returns the error to throw. Swift Testing drops errors thrown after a
+/// time-limit cancellation, so the recorded issue is what names the wait.
+func recordedWaitTimeout(_ label: String) -> AsyncWaitTimeoutError {
     let timeout = AsyncWaitTimeoutError(label: label)
     Issue.record(timeout)
-    throw timeout
+    return timeout
+}
+
+/// Awaits `operation` in its own task, so a time-limit cancellation ends the wait even when the
+/// operation ignores cancellation.
+///
+/// `EmbeddedAgentRuntime.wait(runID:)` and the gateway's `agent.wait` park on a continuation that
+/// only their own timer or the finished run resumes. Wrapping them here lets a test wait without a
+/// timeout: a regression shows up as a hang, and the time limit turns it into an
+/// ``AsyncWaitTimeoutError`` naming `label`.
+func awaitCancellable<T: Sendable>(_ label: String, _ operation: @escaping @Sendable () async throws -> T) async throws -> T {
+    let (results, continuation) = AsyncStream<Result<T, any Error>>.makeStream(bufferingPolicy: .bufferingNewest(1))
+    let task = Task {
+        do {
+            continuation.yield(.success(try await operation()))
+        } catch {
+            continuation.yield(.failure(error))
+        }
+        continuation.finish()
+    }
+    defer { task.cancel() }
+    for await result in results {
+        return try result.get()
+    }
+    throw recordedWaitTimeout(label)
 }

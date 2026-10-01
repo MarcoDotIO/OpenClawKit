@@ -89,9 +89,8 @@ struct MCPStdioTransportTests {
         )
         try await transport.start()
         let pid = try #require(await transport.processIdentifier)
-        let startedAt = Date()
         await transport.close()
-        #expect(Date().timeIntervalSince(startedAt) < 5)
+        // The server traps TERM, so it is gone only if close escalated to KILL.
         #expect(kill(pid, 0) != 0)
     }
 
@@ -111,20 +110,26 @@ struct MCPStdioTransportTests {
 
     @Test
     func closeDoesNotWaitForAWriteBlockedOnAFullPipe() async throws {
-        // The server never reads stdin, so a 200 KB message fills the pipe and the write blocks.
+        // The server never reads stdin, so a 200 KB message fills the pipe and the write blocks. The
+        // server outlives the time limit: a close that waited for the write would hang until the
+        // cancellation handler below kills the server.
         let transport = try MCPStdioTransport(
             serverName: "deaf",
-            config: self.config("exec sleep 5"),
+            config: self.config("exec sleep 3600"),
             allowlist: ExecCommandAllowlist(patterns: ["/bin/*", "/usr/bin/*"]),
             shutdownGraceSeconds: 0.2
         )
         try await transport.start()
+        let pid = try #require(await transport.processIdentifier)
         let big = MCPJSONRPCMessage.request(id: .int(1), method: "tools/call", params: AnyCodable(["blob": AnyCodable(String(repeating: "x", count: 200_000))]))
         let pending = Task { try await transport.send(big) }
         try await Task.sleep(nanoseconds: 200_000_000)
-        let startedAt = Date()
-        await transport.close()
-        #expect(Date().timeIntervalSince(startedAt) < 3, "close escalates without waiting for the blocked write")
+        await withTaskCancellationHandler {
+            await transport.close()
+        } onCancel: {
+            _ = kill(pid, SIGKILL)
+        }
+        #expect(kill(pid, 0) != 0, "close escalates without waiting for the blocked write")
         // Once the child is gone the blocked write fails with EPIPE (no SIGPIPE crash).
         await #expect(throws: MCPTransportError.self) {
             try await pending.value

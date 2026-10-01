@@ -7,7 +7,7 @@ import Glibc
 import Darwin
 #endif
 
-@Suite("Media pipeline", .serialized)
+@Suite("Media pipeline", .serialized, .timeLimit(.minutes(1)))
 struct MediaPipelineTests {
     @Test
     func normalizeRejectsEmptyMimeTypeAndOversizedPayloads() async throws {
@@ -415,22 +415,26 @@ struct MediaPipelineTests {
         }
 
         let baseURL = URL(string: "http://127.0.0.1:\(port)/")!
-        try await self.waitForHTTPServer(baseURL: baseURL)
+        try await self.waitForHTTPServer(baseURL: baseURL, process: process)
         try await body(baseURL)
     }
 
-    private func waitForHTTPServer(baseURL: URL) async throws {
-        var lastError: (any Error)?
-        for _ in 0..<20 {
-            do {
-                _ = try Data(contentsOf: baseURL)
+    /// Polls until the server answers. There is no deadline: a loaded runner only delays Python's
+    /// startup, and the suite's time limit bounds a server that never answers.
+    private func waitForHTTPServer(baseURL: URL, process: Process) async throws {
+        while !Task.isCancelled {
+            if (try? Data(contentsOf: baseURL)) != nil {
                 return
-            } catch {
-                lastError = error
-                try await Task.sleep(nanoseconds: 100_000_000)
             }
+            guard process.isRunning else {
+                throw OpenClawCoreError.unavailable("Local HTTP server exited with status \(process.terminationStatus)")
+            }
+            try? await Task.sleep(nanoseconds: 100_000_000)
         }
-        throw lastError ?? OpenClawCoreError.unavailable("Local HTTP server did not start")
+        // Swift Testing drops errors thrown after a time-limit cancellation, so record which wait hung.
+        let timeout = AsyncWaitTimeoutError(label: "local HTTP server answering")
+        Issue.record(timeout)
+        throw timeout
     }
 
     private func reserveTCPPort() throws -> Int {

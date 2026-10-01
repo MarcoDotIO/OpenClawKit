@@ -149,7 +149,7 @@ struct GatewayServerTests {
         #expect(deletedSession.deleted == true)
     }
 
-    @Test
+    @Test(.timeLimit(.minutes(1)))
     func gatewayServerSupportsAgentRunWaitTimeoutAndCleanup() async throws {
         let root = try self.makeTempDirectory(named: "gateway-server-agent")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -191,12 +191,14 @@ struct GatewayServerTests {
         )
         #expect(!accepted.runID.isEmpty)
 
-        let waited = try await self.request(
-            server,
-            method: "agent.wait",
-            params: GatewayAgentWaitParams(runID: accepted.runID, timeoutMs: 5_000),
-            as: GatewayAgentWaitResult.self
-        )
+        let waited = try await awaitCancellable("first run finished") {
+            try await self.request(
+                server,
+                method: "agent.wait",
+                params: GatewayAgentWaitParams(runID: accepted.runID),
+                as: GatewayAgentWaitResult.self
+            )
+        }
         #expect(waited.status == "ok")
         #expect(waited.output == "first")
 
@@ -227,12 +229,14 @@ struct GatewayServerTests {
         )
         #expect(timedOut.status == "timeout")
 
-        let eventuallyCompleted = try await self.request(
-            server,
-            method: "agent.wait",
-            params: GatewayAgentWaitParams(runID: slow.runID, timeoutMs: 1_000),
-            as: GatewayAgentWaitResult.self
-        )
+        let eventuallyCompleted = try await awaitCancellable("slow run finished") {
+            try await self.request(
+                server,
+                method: "agent.wait",
+                params: GatewayAgentWaitParams(runID: slow.runID),
+                as: GatewayAgentWaitResult.self
+            )
+        }
         #expect(eventuallyCompleted.status == "ok")
         #expect(eventuallyCompleted.output == "slow")
     }
@@ -741,7 +745,7 @@ struct GatewayServerTests {
         }
     }
 
-    @Test
+    @Test(.timeLimit(.minutes(1)))
     func sdkGatewayServerSupportsCatalogSkillsAndRuntimeHandlers() async throws {
         let root = try self.makeTempDirectory(named: "gateway-server-sdk")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -812,10 +816,16 @@ struct GatewayServerTests {
                 modelProviderID: "openai"
             )
         )
-        let completed: GatewayAgentWaitResult = try await client.request(
-            "agent.wait",
-            params: GatewayAgentWaitParams(runID: accepted.runID, timeoutMs: 5_000)
-        )
+        // The client's own request timeout is pushed past the time limit too, so neither side can
+        // expire while the pool is stalled.
+        let completed = try await awaitCancellable("runtime run finished") {
+            try await client.request(
+                "agent.wait",
+                params: GatewayAgentWaitParams(runID: accepted.runID),
+                timeoutMs: 3_600_000,
+                as: GatewayAgentWaitResult.self
+            )
+        }
         #expect(completed.status == "ok")
         #expect(completed.output == "runtime-output")
     }
