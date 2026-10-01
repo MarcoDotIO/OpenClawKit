@@ -7,7 +7,7 @@ import OpenClawProtocol
 @testable import OpenClawAgents
 
 /// `tools.catalog`, `tools.effective` and `tools.invoke` over the runtime tool registry and policy.
-@Suite("Tools gateway methods")
+@Suite("Tools gateway methods", .timeLimit(.minutes(1)))
 struct ToolsGatewayMethodsTests {
     private typealias Harness = GatewayServerTestHarness
 
@@ -164,13 +164,8 @@ struct ToolsGatewayMethodsTests {
                 "name": AnyCodable("lookup"), "args": AnyCodable(["text": AnyCodable("w")]), "confirm": AnyCodable(true),
             ]))
         }
-        var pendingID: String?
-        for _ in 0..<200 {
-            pendingID = await stack.runtime.approvals.pending().first?.id
-            if pendingID != nil { break }
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
-        let waitingID = try #require(pendingID)
+        try await waitUntil("confirmation approval pending") { await !stack.runtime.approvals.pending().isEmpty }
+        let waitingID = try #require(await stack.runtime.approvals.pending().first?.id)
         _ = await Harness.call(stack.server, "approval.resolve", ["id": AnyCodable(waitingID), "decision": AnyCodable("deny")])
         let denied = try await waiting.value
         #expect(denied["ok"] == AnyCodable(false))

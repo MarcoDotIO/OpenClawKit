@@ -10,10 +10,29 @@ import OpenClawProtocol
 final class FakeSpotlightStore: SpotlightItemIndexing, @unchecked Sendable {
     private let lock = NSLock()
     private var items: [String: String] = [:]
-    private let hangs: Bool
+    private var hangs: Bool
+    private var stalled: [@Sendable ((any Error)?) -> Void] = []
 
     init(hangs: Bool = false) {
         self.hangs = hangs
+    }
+
+    /// Answers the calls a hanging store left pending, and every later call.
+    func stopHanging() {
+        let stalled = self.lock.withLock {
+            self.hangs = false
+            defer { self.stalled.removeAll() }
+            return self.stalled
+        }
+        for completion in stalled { completion(nil) }
+    }
+
+    /// Keeps `completion` pending when the store hangs.
+    private func stalls(_ completion: @escaping @Sendable ((any Error)?) -> Void) -> Bool {
+        self.lock.withLock {
+            if self.hangs { self.stalled.append(completion) }
+            return self.hangs
+        }
     }
 
     var isAvailable: Bool {
@@ -28,7 +47,7 @@ final class FakeSpotlightStore: SpotlightItemIndexing, @unchecked Sendable {
     }
 
     func indexItems(_ items: [CSSearchableItem], completion: @escaping @Sendable ((any Error)?) -> Void) {
-        guard !self.hangs else { return }
+        guard !self.stalls(completion) else { return }
         self.lock.lock()
         for item in items { self.items[item.uniqueIdentifier] = item.domainIdentifier ?? "" }
         self.lock.unlock()
@@ -36,7 +55,7 @@ final class FakeSpotlightStore: SpotlightItemIndexing, @unchecked Sendable {
     }
 
     func deleteItems(identifiers: [String], completion: @escaping @Sendable ((any Error)?) -> Void) {
-        guard !self.hangs else { return }
+        guard !self.stalls(completion) else { return }
         self.lock.lock()
         for id in identifiers { self.items.removeValue(forKey: id) }
         self.lock.unlock()
@@ -44,13 +63,27 @@ final class FakeSpotlightStore: SpotlightItemIndexing, @unchecked Sendable {
     }
 
     func deleteItems(domains: [String], completion: @escaping @Sendable ((any Error)?) -> Void) {
-        guard !self.hangs else { return }
+        guard !self.stalls(completion) else { return }
         self.lock.lock()
         self.items = self.items.filter { _, domain in
             !domains.contains { domain == $0 || domain.hasPrefix($0 + ".") }
         }
         self.lock.unlock()
         completion(nil)
+    }
+}
+
+/// Tells a stalled test operation to stop.
+final class StallFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var ended = false
+
+    var isEnded: Bool {
+        self.lock.withLock { self.ended }
+    }
+
+    func end() {
+        self.lock.withLock { self.ended = true }
     }
 }
 
@@ -83,17 +116,22 @@ struct SpotlightMemoryTests {
         #expect(SpotlightTimeoutRace.deadlineNanoseconds(-5) == 50_000_000)
     }
 
-    @Test
+    @Test(.timeLimit(.minutes(1)))
     func indexWritesAreBoundedWhenSpotlightNeverAnswers() async throws {
-        let index = Self.index(store: FakeSpotlightStore(hangs: true), writeTimeoutSeconds: 0.2)
-        let started = Date()
-        await #expect(throws: SpotlightTimeoutError.self) {
-            try await index.upsert([MemoryDocument(id: "a", source: .systemNote, text: "stalled write")], sessionKey: nil)
+        let store = FakeSpotlightStore(hangs: true)
+        let index = Self.index(store: store, writeTimeoutSeconds: 0.2)
+        // The errors name the 0.2 s deadline. A write without one would hang until the time limit,
+        // whose cancellation answers the stalled calls so the test can end.
+        await withTaskCancellationHandler {
+            await #expect(throws: SpotlightTimeoutError(operation: "indexSearchableItems", seconds: 0.2)) {
+                try await index.upsert([MemoryDocument(id: "a", source: .systemNote, text: "stalled write")], sessionKey: nil)
+            }
+            await #expect(throws: SpotlightTimeoutError(operation: "deleteSearchableItems(withDomainIdentifiers:)", seconds: 0.2)) {
+                try await index.deleteAll()
+            }
+        } onCancel: {
+            store.stopHanging()
         }
-        await #expect(throws: SpotlightTimeoutError.self) {
-            try await index.deleteAll()
-        }
-        #expect(Date().timeIntervalSince(started) < 3)
     }
 
     @Test
@@ -229,18 +267,26 @@ struct SpotlightMemoryTests {
         feed.finish()
     }
 
-    @Test
-    func timeoutRaceReturnsWithoutJoiningAStalledOperation() async {
-        let started = Date()
+    @Test(.timeLimit(.minutes(1)))
+    func timeoutRaceReturnsWithoutJoiningAStalledOperation() async throws {
         // The operation ignores cancellation and never finishes on its own, like a stalled CSUserQuery.
-        let value: Int? = await SpotlightTimeoutRace.first(timeoutSeconds: 0.2) {
-            while true {
-                try? await Task.sleep(nanoseconds: 50_000_000)
+        // It stops once the test ends, or when the time limit cancels a race that waits for it.
+        let stall = StallFlag()
+        defer { stall.end() }
+        let value: Int? = await withTaskCancellationHandler {
+            await SpotlightTimeoutRace.first(timeoutSeconds: 0.2) {
+                while !stall.isEnded {
+                    try? await Task.sleep(nanoseconds: 50_000_000)
+                }
+                return 0
             }
+        } onCancel: {
+            stall.end()
         }
         #expect(value == nil)
-        #expect(Date().timeIntervalSince(started) < 2)
-        let fast: Int? = await SpotlightTimeoutRace.first(timeoutSeconds: 5) { 42 }
+        let fast: Int? = try await awaitCancellable("fast operation won the race") {
+            await SpotlightTimeoutRace.first(timeoutSeconds: 3_600) { 42 }
+        }
         #expect(fast == 42)
     }
 

@@ -8,7 +8,7 @@ import OpenClawProtocol
 import OpenClawSkills
 @testable import OpenClawAgents
 
-@Suite("Runtime integration wiring")
+@Suite("Runtime integration wiring", .timeLimit(.minutes(1)))
 struct RuntimeIntegrationWiringTests {
     private static func document(_ json: String) throws -> OpenClawConfigDocument {
         try OpenClawConfigDocument.decode(Data(json.utf8))
@@ -433,9 +433,7 @@ struct RuntimeIntegrationWiringTests {
         )
         let manager = SubagentManager(runtime: runtime)
         let record = try await manager.spawn(SubagentSpawnParams(task: "summarize", label: "Summary"), parentSessionKey: "agent:main:main")
-        for _ in 0..<300 where await !log.names.contains("subagent_ended") {
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
+        try await waitUntil("subagent_ended hook ran") { await log.names.contains("subagent_ended") }
         #expect(await log.names == ["subagent_spawned", "subagent_ended"])
         let spawned = try #require(await log.first(.subagentSpawned))
         #expect(spawned["childSessionKey"]?.stringValue == record.childSessionKey)

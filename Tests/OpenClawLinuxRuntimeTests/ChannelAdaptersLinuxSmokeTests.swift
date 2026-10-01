@@ -69,14 +69,22 @@ struct ChannelAdaptersLinuxSmokeTests {
 
     @Test
     func a2aRoundTripCompletesTaskWithReply() async throws {
-        let config = A2AChannelConfig(enabled: true, replyTimeoutMs: 5_000, peers: ["peer": A2APeerConfig(token: "secret")])
+        // The longest reply timeout (10 min) outlasts the time limit; the task-store wait ignores
+        // cancellation, so the request is awaited through awaitCancellable.
+        let config = A2AChannelConfig(
+            enabled: true,
+            replyTimeoutMs: A2AChannelConfig.replyTimeoutRangeMs.upperBound,
+            peers: ["peer": A2APeerConfig(token: "secret")]
+        )
         let adapter = A2AChannelAdapter(config: config)
         await adapter.setInboundHandler { message in
             try? await adapter.send(OutboundMessage(channel: .a2a, peerID: message.peerID, text: "done"))
         }
         try await adapter.start()
         let request = #"{"jsonrpc":"2.0","id":1,"method":"SendMessage","params":{"message":{"role":"ROLE_USER","contextId":"c1","parts":[{"text":"task"}]}}}"#
-        let response = await adapter.handleHTTP(method: "POST", path: "/a2a/v1", headers: ["Authorization": "Bearer secret"], body: Data(request.utf8))
+        let response = try await awaitCancellable("A2A task completed") {
+            await adapter.handleHTTP(method: "POST", path: "/a2a/v1", headers: ["Authorization": "Bearer secret"], body: Data(request.utf8))
+        }
         let decoded = try JSONDecoder().decode(A2AJSONRPCResponse<A2ASendMessageResult>.self, from: response.body)
         #expect(decoded.result?.task?.status.state == .completed)
         #expect(decoded.result?.task?.replyText == "done")
@@ -106,7 +114,8 @@ struct ChannelAdaptersLinuxSmokeTests {
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
         let client = IMsgRPCClient(pipe: IMsgProcessPipe(cliPath: script.path))
         try await client.start()
-        let result = try await client.request("ping", timeoutMs: 10_000)
+        // No request timeout (0); the reply wait ignores cancellation, so it goes through awaitCancellable.
+        let result = try await awaitCancellable("imsg ping answered") { try await client.request("ping", timeoutMs: 0) }
         #expect(result.dictionaryValue?["ok"]?.boolValue == true)
         await client.stop()
     }

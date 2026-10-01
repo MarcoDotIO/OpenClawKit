@@ -404,7 +404,7 @@ struct GatewayServerRegistryTests {
         #expect(await reloaded.listSecretKeys() == ["TOKEN", "legacy"])
     }
 
-    @Test
+    @Test(.timeLimit(.minutes(1)))
     func builtinHandlersAcceptUpstreamWireShapes() async throws {
         let root = try Self.makeTempDirectory(named: "upstream-wire")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -461,10 +461,14 @@ struct GatewayServerRegistryTests {
         #expect(missing.error?.errorCode == .invalidRequest)
 
         // agent.wait accepts the upstream `runId` key and the legacy `runID` key.
-        let upstreamWait = await server.handle(Self.frame("agent.wait", params: ["runId": AnyCodable("run-main"), "timeoutMs": AnyCodable(1_000)]))
+        let upstreamWait = try await awaitCancellable("upstream-keyed run finished") {
+            await server.handle(Self.frame("agent.wait", params: ["runId": AnyCodable("run-main")]))
+        }
         #expect(upstreamWait.payload?.dictionaryValue?["status"] == AnyCodable("ok"))
         #expect(upstreamWait.payload?.dictionaryValue?["runId"] == AnyCodable("run-main"))
-        let legacyWait = await server.handle(Self.frame("agent.wait", params: ["runID": AnyCodable("run-legacy")]))
+        let legacyWait = try await awaitCancellable("legacy-keyed run finished") {
+            await server.handle(Self.frame("agent.wait", params: ["runID": AnyCodable("run-legacy")]))
+        }
         #expect(try GatewayPayloadCodec.decode(GatewayAgentWaitResult.self, from: legacyWait.payload).output == "hi")
 
         // sessions.patch accepts upstream `agentId`/`model`/`fastMode` and null clears.

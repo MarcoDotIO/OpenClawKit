@@ -296,7 +296,7 @@ struct CoreAIModelRuntimeTests {
         #expect(texts == ["aaaaa", "bbbbb"])
     }
 
-    @Test
+    @Test(.timeLimit(.minutes(1)))
     func cancelStopsOnlyTheRunningGeneration() async throws {
         let executor = SharedCacheExecutor(limit: 40)
         let engine = CoreAILocalModelEngine(tokenizer: ScalarTokenizer(), executorFactory: { _, _ in executor })
@@ -304,9 +304,7 @@ struct CoreAIModelRuntimeTests {
         configuration.temperature = 0
         try await engine.loadModel(path: "/m", configuration: configuration)
         let running = Task { try await engine.generate(prompt: "a", systemPrompt: nil, configuration: configuration, onToken: nil) }
-        for _ in 0..<500 where await executor.runs == 0 {
-            try await Task.sleep(nanoseconds: 1_000_000)
-        }
+        try await waitUntil("first generation running") { await executor.runs > 0 }
         let queued = Task { try await engine.generate(prompt: "b", systemPrompt: nil, configuration: configuration, onToken: nil) }
         await engine.cancelGeneration(token: nil)
         await #expect(throws: CoreAIRuntimeError.cancelled) {

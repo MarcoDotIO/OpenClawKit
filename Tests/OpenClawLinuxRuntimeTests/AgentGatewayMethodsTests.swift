@@ -6,7 +6,7 @@ import OpenClawModels
 import OpenClawProtocol
 @testable import OpenClawAgents
 
-@Suite("Agent gateway methods")
+@Suite("Agent gateway methods", .timeLimit(.minutes(1)))
 struct AgentGatewayMethodsTests {
     private struct Harness {
         let server: GatewayServer
@@ -48,7 +48,9 @@ struct AgentGatewayMethodsTests {
         #expect(sent.ok)
         let runID = try #require(sent.payload?.dictionaryValue?["runId"]?.stringValue)
 
-        let waited = await self.call(harness.server, "agent.wait", ["runId": AnyCodable(runID), "timeoutMs": AnyCodable(5_000)])
+        let waited = try await awaitCancellable("sent run finished") {
+            await self.call(harness.server, "agent.wait", ["runId": AnyCodable(runID)])
+        }
         #expect(waited.ok)
         #expect(waited.payload?.dictionaryValue?["status"] == AnyCodable("ok"))
         #expect(waited.payload?.dictionaryValue?["output"] == AnyCodable("all done"))
@@ -85,7 +87,7 @@ struct AgentGatewayMethodsTests {
         #expect(payload["sessionId"]?.stringValue != nil)
         #expect(payload["entry"]?.dictionaryValue?["permissionMode"] == AnyCodable("guarded"))
         let runID = try #require(payload["runId"]?.stringValue)
-        #expect(await harness.runtime.wait(runID: runID, timeoutMs: 5_000)?.status == "ok")
+        #expect(try await awaitCancellable("created run finished") { await harness.runtime.wait(runID: runID) }?.status == "ok")
 
         let approval = await harness.runtime.approvals.request(presentation: .exec(commandText: "ls"), sessionKey: "agent:main:work")
         let patched = await self.call(harness.server, "sessions.patch", ["key": AnyCodable("agent:main:work"), "permissionMode": AnyCodable("read-only")])
@@ -215,7 +217,9 @@ struct AgentGatewayMethodsTests {
         try await Task.sleep(nanoseconds: 50_000_000)
         let aborted = await self.call(harness.server, "sessions.abort", ["key": AnyCodable("k")])
         #expect(aborted.payload?.dictionaryValue?["aborted"] == AnyCodable(true))
-        let waited = await self.call(harness.server, "agent.wait", ["runId": AnyCodable(runID), "timeoutMs": AnyCodable(2_000)])
+        let waited = try await awaitCancellable("aborted run reported") {
+            await self.call(harness.server, "agent.wait", ["runId": AnyCodable(runID)])
+        }
         #expect(waited.payload?.dictionaryValue?["status"] == AnyCodable("error"))
 
         let compacted = await self.call(harness.server, "sessions.compact", ["key": AnyCodable("k")])
