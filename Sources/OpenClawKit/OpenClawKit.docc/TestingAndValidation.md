@@ -69,6 +69,7 @@ variable is set:
 ```bash
 set -a; . ./.env; set +a
 OPENCLAW_LIVE_PROVIDER_TESTS=1 swift test --filter LiveProvider
+OPENCLAW_LIVE_PROVIDER_TESTS=1 swift test --filter LiveProviderOpenAIDecisionsTests
 OPENCLAW_LIVE_APPLE_FM=1 swift test --filter AppleFoundationModelsLiveTests
 ```
 
@@ -81,6 +82,12 @@ Sign in with ChatGPT has no live suite: signing in needs a person in a browser. 
 offline suites (`SignInWithChatGPTAuthorizationTests`, `SignInWithChatGPTSessionTests`,
 `ChatGPTPlanModelProviderTests`) run on macOS and Linux against a scripted authorization
 server, fixed RS256 fixtures and a real loopback round trip.
+
+The Decisions offline suite (`OpenAIDecisionsClientTests`) validates the official
+request/response contract in the cross-platform target. Its opt-in live suite
+(`LiveProviderOpenAIDecisionsTests`) makes a small request with predicate, choice
+and score questions and an inline-image request with Boolean choices, and verifies
+usage; see <doc:OpenAIDecisions>.
 
 ## CI and Docs Publishing
 

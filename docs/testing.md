@@ -123,7 +123,11 @@ OPENCLAW_LIVE_PROVIDER_TESTS=1 swift test --filter LiveProvider
 
 - Keys: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `XAI_API_KEY`.
 - One provider: `--filter LiveProviderOpenAIResponses`, `LiveProviderOpenAIChatCompletions`,
-  `LiveProviderAnthropic`, `LiveProviderXAI` or `LiveProviderAgentLoop`.
+  `LiveProviderOpenAIDecisionsTests`, `LiveProviderAnthropic`, `LiveProviderXAI`
+  or `LiveProviderAgentLoop`. The Decisions suite adds a small text request
+  covering predicate, choice and score answers and an inline-image request with
+  Boolean choices, using the documented `gpt-6-luna` model; it does not use the
+  Responses/Chat Completions model override.
 - Model overrides: `OPENCLAW_LIVE_OPENAI_MODEL` (default `gpt-6-luna`),
   `OPENCLAW_LIVE_ANTHROPIC_MODEL` (default `claude-haiku-4-5`),
   `OPENCLAW_LIVE_XAI_MODEL` (default `grok-4.20-0309-non-reasoning`).
@@ -139,6 +143,9 @@ OPENCLAW_LIVE_PROVIDER_TESTS=1 swift test --filter LiveProvider
   reasoning=… total=…` line. Prompts, bodies and keys are never printed, and failure
   descriptions redact configured keys.
 - The stubbed offline regressions (`LiveProviderRegressionTests`) always run.
+- `swift test --filter OpenAIDecisionsClientTests` runs the Decisions wire-contract,
+  validation, usage, refusal, cancellation and error tests without credentials
+  on macOS or Linux.
 
 Status at `2026.3.0`: the final pass on the release tree ran 67 tests in 6 suites and all
 passed: OpenAI Responses, OpenAI Chat Completions, Anthropic Messages, xAI, the

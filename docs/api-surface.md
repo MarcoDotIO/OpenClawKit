@@ -97,6 +97,18 @@ entry points and the main types behind them.
 - `OpenClawRunProgress`, `OpenClawApprovalGate`, `OpenClawPermissionsSnapshot`,
   `OpenClawLocalNetworkAccessGate`, `OpenClawAgentRunActivityReducer`
 
+## OpenAI Decisions
+
+- `OpenAIDecisionsClient.create(_:)` (`OpenClawModels`, Apple platforms and Linux):
+  official `POST /v1/decisions` with an explicit key or `OPENAI_API_KEY` from the
+  host environment, injectable HTTP transport and account-scoping options
+- `OpenAIDecisionRequest`, `OpenAIDecisionInput`, `OpenAIDecisionQuestion`: shared
+  text/inline-image evidence and typed predicate, choice and score questions
+- `OpenAIDecisionResponse`, `OpenAIDecisionAnswer`, `OpenAIDecisionUsage`: ordered
+  typed answers, refusals, probabilities, confidence and token usage
+- `OpenAIDecisionsHTTPError`: redacted HTTP failure details and retry metadata
+- DocC article "OpenAI Decisions" for configuration and examples
+
 ## Security and Hardening Types
 
 - `SecurityAuditOptions`

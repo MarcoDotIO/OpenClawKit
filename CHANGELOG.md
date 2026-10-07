@@ -2,6 +2,51 @@
 
 ## Unreleased
 
+## 2026.3.3 - 2026-10-07
+
+OpenClawKit 2026.3.3 adds support for the official OpenAI
+[Decisions API](https://developers.openai.com/api/docs/guides/decisions), currently
+in public beta with `gpt-6-luna`. This is an additive SDK feature on Apple platforms
+and Linux; the upstream parity target remains OpenClaw `2026.9.6`.
+
+### Added
+
+- `OpenAIDecisionsClient` (`OpenClawModels`, re-exported by `OpenClawKit`) sends
+  `POST /v1/decisions` with an explicit OpenAI Platform API key or `OPENAI_API_KEY`
+  from the host environment. Local `.env` files stay ignored and must be loaded
+  by the host. Configurable API base URL, organization/project scope, timeout and
+  HTTP transport use the existing cross-platform networking contract.
+- Typed requests for predicate, choice and score questions with optional names,
+  shared text or user-message evidence, inline base64 images and image detail,
+  and `safety_identifier`. String and Boolean choices retain their JSON types.
+  Duplicate names, invalid choice counts/values, non-inline images and more than
+  128 images are rejected before the network call.
+- Typed ordered answers, per-question refusals, choice/score distributions,
+  confidence, fractional rubric scores and exact token usage, with conversion
+  to `ModelUsage`. Invalid response schemas and mismatched answer names/counts
+  are rejected without exposing the response body.
+- `OpenAIDecisionsHTTPError` preserves status, OpenAI code/type, request id and
+  `Retry-After`, and redacts credentials in provider error details. The client
+  makes one request and leaves retry decisions to the host.
+- DocC article "OpenAI Decisions", README example, cross-platform offline
+  `OpenAIDecisionsClientTests` and an opt-in `LiveProviderOpenAIDecisionsTests`
+  smoke test for all three question types and usage.
+
+### Tests
+
+- Local macOS regression suites passed: 597 cross-platform runtime tests, 3,152
+  SDK tests and 20 E2E tests reported by `swift test` (live suites stay gated).
+  The new offline Decisions suite has 12 tests, including parameterized HTTP
+  failures, malformed responses and answer matching.
+- Local Linux Swift 6.2 warnings-as-errors build and all 586 runtime tests passed
+  in Docker with two compiler jobs, including the new Decisions suite.
+- Two opt-in live requests with the local `.env` key passed against `gpt-6-luna`:
+  predicate/choice/score text questions and inline images with Boolean choices.
+  OpenAI reported 522 input tokens and zero output tokens across both requests.
+- Local repository SwiftLint, strict networking concurrency compilation and
+  DocC documentation build passed. The compiled "OpenAI Decisions" article has
+  no unresolved symbol warnings.
+
 ## 2026.3.2 - 2026-10-01
 
 OpenClawKit 2026.3.2 is a patch release. Decoding and importing channel config
