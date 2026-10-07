@@ -18,13 +18,14 @@ The repository currently ships:
 - an Apple-facing `OpenClawKit` facade for app and gateway-node integrations, plus Apple-only products for native state, App Intents, SwiftUI chat and an offline chat store
 - an in-process gateway with a public method-registration API, and a gateway client that speaks OpenClaw protocol v4
 - Sign in with ChatGPT, so people can run agents on their ChatGPT plan instead of an API key
+- official OpenAI Decisions API support for typed classification and scoring over text and inline images
 - provider routing across OpenAI (Platform and ChatGPT/Codex OAuth), OpenAI-compatible, Anthropic, Google Gemini/Vertex, xAI, Bedrock, Ollama, local runtimes and Apple Foundation Models (on-device and Private Cloud Compute)
 - channel adapters with upstream access policy and DM pairing, secret-aware lossless config, session transcripts, diagnostics, replay and security audit tooling
 - a published Swift-DocC site plus CI, SwiftLint, and release automation
 
 Current baseline:
 
-- latest release: `2026.3.1`
+- release version: `2026.3.3`
 - upstream parity target: OpenClaw `v2026.9.6` at `.codex/openclaw` commit `eb377ac59e`
 - gateway protocol: v4 (operator clients negotiate 4; node sessions accept 3...4)
 - toolchain: Xcode 27.1 / Swift 6.4 for Apple platforms; the cross-platform modules stay compatible with Swift 6.2 on Linux (`swift-tools-version` 6.2)
@@ -45,7 +46,7 @@ Add the package with Swift Package Manager:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/MarcoDotIO/OpenClawKit.git", from: "2026.3.1")
+    .package(url: "https://github.com/MarcoDotIO/OpenClawKit.git", from: "2026.3.3")
 ]
 ```
 
@@ -74,7 +75,7 @@ The experimental App Intents model-delegation surface (built on the underscored 
 ```swift
 .package(
     url: "https://github.com/MarcoDotIO/OpenClawKit.git",
-    from: "2026.3.1",
+    from: "2026.3.3",
     traits: [.defaults, "ExperimentalAppleModelDelegation"]
 )
 ```
@@ -142,7 +143,38 @@ For a persistent embedded agent (session and transcript stores, the tool-calling
 - Swift tools: `6.2`. Build with Xcode 27.1 (Swift 6.4) on Apple platforms; Xcode's own toolchain is required to use the 27 SDKs.
 - Apple 27 APIs (FoundationModels 27, Private Cloud Compute, StateReporting, NowPlaying, App Intents 27, TrustInsights, LinkSecurity, BackgroundTasks async submission, MediaIntelligence, MusicUnderstanding, CoreAI, ScreenCaptureKit on iOS) sit behind `#if compiler(>=6.4)` and per-OS `@available`, so apps with the floors above launch on older systems. `Scripts/check-apple-weak-links.sh` enforces this.
 
-## Highlights in 2026.3.1
+## Highlights in 2026.3.3
+
+- `OpenAIDecisionsClient` calls the official [Decisions API](https://developers.openai.com/api/docs/guides/decisions) at `POST /v1/decisions` with an OpenAI Platform API key. It returns typed predicate probabilities, string/Boolean choices, rubric scores, per-question refusals and usage.
+- Text and user messages with inline base64 images are supported. The client validates duplicate question names, choice values and the 128-image limit before sending a request, and exposes HTTP error codes, request ids and `Retry-After` with credentials redacted.
+- The API is in public beta; the documented model is `gpt-6-luna`. Use `OpenClawModels` directly on Linux or through the `OpenClawKit` facade on Apple platforms. See the DocC article "OpenAI Decisions".
+
+```swift
+import OpenClawModels
+
+// Load OPENAI_API_KEY from your host environment; keep the local .env file ignored.
+let decisions = try OpenAIDecisionsClient()
+let result = try await decisions.create(OpenAIDecisionRequest(
+    input: .text("The customer reports a cracked screen."),
+    questions: [.predicate(name: "damaged", instructions: "Does the customer report physical damage?")]
+))
+if case .predicate(_, let probability) = result.answer(named: "damaged") {
+    print(probability)
+}
+```
+
+For a local command-line host or the gated live test, load `.env` before launch:
+
+```bash
+set -a; . ./.env; set +a
+OPENCLAW_LIVE_PROVIDER_TESTS=1 swift test --filter LiveProviderOpenAIDecisionsTests
+```
+
+The library reads `OPENAI_API_KEY` from the process environment or accepts an explicit key;
+it does not load files automatically. For shipped Apple apps, supply credentials from
+your host's secure configuration or server.
+
+## Sign in with ChatGPT (added in 2026.3.1)
 
 - [Sign in with ChatGPT](https://developers.openai.com/siwc): `SignInWithChatGPTSession` runs OpenAI's open-source "ChatGPT plan usage" flow (loopback PKCE sign-in with `dynamic_agent_client` registration, RS256 ID-token validation, multi-account storage, single-flight token refresh, revocation on sign-out) on Apple platforms and Linux.
 - `ChatGPTPlanModelProvider` runs inference on the user's ChatGPT plan through the Responses API (`store: false`, streaming, namespaced function tools) and throws typed `ChatGPTPlanError`s such as "usage limit reached".
