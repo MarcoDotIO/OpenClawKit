@@ -38,6 +38,8 @@ and Linux; the upstream parity target remains OpenClaw `2026.9.6`.
   SDK tests and 20 E2E tests reported by `swift test` (live suites stay gated).
   The new offline Decisions suite has 12 tests, including parameterized HTTP
   failures, malformed responses and answer matching.
+- Local Linux Swift 6.2 warnings-as-errors build and all 586 runtime tests passed
+  in Docker with two compiler jobs, including the new Decisions suite.
 - Two opt-in live requests with the local `.env` key passed against `gpt-6-luna`:
   predicate/choice/score text questions and inline images with Boolean choices.
   OpenAI reported 522 input tokens and zero output tokens across both requests.

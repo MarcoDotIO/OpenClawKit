@@ -265,7 +265,7 @@ struct OpenAIDecisionsClientTests {
     func transportTimeoutKeepsCodeAndDropsFailingURL() async throws {
         struct FailingTransport: OpenAICompatibleHTTPTransport {
             func data(for request: URLRequest) async throws -> HTTPResponseData {
-                throw URLError(.timedOut, userInfo: [NSURLErrorFailingURLStringErrorKey: "https://example.com?key=secret"])
+                throw URLError(.timedOut, userInfo: [NSURLErrorFailingURLErrorKey: URL(string: "https://example.com?key=secret")!])
             }
         }
         let client = try OpenAIDecisionsClient(apiKey: "test-key", transport: FailingTransport())
@@ -275,7 +275,7 @@ struct OpenAIDecisionsClientTests {
         } catch let error as URLError {
             #expect(error.code == .timedOut)
             #expect(!String(describing: error).contains("key=secret"))
-            #expect(error.userInfo[NSURLErrorFailingURLStringErrorKey] == nil)
+            #expect(error.userInfo[NSURLErrorFailingURLErrorKey] == nil)
         }
     }
 }
